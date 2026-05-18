@@ -1,313 +1,601 @@
+
 -- =============================================================
--- DeltaBalance — schema.sql
--- Motor: SQLite 3
+-- DeltaBalance — schema_v2.sql
+-- SQLite 3 — Financial-grade schema
 -- =============================================================
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 -- =============================================================
--- 0. MONEDAS
+-- MONEDAS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS monedas (
-    id      INTEGER PRIMARY KEY AUTOINCREMENT,
-    codigo  TEXT NOT NULL UNIQUE -- 'ARS', 'USD', 'USDT', 'BRL'
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    codigo          TEXT NOT NULL UNIQUE,
+    simbolo         TEXT,
+    decimales       INTEGER NOT NULL DEFAULT 2
 );
 
 -- =============================================================
--- 3. CATEGORIAS
--- Tabla normalizada de categorias y subcategorias.
--- tipo: 'ingreso' | 'egreso' | 'movimiento'
--- =============================================================
-CREATE TABLE IF NOT EXISTS categorias (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    categoria_principal TEXT    NOT NULL,
-    subcategoria        TEXT    NOT NULL,
-    tipo                TEXT    NOT NULL
-                        CHECK(tipo IN ('ingreso','egreso','movimiento')),
-    UNIQUE(categoria_principal, subcategoria)
-);
-
-
--- =============================================================
--- 1. CUENTAS
+-- CUENTAS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuentas (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    nombre          TEXT    NOT NULL UNIQUE,
-    tipo            TEXT    NOT NULL 
-                    CHECK(tipo IN ('debito','credito','efectivo','crypto','inversion')),
-
-    cuenta_pago_id  INTEGER REFERENCES cuentas(id), 
-    
-    activa          INTEGER NOT NULL DEFAULT 1,
-    notas           TEXT,
-    creada_en       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
-
-
--- =============================================================
--- 13. EMPLEOS / CONFIGURACIÓN DE INGRESOS
--- Define las reglas de descuento para cada fuente de ingreso.
--- =============================================================
-CREATE TABLE IF NOT EXISTS empleos (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    nombre_empresa      TEXT    NOT NULL,
-    puesto              TEXT,
-    moneda_id           INTEGER NOT NULL REFERENCES monedas(id),
-    
-    -- Variables fijas por contrato
-    porcentaje_jubilacion REAL    DEFAULT 11.0, -- %
-    porcentaje_obra_social REAL    DEFAULT 3.0,  -- %
-    porcentaje_gremio     REAL    DEFAULT 0.0,  -- %
-    tope_copago_os        REAL    DEFAULT 0.0,  -- Monto máximo que te pueden descontar de OS
-    
-    activa              INTEGER DEFAULT 1,    -- 0 si ya no trabajás ahí
-    creada_en           TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
+    nombre              TEXT NOT NULL UNIQUE,
+
+    tipo                TEXT NOT NULL
+                        CHECK(tipo IN (
+                            'debito',
+                            'credito',
+                            'efectivo',
+                            'crypto',
+                            'inversion'
+                        )),
+
+    cuenta_pago_id      INTEGER REFERENCES cuentas(id),
+
+    activa              INTEGER NOT NULL DEFAULT 1,
+    notas               TEXT,
+
+    creada_en           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================
--- 2. CUENTAS_SALDOS
--- Esta tabla permite que una cuenta (ej. Mercado Pago) tenga 
--- múltiples "bolsillos" de diferentes monedas (ARS, USD, etc.)
+-- CUENTAS SALDOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuentas_saldos (
-    cuenta_id       INTEGER NOT NULL,
-    moneda_id       INTEGER NOT NULL,
-    saldo_inicial   REAL    NOT NULL DEFAULT 0,
-    visible         INTEGER NOT NULL DEFAULT 1, -- Para ocultar cajones que ya no usas
+    cuenta_id               INTEGER NOT NULL,
+    moneda_id               INTEGER NOT NULL,
+
+    saldo_inicial_minor     INTEGER NOT NULL DEFAULT 0,
+
+    visible                 INTEGER NOT NULL DEFAULT 1,
+
     PRIMARY KEY (cuenta_id, moneda_id),
-    FOREIGN KEY (cuenta_id) REFERENCES cuentas(id), -- Eliminamos el CASCADE
+
+    FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
     FOREIGN KEY (moneda_id) REFERENCES monedas(id)
 );
 
+-- =============================================================
+-- CATEGORIAS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS categorias (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
 
+    categoria_principal     TEXT NOT NULL,
+    subcategoria            TEXT NOT NULL,
 
+    tipo                    TEXT NOT NULL
+                            CHECK(tipo IN (
+                                'ingreso',
+                                'egreso',
+                                'movimiento'
+                            )),
 
-
-
+    UNIQUE(categoria_principal, subcategoria)
+);
 
 -- =============================================================
--- 4. transacciones
--- Cash flow real. Solo lo que efectivamente ocurrió en una cuenta.
--- Monto positivo = entra, negativo = sale.
--- NO incluye cuotas individuales — solo el pago total del resumen.
+-- EMPLEOS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS empleos (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    nombre_empresa              TEXT NOT NULL,
+    puesto                      TEXT,
+
+    moneda_id                   INTEGER NOT NULL REFERENCES monedas(id),
+
+    porcentaje_jubilacion       INTEGER DEFAULT 1100,
+    porcentaje_obra_social      INTEGER DEFAULT 300,
+    porcentaje_gremio           INTEGER DEFAULT 0,
+
+    tope_copago_os_minor        INTEGER DEFAULT 0,
+
+    activa                      INTEGER DEFAULT 1,
+
+    creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
+-- TRANSACCIONES
 -- =============================================================
 CREATE TABLE IF NOT EXISTS transacciones (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    fecha           TEXT    NOT NULL,                 -- Formato: 'YYYY-MM-DD'
-    concepto        TEXT    NOT NULL,
-    cuenta_id       INTEGER NOT NULL,
-    categoria_id    INTEGER NOT NULL,
-    moneda_id       INTEGER NOT NULL,                 -- Cambio: Referencia a tabla monedas
-    monto           REAL    NOT NULL,                 -- (+) ingreso, (-) egreso
-    tag             TEXT,                             -- Ejemplo: 'Sueldo Mayo'
-    notas           TEXT,
-    creada_en       TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
-    
-    -- Definimos las relaciones (Foreign Keys) al final para mayor claridad
-    FOREIGN KEY (cuenta_id)    REFERENCES cuentas(id),
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    fecha                       TEXT NOT NULL
+                                CHECK(fecha GLOB '????-??-??'),
+
+    concepto                    TEXT NOT NULL,
+
+    cuenta_id                   INTEGER NOT NULL,
+    categoria_id                INTEGER NOT NULL,
+    moneda_id                   INTEGER NOT NULL,
+
+    tipo_movimiento             TEXT NOT NULL
+                                CHECK(tipo_movimiento IN (
+                                    'ingreso',
+                                    'egreso',
+                                    'movimiento'
+                                )),
+
+    monto_minor                 INTEGER NOT NULL CHECK(monto_minor >= 0),
+
+    tag                         TEXT,
+    notas                       TEXT,
+
+    creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    deleted_at                      TEXT,
+
+    FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
     FOREIGN KEY (categoria_id) REFERENCES categorias(id),
-    FOREIGN KEY (moneda_id)    REFERENCES monedas(id)
+    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
 );
 
-
 -- =============================================================
--- 5. COMPRAS EN CUOTAS
--- El hecho de la compra. De aquí se generan las filas de cuotas_credito.
--- cuenta_id = la tarjeta de crédito usada.
--- =============================================================
-CREATE TABLE IF NOT EXISTS compras_cuotas (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    fecha_compra    TEXT    NOT NULL,
-    concepto        TEXT    NOT NULL,                 -- 'Lavarropas Whirlpool'
-    cuenta_id       INTEGER NOT NULL REFERENCES cuentas(id),
-    categoria_id    INTEGER NOT NULL REFERENCES categorias(id),
-    monto_total     REAL    NOT NULL,
-    total_cuotas    INTEGER NOT NULL DEFAULT 1,
-    monto_por_cuota REAL    NOT NULL,                 -- monto_total / total_cuotas (puede diferir por intereses)
-    moneda_id          INTEGER    NOT NULL REFERENCES monedas(id),
-    estado          TEXT    NOT NULL DEFAULT 'activa'
-                    CHECK(estado IN ('activa','cancelada','completada')),
-    notas           TEXT,
-    creada_en       TEXT    NOT NULL DEFAULT (datetime('now','localtime'))
-);
-
-
--- =============================================================
--- 7. RESÚMENES DE TARJETA
--- Consolida el pago mensual y los costos impositivos/administrativos.
+-- RESUMENES TARJETA
 -- =============================================================
 CREATE TABLE IF NOT EXISTS resumenes_tarjeta (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    cuenta_id           INTEGER NOT NULL,
-    mes                 INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
-    anio                INTEGER NOT NULL,
-    
-    -- Totales que vienen del banco
-    monto_consumos      REAL NOT NULL DEFAULT 0, -- Suma de cuotas + consumos un pago
-    monto_impuestos     REAL NOT NULL DEFAULT 0, -- El valor real en plata de sellos/impuestos
-    
-    -- Tu idea del coeficiente
-    porcentaje_impuesto REAL NOT NULL DEFAULT 0, -- Ejemplo: 1.2 (para 1.2%)
-    
-    monto_total_pagado  REAL NOT NULL,           -- monto_consumos + monto_impuestos
-    
-    fecha_pago          TEXT,                    -- YYYY-MM-DD
-    estado              TEXT NOT NULL DEFAULT 'abierto' 
-                        CHECK(estado IN ('abierto', 'cerrado', 'pagado')),
-                        
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    cuenta_id                       INTEGER NOT NULL,
+
+    mes                             INTEGER NOT NULL
+                                    CHECK(mes BETWEEN 1 AND 12),
+
+    anio                            INTEGER NOT NULL,
+
+    monto_consumos_minor            INTEGER NOT NULL DEFAULT 0,
+    monto_impuestos_minor           INTEGER NOT NULL DEFAULT 0,
+
+    porcentaje_impuesto_bp          INTEGER NOT NULL DEFAULT 0,
+
+    monto_total_pagado_minor        INTEGER NOT NULL,
+
+    fecha_pago                      TEXT
+                                    CHECK(
+                                        fecha_pago IS NULL OR
+                                        fecha_pago GLOB '????-??-??'
+                                    ),
+
+    estado                          TEXT NOT NULL DEFAULT 'abierto'
+                                    CHECK(estado IN (
+                                        'abierto',
+                                        'cerrado',
+                                        'pagado'
+                                    )),
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
     FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
-    UNIQUE(cuenta_id, mes, anio) -- Evita duplicar el resumen del mismo mes
+
+    UNIQUE(cuenta_id, mes, anio)
 );
 
-
 -- =============================================================
--- 8. DEUDAS (Préstamos y Compromisos)
--- Maneja tanto lo que te deben (Activo) como lo que debés (Pasivo).
+-- COMPRAS CUOTAS
 -- =============================================================
-CREATE TABLE IF NOT EXISTS deudas (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    entidad_persona TEXT    NOT NULL,
-    tipo            TEXT    NOT NULL 
-                    CHECK(tipo IN ('a_favor', 'en_contra')),
-    
-    -- (+) me deben (Activo), (-) debo (Pasivo)
-    monto_original  REAL    NOT NULL,
-    monto_pendiente REAL    NOT NULL, 
-    
-    moneda_id       INTEGER NOT NULL,
-    fecha_inicio    TEXT    NOT NULL,
-    fecha_vencimiento TEXT,
-    estado          TEXT    NOT NULL DEFAULT 'activa'
-                    CHECK(estado IN ('activa', 'saldada', 'incobrable')),
-    
-    origen_tipo     TEXT    DEFAULT 'manual',
-    origen_id       INTEGER,
-    notas           TEXT,
-    creada_en       TEXT    NOT NULL DEFAULT (datetime('now','localtime')),
-    
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id),
+CREATE TABLE IF NOT EXISTS compras_cuotas (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
 
-    -- REGLA DE ORO: Validamos que el signo coincida con el tipo
-    CONSTRAINT check_signos_deuda CHECK (
-        (tipo = 'a_favor' AND monto_original > 0 AND monto_pendiente >= 0) OR
-        (tipo = 'en_contra' AND monto_original < 0 AND monto_pendiente <= 0)
-    )
+    fecha_compra                   TEXT NOT NULL
+                                    CHECK(fecha_compra GLOB '????-??-??'),
+
+    concepto                       TEXT NOT NULL,
+
+    cuenta_id                      INTEGER NOT NULL REFERENCES cuentas(id),
+    categoria_id                   INTEGER NOT NULL REFERENCES categorias(id),
+    moneda_id                      INTEGER NOT NULL REFERENCES monedas(id),
+
+    monto_total_minor              INTEGER NOT NULL,
+    total_cuotas                   INTEGER NOT NULL DEFAULT 1,
+    monto_por_cuota_minor          INTEGER NOT NULL,
+
+    estado                         TEXT NOT NULL DEFAULT 'activa'
+                                    CHECK(estado IN (
+                                        'activa',
+                                        'cancelada',
+                                        'completada'
+                                    )),
+
+    notas                          TEXT,
+
+    creada_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-
-
 -- =============================================================
--- 6. CUOTAS DE CRÉDITO
--- Las N cuotas generadas por cada compra.
--- mes_proyectado: cuando DEBERIA caer en el resumen.
--- mes_real_pago:  cuando REALMENTE apareció (puede diferir).
+-- CUOTAS CREDITO
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuotas_credito (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    compra_id           INTEGER NOT NULL REFERENCES compras_cuotas(id),
-    resumen_id          INTEGER REFERENCES resumenes_tarjeta(id),
-    numero_cuota        INTEGER NOT NULL,              -- 1, 2, 3 ... N
-    mes_proyectado      INTEGER NOT NULL CHECK(mes_proyectado BETWEEN 1 AND 12),
-    anio_proyectado     INTEGER NOT NULL,
-    mes_real_pago       INTEGER         CHECK(mes_real_pago BETWEEN 1 AND 12),
-    anio_real_pago      INTEGER,
-    monto_cuota         REAL    NOT NULL,
-    estado              TEXT    NOT NULL DEFAULT 'pendiente'
-                        CHECK(estado IN ('pendiente','en_resumen','pagado','omitido')),
-    notas               TEXT,                          -- 'cuota duplicada en jun, omitida en may'
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    compra_id                       INTEGER NOT NULL REFERENCES compras_cuotas(id),
+    resumen_id                      INTEGER REFERENCES resumenes_tarjeta(id),
+
+    numero_cuota                    INTEGER NOT NULL,
+
+    mes_proyectado                  INTEGER NOT NULL
+                                    CHECK(mes_proyectado BETWEEN 1 AND 12),
+
+    anio_proyectado                 INTEGER NOT NULL,
+
+    mes_real_pago                   INTEGER
+                                    CHECK(
+                                        mes_real_pago BETWEEN 1 AND 12
+                                    ),
+
+    anio_real_pago                  INTEGER,
+
+    monto_cuota_minor               INTEGER NOT NULL,
+
+    estado                          TEXT NOT NULL DEFAULT 'pendiente'
+                                    CHECK(estado IN (
+                                        'pendiente',
+                                        'en_resumen',
+                                        'pagado',
+                                        'omitido'
+                                    )),
+
+    notas                           TEXT,
+
     UNIQUE(compra_id, numero_cuota)
 );
-resumen_id INTEGER REFERENCES resumenes_tarjeta(id);
 
 -- =============================================================
--- 9. DEUDA_PAGOS (Vinculación Transacción <-> Deuda)
--- Permite saber qué transacción pagó qué parte de qué deuda.
+-- DEUDAS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS deudas (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    entidad_persona                TEXT NOT NULL,
+
+    tipo                           TEXT NOT NULL
+                                   CHECK(tipo IN (
+                                        'a_favor',
+                                        'en_contra'
+                                   )),
+
+    monto_original_minor           INTEGER NOT NULL,
+    monto_pendiente_minor          INTEGER NOT NULL,
+
+    moneda_id                      INTEGER NOT NULL,
+
+    fecha_inicio                   TEXT NOT NULL
+                                   CHECK(fecha_inicio GLOB '????-??-??'),
+
+    fecha_vencimiento              TEXT
+                                   CHECK(
+                                        fecha_vencimiento IS NULL OR
+                                        fecha_vencimiento GLOB '????-??-??'
+                                   ),
+
+    estado                         TEXT NOT NULL DEFAULT 'activa'
+                                   CHECK(estado IN (
+                                        'activa',
+                                        'saldada',
+                                        'incobrable'
+                                   )),
+
+    origen_tipo                    TEXT DEFAULT 'manual',
+    origen_id                      INTEGER,
+
+    notas                          TEXT,
+
+    creada_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
+);
+
+-- =============================================================
+-- DEUDA PAGOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS deuda_pagos (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    deuda_id        INTEGER NOT NULL,
-    transaccion_id  INTEGER,
-    
-    -- Este monto "neutraliza" la deuda. 
-    -- Si la deuda es (-), el pago es (+). Si la deuda es (+), el pago es (-).
-    monto_applied   REAL    NOT NULL, 
-    
-    tipo_pago       TEXT    NOT NULL DEFAULT 'transaccion'
-                    CHECK(tipo_pago IN ('transaccion', 'compensacion', 'ajuste')),
-    notas           TEXT,
-    fecha           TEXT    NOT NULL DEFAULT (date('now','localtime')),
-    
-    FOREIGN KEY (deuda_id)       REFERENCES deudas(id),
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    deuda_id                        INTEGER NOT NULL,
+    transaccion_id                  INTEGER,
+
+    monto_applied_minor             INTEGER NOT NULL,
+
+    tipo_pago                       TEXT NOT NULL DEFAULT 'transaccion'
+                                    CHECK(tipo_pago IN (
+                                        'transaccion',
+                                        'compensacion',
+                                        'ajuste'
+                                    )),
+
+    notas                           TEXT,
+
+    fecha                           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (deuda_id) REFERENCES deudas(id),
     FOREIGN KEY (transaccion_id) REFERENCES transacciones(id)
 );
 
 -- =============================================================
--- 10. PRESUPUESTOS (Gastos previstos y fijos)
+-- PRESUPUESTOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS presupuestos (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    categoria_id    INTEGER NOT NULL,
-    mes             INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
-    anio            INTEGER NOT NULL,
-    monto_estimado  REAL    NOT NULL,                 -- (-) Lo que calculo que voy a gastar
-    monto_ejecutado REAL    NOT NULL DEFAULT 0,       -- (-) Lo que ya gasté (se llena vía Python)
-    moneda_id       INTEGER NOT NULL,
-    es_recurrente   INTEGER DEFAULT 0,                -- 1 si se repite todos los meses
-    notas           TEXT,                             -- 'Aumento de internet en junio'
-    
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    categoria_id                    INTEGER NOT NULL,
+    moneda_id                       INTEGER NOT NULL,
+
+    mes                             INTEGER NOT NULL
+                                    CHECK(mes BETWEEN 1 AND 12),
+
+    anio                            INTEGER NOT NULL,
+
+    monto_estimado_minor            INTEGER NOT NULL,
+    monto_ejecutado_minor           INTEGER NOT NULL DEFAULT 0,
+
+    es_recurrente                   INTEGER DEFAULT 0,
+
+    notas                           TEXT,
+
     FOREIGN KEY (categoria_id) REFERENCES categorias(id),
-    FOREIGN KEY (moneda_id)    REFERENCES monedas(id),
-    UNIQUE(categoria_id, mes, anio) -- Un solo presupuesto por categoría al mes
+    FOREIGN KEY (moneda_id) REFERENCES monedas(id),
+    UNIQUE(categoria_id, mes, anio)
 );
 
 -- =============================================================
--- 11. INGRESOS_PROYECTADOS (Lo que espero cobrar)
+-- INGRESOS PROYECTADOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS ingresos_proyectados (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    concepto        TEXT    NOT NULL,
-    mes             INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
-    anio            INTEGER NOT NULL,
-    monto_estimado  REAL    NOT NULL,                 -- (+) Lo que espero cobrar
-    monto_percibido REAL    NOT NULL DEFAULT 0,       -- (+) Lo que ya entró a la cuenta
-    moneda_id       INTEGER NOT NULL,
-    estado          TEXT    NOT NULL DEFAULT 'pendiente' 
-                    CHECK(estado IN ('pendiente', 'cobrado', 'parcial')),
-    
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    concepto                        TEXT NOT NULL,
+
+    mes                             INTEGER NOT NULL
+                                    CHECK(mes BETWEEN 1 AND 12),
+
+    anio                            INTEGER NOT NULL,
+
+    monto_estimado_minor            INTEGER NOT NULL,
+    monto_percibido_minor           INTEGER NOT NULL DEFAULT 0,
+
+    moneda_id                       INTEGER NOT NULL,
+
+    estado                          TEXT NOT NULL DEFAULT 'pendiente'
+                                    CHECK(estado IN (
+                                        'pendiente',
+                                        'cobrado',
+                                        'parcial'
+                                    )),
+
     FOREIGN KEY (moneda_id) REFERENCES monedas(id)
 );
 
 -- =============================================================
--- 12. RECIBOS_SUELDO (Versión Multi-empleo)
+-- RECIBOS SUELDO
 -- =============================================================
 CREATE TABLE IF NOT EXISTS recibos_sueldo (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-    empleo_id           INTEGER NOT NULL REFERENCES empleos(id),
-    mes                 INTEGER NOT NULL,
-    anio                INTEGER NOT NULL,
-    
-    sueldo_bruto        REAL    NOT NULL,
-    
-    -- Guardamos los montos calculados (no el % ) para auditoría histórica
-    desc_jubilacion     REAL    NOT NULL, 
-    desc_obra_social    REAL    NOT NULL,
-    desc_copagos_os     REAL    DEFAULT 0, -- Aquí entra la lógica de la deuda acumulada
-    desc_otros          REAL    DEFAULT 0,
-    
-    monto_neto_final    REAL    NOT NULL,
-    transaccion_id      INTEGER REFERENCES transacciones(id),
-    
-    UNIQUE(empleo_id, mes, anio) -- Evita duplicar recibos del mismo empleo/mes
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    empleo_id                       INTEGER NOT NULL REFERENCES empleos(id),
+
+    mes                             INTEGER NOT NULL,
+    anio                            INTEGER NOT NULL,
+
+    sueldo_bruto_minor              INTEGER NOT NULL,
+
+    desc_jubilacion_minor           INTEGER NOT NULL,
+    desc_obra_social_minor          INTEGER NOT NULL,
+    desc_copagos_os_minor           INTEGER DEFAULT 0,
+    desc_otros_minor                INTEGER DEFAULT 0,
+
+    monto_neto_final_minor          INTEGER NOT NULL,
+
+    transaccion_id                  INTEGER REFERENCES transacciones(id),
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(empleo_id, mes, anio)
 );
 
+-- =============================================================
+-- DESCUENTOS PROGRAMADOS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS descuentos_programados (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
 
+    concepto                        TEXT NOT NULL,
 
+    monto_minor                     INTEGER NOT NULL,
 
+    mes_aplicacion                  INTEGER NOT NULL
+                                    CHECK(mes_aplicacion BETWEEN 1 AND 12),
 
+    anio_aplicacion                 INTEGER NOT NULL,
 
+    recibo_id                       INTEGER REFERENCES recibos_sueldo(id),
+
+    estado                          TEXT NOT NULL DEFAULT 'pendiente'
+                                    CHECK(estado IN (
+                                        'pendiente',
+                                        'aplicado',
+                                        'cancelado'
+                                    )),
+
+    notas                           TEXT,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 -- =============================================================
--- VISTAS
+-- TIPOS DE CAMBIO
 -- =============================================================
+CREATE TABLE IF NOT EXISTS tipos_cambio (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    fecha                           TEXT NOT NULL
+                                    CHECK(fecha GLOB '????-??-??'),
+
+    moneda_origen_id               INTEGER NOT NULL,
+    moneda_destino_id              INTEGER NOT NULL,
+
+    tasa_minor                     INTEGER NOT NULL,
+
+    fuente                         TEXT,
+
+    FOREIGN KEY (moneda_origen_id) REFERENCES monedas(id),
+    FOREIGN KEY (moneda_destino_id) REFERENCES monedas(id),
+
+    UNIQUE(fecha, moneda_origen_id, moneda_destino_id)
+);
+
+-- =============================================================
+-- INDICES
+-- =============================================================
+
+CREATE INDEX IF NOT EXISTS idx_transacciones_fecha
+ON transacciones(fecha);
+
+CREATE INDEX IF NOT EXISTS idx_transacciones_cuenta
+ON transacciones(cuenta_id);
+
+CREATE INDEX IF NOT EXISTS idx_transacciones_categoria
+ON transacciones(categoria_id);
+
+CREATE INDEX IF NOT EXISTS idx_transacciones_moneda
+ON transacciones(moneda_id);
+
+CREATE INDEX IF NOT EXISTS idx_transacciones_tipo
+ON transacciones(tipo_movimiento);
+
+CREATE INDEX IF NOT EXISTS idx_cuotas_compra
+ON cuotas_credito(compra_id);
+
+CREATE INDEX IF NOT EXISTS idx_cuotas_resumen
+ON cuotas_credito(resumen_id);
+
+CREATE INDEX IF NOT EXISTS idx_cuotas_estado
+ON cuotas_credito(estado);
+
+CREATE INDEX IF NOT EXISTS idx_resumenes_periodo
+ON resumenes_tarjeta(anio, mes);
+
+CREATE INDEX IF NOT EXISTS idx_deudas_estado
+ON deudas(estado);
+
+CREATE INDEX IF NOT EXISTS idx_deuda_pagos_deuda
+ON deuda_pagos(deuda_id);
+
+CREATE INDEX IF NOT EXISTS idx_recibos_periodo
+ON recibos_sueldo(anio, mes);
+
+CREATE INDEX IF NOT EXISTS idx_descuentos_periodo
+ON descuentos_programados(anio_aplicacion, mes_aplicacion);
+
+-- =============================================================
+-- TRIGGERS UPDATED_EN
+-- =============================================================
+
+CREATE TRIGGER IF NOT EXISTS trg_cuentas_updated
+AFTER UPDATE ON cuentas
+BEGIN
+    UPDATE cuentas
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_transacciones_updated
+AFTER UPDATE ON transacciones
+BEGIN
+    UPDATE transacciones
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_deudas_updated
+AFTER UPDATE ON deudas
+BEGIN
+    UPDATE deudas
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_empleos_updated
+AFTER UPDATE ON empleos
+BEGIN
+    UPDATE empleos
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+-- =============================================================
+-- VIEWS
+-- =============================================================
+
+CREATE VIEW IF NOT EXISTS vw_balance_cuentas AS
+SELECT
+    c.id AS cuenta_id,
+    c.nombre,
+    m.codigo AS moneda,
+
+    (
+        COALESCE(cs.saldo_inicial_minor, 0)
+        +
+        COALESCE(SUM(
+            CASE
+                WHEN t.tipo_movimiento = 'ingreso'
+                    THEN t.monto_minor
+
+                WHEN t.tipo_movimiento = 'egreso'
+                    THEN -t.monto_minor
+
+                ELSE t.monto_minor
+            END
+        ), 0)
+    ) AS saldo_minor
+
+FROM cuentas c
+
+JOIN cuentas_saldos cs
+    ON cs.cuenta_id = c.id
+
+JOIN monedas m
+    ON m.id = cs.moneda_id
+
+LEFT JOIN transacciones t
+    ON t.cuenta_id = c.id
+    AND t.moneda_id = m.id
+    AND t.deleted_at IS NULL
+
+GROUP BY c.id, m.id;
+
+CREATE VIEW IF NOT EXISTS vw_deudas_activas AS
+SELECT
+    d.id,
+    d.entidad_persona,
+    d.tipo,
+    d.monto_pendiente_minor,
+    m.codigo AS moneda,
+    d.estado
+FROM deudas d
+JOIN monedas m
+    ON m.id = d.moneda_id
+WHERE d.estado = 'activa';
+
+CREATE VIEW IF NOT EXISTS vw_cuotas_pendientes AS
+SELECT
+    cc.concepto,
+    qc.numero_cuota,
+    qc.anio_proyectado,
+    qc.mes_proyectado,
+    qc.monto_cuota_minor,
+    qc.estado
+FROM cuotas_credito qc
+JOIN compras_cuotas cc
+    ON cc.id = qc.compra_id
+WHERE qc.estado != 'pagado';

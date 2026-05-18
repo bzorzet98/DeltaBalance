@@ -10,8 +10,10 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+from contextlib import contextmanager
 
 
+    
 # =============================================================
 # RUTAS POR DEFECTO
 # =============================================================
@@ -59,7 +61,16 @@ class DatabaseManager:
     # ----------------------------------------------------------
     # CONEXIÓN
     # ----------------------------------------------------------
-
+    @contextmanager
+    def transaction(self):
+        conn = self.conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        
     def conectar(self) -> sqlite3.Connection:
         """Abre (o reutiliza) la conexión a la base de datos."""
         if self._conn is None:
@@ -86,7 +97,7 @@ class DatabaseManager:
     @property
     def conn(self) -> sqlite3.Connection:
         return self.conectar()
-
+        
     # ----------------------------------------------------------
     # INICIALIZACIÓN
     # ----------------------------------------------------------
@@ -155,16 +166,18 @@ class DatabaseManager:
     # UTILIDAD INTERNA
     # ----------------------------------------------------------
 
-    def _fetchall(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+    def fetchall(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return self.conn.execute(sql, params).fetchall()
 
-    def _fetchone(self, sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
+    def fetchone(self, sql: str, params: tuple = ()) -> Optional[sqlite3.Row]:
         return self.conn.execute(sql, params).fetchone()
 
-    def _execute(self, sql: str, params: tuple = ()) -> int:
+    def execute(self, sql: str, params: tuple = (),
+                autocommit: bool = True) -> int:
         """Ejecuta INSERT/UPDATE/DELETE. Devuelve el lastrowid o rowcount."""
         cur = self.conn.execute(sql, params)
-        self.conn.commit()
+        if autocommit:
+            self.conn.commit()
         return cur.lastrowid or cur.rowcount
 
     # ===========================================================
@@ -172,10 +185,10 @@ class DatabaseManager:
     # ===========================================================
 
     def obtener_monedas(self) -> list[sqlite3.Row]:
-        return self._fetchall("SELECT * FROM monedas ORDER BY codigo;")
+        return self.fetchall("SELECT * FROM monedas ORDER BY codigo;")
 
     def obtener_moneda_por_codigo(self, codigo: str) -> Optional[sqlite3.Row]:
-        return self._fetchone("SELECT * FROM monedas WHERE codigo = ?;", (codigo,))
+        return self.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (codigo,))
 
     def obtener_moneda_id(self, codigo: str) -> int:
         row = self.obtener_moneda_por_codigo(codigo)
@@ -191,10 +204,10 @@ class DatabaseManager:
         sql = "SELECT * FROM cuentas"
         sql += " WHERE activa = 1" if solo_activas else ""
         sql += " ORDER BY nombre;"
-        return self._fetchall(sql)
+        return self.fetchall(sql)
 
     def obtener_cuenta(self, cuenta_id: int) -> Optional[sqlite3.Row]:
-        return self._fetchone("SELECT * FROM cuentas WHERE id = ?;", (cuenta_id,))
+        return self.fetchone("SELECT * FROM cuentas WHERE id = ?;", (cuenta_id,))
 
     def crear_cuenta(
         self,
@@ -209,7 +222,7 @@ class DatabaseManager:
         Crea una cuenta y su fila en cuentas_saldos para la moneda indicada.
         Devuelve el id de la cuenta creada.
         """
-        cuenta_id = self._execute(
+        cuenta_id = self.execute(
             """
             INSERT INTO cuentas (nombre, tipo, cuenta_pago_id, notas)
             VALUES (?, ?, ?, ?);
@@ -217,10 +230,10 @@ class DatabaseManager:
             (nombre, tipo, cuenta_pago_id, notas),
         )
         moneda_id = self.obtener_moneda_id(moneda_codigo)
-        decimales = self._fetchone(
+        decimales = self.fetchone(
             "SELECT decimales FROM monedas WHERE id = ?;", (moneda_id,)
         )["decimales"]
-        self._execute(
+        self.execute(
             """
             INSERT OR IGNORE INTO cuentas_saldos (cuenta_id, moneda_id, saldo_inicial_minor)
             VALUES (?, ?, ?);
@@ -247,16 +260,16 @@ class DatabaseManager:
         if not campos:
             return False
         valores.append(cuenta_id)
-        self._execute(f"UPDATE cuentas SET {', '.join(campos)} WHERE id = ?;", tuple(valores))
+        self.execute(f"UPDATE cuentas SET {', '.join(campos)} WHERE id = ?;", tuple(valores))
         return True
 
     def archivar_cuenta(self, cuenta_id: int):
         """Desactiva una cuenta (soft delete)."""
-        self._execute("UPDATE cuentas SET activa = 0 WHERE id = ?;", (cuenta_id,))
+        self.execute("UPDATE cuentas SET activa = 0 WHERE id = ?;", (cuenta_id,))
 
     def obtener_saldo_cuenta(self, cuenta_id: int, moneda_codigo: str = "ARS") -> float:
         """Calcula el saldo actual: saldo_inicial + suma de transacciones."""
-        row = self._fetchone(
+        row = self.fetchone(
             """
             SELECT saldo_minor
             FROM vw_balance_cuentas
@@ -275,21 +288,21 @@ class DatabaseManager:
 
     def obtener_categorias(self, tipo: Optional[str] = None) -> list[sqlite3.Row]:
         if tipo:
-            return self._fetchall(
+            return self.fetchall(
                 "SELECT * FROM categorias WHERE tipo = ? ORDER BY categoria_principal, subcategoria;",
                 (tipo,),
             )
-        return self._fetchall(
+        return self.fetchall(
             "SELECT * FROM categorias ORDER BY categoria_principal, subcategoria;"
         )
 
     def obtener_categoria(self, categoria_id: int) -> Optional[sqlite3.Row]:
-        return self._fetchone("SELECT * FROM categorias WHERE id = ?;", (categoria_id,))
+        return self.fetchone("SELECT * FROM categorias WHERE id = ?;", (categoria_id,))
 
     def crear_categoria(
         self, categoria_principal: str, subcategoria: str, tipo: str
     ) -> int:
-        return self._execute(
+        return self.execute(
             "INSERT INTO categorias (categoria_principal, subcategoria, tipo) VALUES (?, ?, ?);",
             (categoria_principal, subcategoria, tipo),
         )
@@ -323,10 +336,10 @@ class DatabaseManager:
         if hasta:        sql += " AND t.fecha <= ?";       params.append(hasta)
         sql += " ORDER BY t.fecha DESC, t.id DESC LIMIT ?;"
         params.append(limit)
-        return self._fetchall(sql, tuple(params))
+        return self.fetchall(sql, tuple(params))
 
     def obtener_transaccion(self, transaccion_id: int) -> Optional[sqlite3.Row]:
-        return self._fetchone(
+        return self.fetchone(
             "SELECT * FROM transacciones WHERE id = ?;", (transaccion_id,)
         )
 
@@ -349,7 +362,7 @@ class DatabaseManager:
         if moneda is None:
             raise ValueError(f"Moneda desconocida: {moneda_codigo}")
         monto_minor = to_minor(abs(monto), moneda["decimales"])
-        return self._execute(
+        return self.execute(
             """
             INSERT INTO transacciones
                 (fecha, concepto, cuenta_id, categoria_id, moneda_id,
@@ -384,7 +397,7 @@ class DatabaseManager:
         if not campos:
             return False
         valores.append(transaccion_id)
-        self._execute(
+        self.execute(
             f"UPDATE transacciones SET {', '.join(campos)} WHERE id = ?;",
             tuple(valores),
         )
@@ -392,8 +405,8 @@ class DatabaseManager:
 
     def eliminar_transaccion(self, transaccion_id: int) -> bool:
         """Elimina una transacción. Verificar que no esté vinculada antes de llamar."""
-        rowcount = self._execute(
-            "DELETE FROM transacciones WHERE id = ?;", (transaccion_id,)
+        rowcount = self.execute(
+            "UPDATE transacciones SET deleted_at = datetime('now') WHERE id = ?", (transaccion_id,)
         )
         return rowcount > 0
 
@@ -423,7 +436,7 @@ class DatabaseManager:
             fecha, "Autotransferencia (entrada)", cuenta_destino_id,
             categoria_id, moneda_codigo, monto, "ingreso", tag="autotransferencia", notas=notas,
         )
-        self._execute(
+        self.execute(
             """
             INSERT INTO autotransferencias (transaccion_salida_id, transaccion_entrada_id, notas)
             VALUES (?, ?, ?);
@@ -462,7 +475,7 @@ class DatabaseManager:
         if monto_por_cuota is None:
             monto_por_cuota = monto_total / total_cuotas
 
-        compra_id = self._execute(
+        compra_id = self.execute(
             """
             INSERT INTO compras_cuotas
                 (fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
@@ -481,7 +494,7 @@ class DatabaseManager:
         mes, anio = fecha_dt.month, fecha_dt.year
 
         for n in range(1, total_cuotas + 1):
-            self._execute(
+            self.execute(
                 """
                 INSERT INTO cuotas_credito
                     (compra_id, numero_cuota, mes_proyectado, anio_proyectado, monto_cuota_minor)
@@ -507,14 +520,14 @@ class DatabaseManager:
         """
         if estado:
             sql += " WHERE pc.estado = ?"
-            return self._fetchall(sql + " ORDER BY pc.fecha_compra DESC;", (estado,))
-        return self._fetchall(sql + " ORDER BY pc.fecha_compra DESC;")
+            return self.fetchall(sql + " ORDER BY pc.fecha_compra DESC;", (estado,))
+        return self.fetchall(sql + " ORDER BY pc.fecha_compra DESC;")
 
     def obtener_cuotas_por_mes(
         self, mes: int, anio: int, estado: str = "pendiente"
     ) -> list[sqlite3.Row]:
         """Equivalente a tu vista mensual de Google Sheets: cuotas agrupadas por banco."""
-        return self._fetchall(
+        return self.fetchall(
             """
             SELECT
                 c.nombre                AS banco,
@@ -542,7 +555,7 @@ class DatabaseManager:
         anio_real:      int,
     ):
         """Marca una cuota como 'en_resumen' cuando aparece en el resumen de tarjeta."""
-        self._execute(
+        self.execute(
             """
             UPDATE cuotas_credito
             SET estado = 'en_resumen', resumen_id = ?,
@@ -569,7 +582,7 @@ class DatabaseManager:
         moneda = self.obtener_moneda_por_codigo(moneda_codigo)
         dec = moneda["decimales"]
         total = monto_consumos + monto_impuestos
-        return self._execute(
+        return self.execute(
             """
             INSERT INTO resumenes_tarjeta
                 (cuenta_id, mes, anio, monto_consumos_minor, monto_impuestos_minor,
@@ -598,7 +611,7 @@ class DatabaseManager:
         y actualiza el estado del resumen a 'pagado'.
         Devuelve el id de la transacción generada.
         """
-        resumen = self._fetchone(
+        resumen = self.fetchone(
             "SELECT * FROM resumenes_tarjeta WHERE id = ?;", (resumen_id,)
         )
         if resumen is None:
@@ -618,7 +631,7 @@ class DatabaseManager:
             tag="pago_tarjeta",
         )
 
-        self._execute(
+        self.execute(
             """
             UPDATE resumenes_tarjeta
             SET estado = 'pagado', fecha_pago = ?
@@ -627,7 +640,7 @@ class DatabaseManager:
             (fecha_pago, resumen_id),
         )
         # Marcar cuotas del resumen como pagadas
-        self._execute(
+        self.execute(
             """
             UPDATE cuotas_credito SET estado = 'pagado'
             WHERE resumen_id = ? AND estado = 'en_resumen';
@@ -651,10 +664,10 @@ class DatabaseManager:
         params = []
         if estado: sql += " AND d.estado = ?"; params.append(estado)
         if tipo:   sql += " AND d.tipo = ?";   params.append(tipo)
-        return self._fetchall(sql + " ORDER BY d.fecha_inicio DESC;", tuple(params))
+        return self.fetchall(sql + " ORDER BY d.fecha_inicio DESC;", tuple(params))
 
     def obtener_deuda(self, deuda_id: int) -> Optional[sqlite3.Row]:
-        return self._fetchone("SELECT * FROM deudas WHERE id = ?;", (deuda_id,))
+        return self.fetchone("SELECT * FROM deudas WHERE id = ?;", (deuda_id,))
 
     def crear_deuda(
         self,
@@ -669,7 +682,7 @@ class DatabaseManager:
     ) -> int:
         moneda = self.obtener_moneda_por_codigo(moneda_codigo)
         monto_minor = to_minor(monto, moneda["decimales"])
-        return self._execute(
+        return self.execute(
             """
             INSERT INTO deudas
                 (entidad_persona, tipo, monto_original_minor, monto_pendiente_minor,
@@ -704,7 +717,7 @@ class DatabaseManager:
         dec = moneda["decimales"]
         monto_minor = to_minor(monto, dec)
 
-        self._execute(
+        self.execute(
             """
             INSERT INTO deuda_pagos
                 (deuda_id, transaccion_id, monto_applied_minor, tipo_pago, notas, fecha)
@@ -715,7 +728,7 @@ class DatabaseManager:
 
         nuevo_pendiente = max(0, deuda["monto_pendiente_minor"] - monto_minor)
         nuevo_estado = "saldada" if nuevo_pendiente == 0 else "activa"
-        self._execute(
+        self.execute(
             """
             UPDATE deudas SET monto_pendiente_minor = ?, estado = ?
             WHERE id = ?;
@@ -730,7 +743,7 @@ class DatabaseManager:
     def obtener_presupuesto(
         self, mes: int, anio: int
     ) -> list[sqlite3.Row]:
-        return self._fetchall(
+        return self.fetchall(
             """
             SELECT p.*, cat.subcategoria, cat.categoria_principal, m.codigo AS moneda_codigo
             FROM presupuestos p
@@ -753,7 +766,7 @@ class DatabaseManager:
         notas:        Optional[str] = None,
     ) -> int:
         moneda = self.obtener_moneda_por_codigo(moneda_codigo)
-        return self._execute(
+        return self.execute(
             """
             INSERT INTO presupuestos
                 (categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas)
@@ -773,7 +786,7 @@ class DatabaseManager:
         """Copia el presupuesto de un mes a otro (útil para meses recurrentes)."""
         rows = self.obtener_presupuesto(mes_origen, anio_origen)
         for row in rows:
-            self._execute(
+            self.execute(
                 """
                 INSERT OR IGNORE INTO presupuestos
                     (categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas)
@@ -812,7 +825,7 @@ class DatabaseManager:
 
         t_id = None
         if cuenta_id is not None:
-            cat = self._fetchone(
+            cat = self.fetchone(
                 "SELECT id FROM categorias WHERE subcategoria = 'Sueldo';",
             )
             t_id = self.crear_transaccion(
@@ -827,7 +840,7 @@ class DatabaseManager:
                 notas=notas,
             )
 
-        return self._execute(
+        return self.execute(
             """
             INSERT INTO recibos_sueldo
                 (empleo_id, mes, anio, sueldo_bruto_minor,
@@ -862,7 +875,7 @@ class DatabaseManager:
         notas:          Optional[str] = None,
     ) -> int:
         moneda = self.obtener_moneda_por_codigo(moneda_codigo)
-        return self._execute(
+        return self.execute(
             """
             INSERT INTO descuentos_programados
                 (concepto, monto_minor, mes_aplicacion, anio_aplicacion, notas)
@@ -872,7 +885,7 @@ class DatabaseManager:
         )
 
     def obtener_descuentos_pendientes(self, mes: int, anio: int) -> list[sqlite3.Row]:
-        return self._fetchall(
+        return self.fetchall(
             """
             SELECT * FROM descuentos_programados
             WHERE mes_aplicacion = ? AND anio_aplicacion = ? AND estado = 'pendiente'
@@ -882,7 +895,7 @@ class DatabaseManager:
         )
 
     def aplicar_descuento_programado(self, descuento_id: int, recibo_id: int):
-        self._execute(
+        self.execute(
             """
             UPDATE descuentos_programados
             SET estado = 'aplicado', recibo_id = ?
@@ -906,7 +919,7 @@ class DatabaseManager:
         origen_id  = self.obtener_moneda_id(moneda_origen)
         destino_id = self.obtener_moneda_id(moneda_destino)
         # tasa se guarda con 4 decimales como minor (tasa * 10000)
-        return self._execute(
+        return self.execute(
             """
             INSERT INTO tipos_cambio
                 (fecha, moneda_origen_id, moneda_destino_id, tasa_minor, fuente)
@@ -923,7 +936,7 @@ class DatabaseManager:
         """Devuelve la tasa de cambio para una fecha dada, o None si no existe."""
         origen_id  = self.obtener_moneda_id(moneda_origen)
         destino_id = self.obtener_moneda_id(moneda_destino)
-        row = self._fetchone(
+        row = self.fetchone(
             """
             SELECT tasa_minor FROM tipos_cambio
             WHERE fecha <= ? AND moneda_origen_id = ? AND moneda_destino_id = ?
@@ -939,7 +952,7 @@ class DatabaseManager:
 
     def resumen_mensual(self, mes: int, anio: int) -> list[sqlite3.Row]:
         """Ingresos y egresos reales del mes, agrupados por moneda."""
-        return self._fetchall(
+        return self.fetchall(
             """
             SELECT
                 m.codigo                                                        AS moneda,
@@ -960,7 +973,7 @@ class DatabaseManager:
 
     def balance_todas_las_cuentas(self) -> list[sqlite3.Row]:
         """Devuelve el saldo actual de todas las cuentas activas."""
-        return self._fetchall("SELECT * FROM vw_balance_cuentas ORDER BY nombre;")
+        return self.fetchall("SELECT * FROM vw_balance_cuentas ORDER BY nombre;")
 
     def proyeccion_tarjeta_proximos_meses(
         self, meses: int = 6, moneda_codigo: str = "ARS"
@@ -994,6 +1007,6 @@ class DatabaseManager:
         ]
         info = {"path": str(self.db_path), "tablas": {}}
         for tabla in tablas:
-            row = self._fetchone(f"SELECT COUNT(*) AS n FROM {tabla};")
+            row = self.fetchone(f"SELECT COUNT(*) AS n FROM {tabla};")
             info["tablas"][tabla] = row["n"] if row else 0
         return info

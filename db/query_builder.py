@@ -76,7 +76,7 @@ class QueryBuilder:
         "FULL"
     }
 
-    def __init__(self, tabla: str):
+    def __init__(self, tabla: str, include_deleted: bool = False):
         """
         Inicializa el builder con la tabla principal del FROM.
 
@@ -92,6 +92,7 @@ class QueryBuilder:
         self._limit_val:  Optional[int]      = None
         self._offset_val: Optional[int]      = None
         self._group_by:   list[str]          = []
+        self._include_deleted = include_deleted
 
     # ----------------------------------------------------------
     # SELECCIÓN DE COLUMNAS
@@ -376,19 +377,21 @@ class QueryBuilder:
     # ----------------------------------------------------------
     # CONSTRUCCIÓN Y EJECUCIÓN
     # ----------------------------------------------------------
-
     def build(self) -> tuple[str, list[Any]]:
         """
-        Construye el string SQL y la lista de parámetros sin ejecutar.
-        Útil para debugging, logging o testing.
+        Constructs the SQL string and parameter list without executing.
+        Useful for debugging, logging, or testing.
+
+        The soft delete filter (deleted_at IS NULL) is injected automatically
+        as the first condition unless include_deleted=True was set on init.
 
         Returns:
-            Tuple (sql_string, lista_de_parametros)
+            Tuple (sql_string, list_of_parameters)
 
-        Ejemplo:
+        Example:
             sql, params = builder.build()
-            print(sql)      # SELECT * FROM transacciones WHERE cuenta_id = ? ...
-            print(params)   # [3, '2026-01-01']
+            print(sql)      # SELECT * FROM transacciones WHERE deleted_at IS NULL AND cuenta_id = ?
+            print(params)   # [3]
         """
         columnas = ", ".join(self._columnas) if self._columnas else "*"
         sql = f"SELECT {columnas} FROM {self._tabla}"
@@ -396,8 +399,13 @@ class QueryBuilder:
         if self._joins:
             sql += " " + " ".join(self._joins)
 
-        if self._condiciones:
-            sql += " WHERE " + " AND ".join(self._condiciones)
+        # Inject soft delete filter as the first condition before building WHERE
+        condiciones = list(self._condiciones)
+        if not self._include_deleted:
+            condiciones.insert(0, "deleted_at IS NULL")
+
+        if condiciones:
+            sql += " WHERE " + " AND ".join(condiciones)
 
         if self._group_by:
             sql += " GROUP BY " + ", ".join(self._group_by)
@@ -407,10 +415,10 @@ class QueryBuilder:
 
         if self._limit_val is not None and not self._orden:
             print(
-                "[QueryBuilder WARNING] LIMIT usado sin ORDER BY. "
-                "El orden de resultados puede ser no determinístico."
+                "[QueryBuilder WARNING] LIMIT used without ORDER BY. "
+                "Result order may be non-deterministic."
             )
-            
+
         if self._limit_val is not None:
             sql += f" LIMIT {self._limit_val}"
 
