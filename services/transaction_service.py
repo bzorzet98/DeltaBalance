@@ -24,7 +24,8 @@ Purpose:
 
 import sqlite3
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, Any
+from dataclasses import dataclass, field
 
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
@@ -54,23 +55,16 @@ class CurrencyNotFoundError(TransactionError):
 # RESULT TYPE
 # =============================================================
 
+@dataclass
 class TransactionResult:
     """
-    Lightweight result object returned by service methods.
-    Wraps the created/updated row data so callers don't need a second DB call.
+    Standard result object returned by financial service methods.
     """
 
-    def __init__(
-        self,
-        success: bool,
-        transaction_id: Optional[int] = None,
-        data: Optional[dict] = None,
-        message: str = "",
-    ):
-        self.success        = success
-        self.transaction_id = transaction_id
-        self.data           = data or {}
-        self.message        = message
+    success: bool
+    transaction_id: Optional[int] = None
+    data: dict[str, Any] = field(default_factory=dict)
+    message: str = ""
 
     def __repr__(self) -> str:
         return (
@@ -129,7 +123,7 @@ class TransactionService:
         Returns:
             sqlite3.Row with id, codigo, simbolo, decimales.
         """
-        row = self._db._fetchone(
+        row = self._db.fetchone(
             "SELECT * FROM monedas WHERE codigo = ?;", (code.upper(),)
         )
         if row is None:
@@ -149,7 +143,7 @@ class TransactionService:
         Returns:
             sqlite3.Row for the account.
         """
-        row = self._db._fetchone(
+        row = self._db.fetchone(
             "SELECT * FROM cuentas WHERE id = ? AND activa = 1;", (account_id,)
         )
         if row is None:
@@ -169,7 +163,7 @@ class TransactionService:
         Returns:
             sqlite3.Row for the category.
         """
-        row = self._db._fetchone(
+        row = self._db.fetchone(
             "SELECT * FROM categorias WHERE id = ?;", (category_id,)
         )
         if row is None:
@@ -262,6 +256,7 @@ class TransactionService:
         movement_type: str,
         tag:           Optional[str] = None,
         notes:         Optional[str] = None,
+        autocommit: bool = True,
     ) -> TransactionResult:
         """
         Creates a single transaction (income, expense, or generic movement).
@@ -303,7 +298,7 @@ class TransactionService:
         minor = to_minor(validated_amount, currency["decimales"])
 
         # --- Write ---
-        tx_id = self._db._execute(
+        tx_id = self._db.execute(
             """
             INSERT INTO transacciones
                 (fecha, concepto, cuenta_id, categoria_id, moneda_id,
@@ -314,6 +309,7 @@ class TransactionService:
                 validated_date, concept.strip(), account_id, category_id,
                 currency["id"], validated_type, minor, tag, notes,
             ),
+            autocommit=autocommit
         )
 
         return TransactionResult(
@@ -376,7 +372,7 @@ class TransactionService:
 
         conn = self._db.conn
 
-        try:
+        with self._db.transaction():
             # Egreso from origin
             out_result = self.create(
                 date_str=date_str,
@@ -388,6 +384,7 @@ class TransactionService:
                 movement_type="egreso",
                 tag="autotransferencia",
                 notes=notes,
+                autocommit=False,
             )
 
             # Ingreso to destination
@@ -400,23 +397,9 @@ class TransactionService:
                 amount=amount,
                 movement_type="ingreso",
                 tag="autotransferencia",
-                notes=notes,
+                autocommit=False,
             )
 
-            # Link both rows in autotransferencias
-            conn.execute(
-                """
-                INSERT INTO autotransferencias
-                    (transaccion_salida_id, transaccion_entrada_id, notas)
-                VALUES (?, ?, ?);
-                """,
-                (out_result.transaction_id, in_result.transaction_id, notes),
-            )
-            conn.commit()
-
-        except Exception:
-            conn.rollback()
-            raise
 
         return TransactionResult(
             success=True,
@@ -452,7 +435,7 @@ class TransactionService:
             sqlite3.Row if found, None if not.
         """
         return (
-            QueryBuilder("transacciones t")
+            QueryBuilder("transacciones t", include_deleted=True)
             .select(
                 "t.*",
                 "c.nombre AS account_name",
@@ -469,7 +452,7 @@ class TransactionService:
             .ejecutar_uno(self._db.conn)
         )
 
-    def list(
+    def list_transactions(
         self,
         account_id:    Optional[int] = None,
         category_id:   Optional[int] = None,
@@ -532,7 +515,7 @@ class TransactionService:
             .ejecutar(self._db.conn)
         )
 
-    def count(
+    def count_transactions(
         self,
         account_id:    Optional[int] = None,
         category_id:   Optional[int] = None,
@@ -586,7 +569,16 @@ class TransactionService:
         if not (1 <= month <= 12):
             raise ValueError(f"Month must be between 1 and 12. Received: {month}")
 
-        return self._db._fetchall(
+
+        if month == 12:
+            next_month = date(year + 1, 1, 1)
+        else:
+            next_month = date(year, month + 1, 1)
+
+        start_date = f"{year:04d}-{month:02d}-01"
+        end_date = next_month.isoformat()
+
+        return self._db.fetchall(
             """
             SELECT
                 m.codigo        AS currency_code,
@@ -603,12 +595,13 @@ class TransactionService:
                          ELSE  0 END)                   AS net_minor
             FROM transacciones t
             JOIN monedas m ON m.id = t.moneda_id
-            WHERE strftime('%m', t.fecha) = ?
-              AND strftime('%Y', t.fecha) = ?
+            WHERE t.fecha >= ?
+            AND t.fecha < ?
+            AND t.deleted_at IS NULL
             GROUP BY m.id
             ORDER BY m.codigo;
             """,
-            (f"{month:02d}", str(year)),
+            (start_date, end_date),
         )
 
     # ----------------------------------------------------------
@@ -703,7 +696,7 @@ class TransactionService:
             )
 
         values.append(transaction_id)
-        self._db._execute(
+        self._db.execute(
             f"UPDATE transacciones SET {', '.join(fields)} WHERE id = ?;",
             tuple(values),
         )
@@ -720,17 +713,13 @@ class TransactionService:
 
     def delete(self, transaction_id: int) -> TransactionResult:
         """
-        Deletes a transaction by ID. Also removes any linked autotransferencia
-        record if this transaction is one leg of a transfer pair.
-        Does NOT delete the partner transaction of a transfer — the caller
-        must handle that explicitly if both legs should be removed.
+        Soft-deletes a transaction by setting deleted_at to the current timestamp.
 
         Args:
             transaction_id: The transaction to delete.
 
         Returns:
-            TransactionResult with success=True if the row was deleted,
-            False if it was not found.
+            TransactionResult with success=True if deleted, False if not found.
         """
         existing = self.get(transaction_id)
         if existing is None:
@@ -742,20 +731,12 @@ class TransactionService:
 
         conn = self._db.conn
         try:
-            # Remove autotransferencia link if it exists (either leg)
             conn.execute(
-                """
-                DELETE FROM autotransferencias
-                WHERE transaccion_salida_id = ?
-                   OR transaccion_entrada_id = ?;
-                """,
-                (transaction_id, transaction_id),
-            )
-            conn.execute(
-                "DELETE FROM transacciones WHERE id = ?;",
+                "UPDATE transacciones SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?;",
                 (transaction_id,),
             )
             conn.commit()
+
         except Exception:
             conn.rollback()
             raise
@@ -765,21 +746,3 @@ class TransactionService:
             transaction_id=transaction_id,
             message=f"Transaction #{transaction_id} deleted.",
         )
-
-    # ----------------------------------------------------------
-    # HELPERS FOR THE UI
-    # ----------------------------------------------------------
-
-    def amount_display(self, row: sqlite3.Row) -> float:
-        """
-        Converts a transaction row's monto_minor back to a human-readable float
-        using the decimals defined in the monedas table.
-
-        Args:
-            row: A sqlite3.Row returned by get() or list() — must include
-                 monto_minor and decimales columns.
-
-        Returns:
-            Float amount. E.g. 123456 with decimales=2 → 1234.56
-        """
-        return from_minor(row["monto_minor"], row["decimales"])
