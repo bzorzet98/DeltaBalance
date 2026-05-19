@@ -175,6 +175,14 @@ class DatabaseManager:
     def execute(self, sql: str, params: tuple = (),
                 autocommit: bool = True) -> int:
         """Ejecuta INSERT/UPDATE/DELETE. Devuelve el lastrowid o rowcount."""
+        if params is not None:
+            assert sql.count("?") == len(params), (
+                f"\nSQL placeholder mismatch\n"
+                f"Expected: {sql.count('?')}\n"
+                f"Received: {len(params)}\n\n"
+                f"Query:\n{sql}\n\n"
+                f"Params:\n{params}"
+            )
         cur = self.conn.execute(sql, params)
         if autocommit:
             self.conn.commit()
