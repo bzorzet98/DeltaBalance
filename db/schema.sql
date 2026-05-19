@@ -302,6 +302,7 @@ CREATE TABLE IF NOT EXISTS deuda_pagos (
 
     deuda_id                        INTEGER NOT NULL,
     transaccion_id                  INTEGER,
+    concepto                        TEXT,   -- 'Paid back half', 'Cash at dinner', etc.
 
     monto_applied_minor             INTEGER NOT NULL,
 

@@ -31,7 +31,7 @@ from services.transaction_service import (
     CurrencyNotFoundError,
 )
 from utils.money import amount_display
-
+from tests.helpers import make_expense
 
 # =============================================================
 # PATHS
@@ -40,107 +40,9 @@ from utils.money import amount_display
 SCHEMA_PATH = Path(__file__).resolve().parent.parent / "db" / "schema.sql"
 SEED_PATH   = Path(__file__).resolve().parent.parent / "db" / "seed.sql"
 
-
-# =============================================================
-# SHARED FIXTURES
-# =============================================================
-
-@pytest.fixture
-def db():
-    """
-    Fresh in-memory DatabaseManager for each test.
-    Schema + seed are applied so currencies, categories, and the
-    default efectivo account are all present.
-    """
-    manager = DatabaseManager(db_path=":memory:")
-    conn = manager.conectar()
-    with open(SCHEMA_PATH, encoding="utf-8") as f:
-        conn.executescript(f.read())
-    with open(SEED_PATH, encoding="utf-8") as f:
-        conn.executescript(f.read())
-    yield manager
-    manager.desconectar()
-
-
-@pytest.fixture
-def svc(db):
-    """TransactionService wired to the in-memory DB."""
-    return TransactionService(db)
-
-
-@pytest.fixture
-def account_ars(db):
-    """Active ARS debit account. Returns its ID."""
-    acc_id = db.execute(
-        "INSERT INTO cuentas (nombre, tipo) VALUES ('Galicia ARS', 'debito');"
-    )
-    ars_id = db.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    db.execute(
-        "INSERT INTO cuentas_saldos (cuenta_id, moneda_id, saldo_inicial_minor) VALUES (?, ?, 0);",
-        (acc_id, ars_id),
-    )
-    return acc_id
-
-
-@pytest.fixture
-def account_usd(db):
-    """Active USD debit account. Returns its ID."""
-    acc_id = db.execute(
-        "INSERT INTO cuentas (nombre, tipo) VALUES ('Galicia USD', 'debito');"
-    )
-    usd_id = db.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
-    db.execute(
-        "INSERT INTO cuentas_saldos (cuenta_id, moneda_id, saldo_inicial_minor) VALUES (?, ?, 0);",
-        (acc_id, usd_id),
-    )
-    return acc_id
-
-
-@pytest.fixture
-def cat_supermarket(db):
-    """ID of the 'Supermercado' category from seed."""
-    row = db.fetchone("SELECT id FROM categorias WHERE subcategoria = 'Supermercado';")
-    assert row, "Supermercado missing — check seed.sql"
-    return row["id"]
-
-
-@pytest.fixture
-def cat_salary(db):
-    """ID of the 'Sueldo' category from seed."""
-    row = db.fetchone("SELECT id FROM categorias WHERE subcategoria = 'Sueldo';")
-    assert row, "Sueldo missing — check seed.sql"
-    return row["id"]
-
-
-@pytest.fixture
-def cat_transfer(db):
-    """ID of the 'Autotransferencia' category from seed."""
-    row = db.fetchone("SELECT id FROM categorias WHERE subcategoria = 'Autotransferencia';")
-    assert row, "Autotransferencia missing — check seed.sql"
-    return row["id"]
-
-
-# =============================================================
-# HELPER
-# =============================================================
-
-def make_expense(svc, account_id, category_id, amount=1000.0, date_str="2026-05-10"):
-    """One-liner to create a standard ARS egreso. Reused across many tests."""
-    return svc.create(
-        date_str=date_str,
-        concept="Test expense",
-        account_id=account_id,
-        category_id=category_id,
-        currency_code="ARS",
-        amount=amount,
-        movement_type="egreso",
-    )
-
-
 # =============================================================
 # TEST: utils/money.py — amount_display
 # =============================================================
-
 class TestAmountDisplay:
 
     def test_basic_ars(self):
@@ -474,9 +376,9 @@ class TestQueryBuilderClone:
 class TestQueryBuilderExecution:
     """Tests that actually execute queries against the in-memory DB."""
 
-    def test_ejecutar_returns_rows(self, db, account_ars, cat_supermarket, svc):
+    def test_ejecutar_returns_rows(self, db, account_ars, cat_supermarket, transaction_service):
         """ejecutar() returns actual rows from the DB."""
-        make_expense(svc, account_ars, cat_supermarket)
+        make_expense(transaction_service, account_ars, cat_supermarket)
         rows = (
             QueryBuilder("transacciones")
             .where("cuenta_id", account_ars)
@@ -484,9 +386,9 @@ class TestQueryBuilderExecution:
         )
         assert len(rows) >= 1
 
-    def test_ejecutar_uno_returns_single_row(self, db, account_ars, cat_supermarket, svc):
+    def test_ejecutar_uno_returns_single_row(self, db, account_ars, cat_supermarket, transaction_service):
         """ejecutar_uno() returns exactly one row or None."""
-        result = make_expense(svc, account_ars, cat_supermarket)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
         row = (
             QueryBuilder("transacciones", include_deleted=True)
             .where("id", result.transaction_id)
@@ -504,10 +406,10 @@ class TestQueryBuilderExecution:
         )
         assert row is None
 
-    def test_contar_simple(self, db, account_ars, cat_supermarket, svc):
+    def test_contar_simple(self, db, account_ars, cat_supermarket, transaction_service):
         """contar() returns the correct count without GROUP BY."""
         for _ in range(4):
-            make_expense(svc, account_ars, cat_supermarket)
+            make_expense(transaction_service, account_ars, cat_supermarket)
         total = (
             QueryBuilder("transacciones")
             .where("cuenta_id", account_ars)
@@ -515,10 +417,10 @@ class TestQueryBuilderExecution:
         )
         assert total == 4
 
-    def test_contar_with_group_by(self, db, account_ars, cat_supermarket, cat_salary, svc):
+    def test_contar_with_group_by(self, db, account_ars, cat_supermarket, cat_salary, transaction_service):
         """contar() with GROUP BY counts groups, not individual rows."""
-        make_expense(svc, account_ars, cat_supermarket)
-        svc.create(
+        make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.create(
             date_str="2026-05-01",
             concept="Salary",
             account_id=account_ars,
@@ -536,10 +438,10 @@ class TestQueryBuilderExecution:
         # Two distinct groups: ingreso and egreso
         assert total == 2
 
-    def test_soft_deleted_rows_excluded_from_list(self, db, account_ars, cat_supermarket, svc):
+    def test_soft_deleted_rows_excluded_from_list(self, db, account_ars, cat_supermarket, transaction_service):
         """After soft delete, the row is invisible to normal queries."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        svc.delete(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.delete(result.transaction_id)
 
         rows = (
             QueryBuilder("transacciones")
@@ -548,10 +450,10 @@ class TestQueryBuilderExecution:
         )
         assert len(rows) == 0
 
-    def test_soft_deleted_rows_visible_with_include_deleted(self, db, account_ars, cat_supermarket, svc):
+    def test_soft_deleted_rows_visible_with_include_deleted(self, db, account_ars, cat_supermarket, transaction_service):
         """include_deleted=True makes soft-deleted rows visible."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        svc.delete(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.delete(result.transaction_id)
 
         row = (
             QueryBuilder("transacciones", include_deleted=True)
@@ -568,15 +470,15 @@ class TestQueryBuilderExecution:
 
 class TestCreate:
 
-    def test_create_expense_success(self, svc, account_ars, cat_supermarket):
+    def test_create_expense_success(self, transaction_service, account_ars, cat_supermarket):
         """Standard egreso returns success with a valid ID."""
-        result = make_expense(svc, account_ars, cat_supermarket, amount=5000.0)
+        result = make_expense(transaction_service, account_ars, cat_supermarket, amount=5000.0)
         assert result.success is True
         assert result.transaction_id > 0
 
-    def test_create_income_success(self, svc, account_ars, cat_salary):
+    def test_create_income_success(self, transaction_service, account_ars, cat_salary):
         """Ingreso stores correctly."""
-        result = svc.create(
+        result = transaction_service.create(
             date_str="2026-05-01",
             concept="May salary",
             account_id=account_ars,
@@ -588,18 +490,18 @@ class TestCreate:
         assert result.success is True
         assert result.data["movement_type"] == "ingreso"
 
-    def test_create_stores_minor_units(self, svc, db, account_ars, cat_supermarket):
+    def test_create_stores_minor_units(self, transaction_service, db, account_ars, cat_supermarket):
         """Amount is stored as minor units (ARS × 100)."""
-        result = make_expense(svc, account_ars, cat_supermarket, amount=1234.56)
+        result = make_expense(transaction_service, account_ars, cat_supermarket, amount=1234.56)
         row = db.fetchone(
             "SELECT monto_minor FROM transacciones WHERE id = ?;",
             (result.transaction_id,),
         )
         assert row["monto_minor"] == 123456
 
-    def test_create_with_tag_and_notes(self, svc, account_ars, cat_supermarket):
+    def test_create_with_tag_and_notes(self, transaction_service, account_ars, cat_supermarket):
         """Optional tag and notes are persisted in the result data."""
-        result = svc.create(
+        result = transaction_service.create(
             date_str="2026-05-10",
             concept="Tagged purchase",
             account_id=account_ars,
@@ -612,9 +514,9 @@ class TestCreate:
         )
         assert result.data["tag"] == "weekly_shopping"
 
-    def test_create_accepts_date_object(self, svc, account_ars, cat_supermarket):
+    def test_create_accepts_date_object(self, transaction_service, account_ars, cat_supermarket):
         """A date object is accepted and converted to string."""
-        result = svc.create(
+        result = transaction_service.create(
             date_str=date(2026, 5, 10),
             concept="Date object test",
             account_id=account_ars,
@@ -626,10 +528,10 @@ class TestCreate:
         assert result.success is True
         assert result.data["date"] == "2026-05-10"
 
-    def test_create_invalid_date_format_raises(self, svc, account_ars, cat_supermarket):
+    def test_create_invalid_date_format_raises(self, transaction_service, account_ars, cat_supermarket):
         """Wrong date format raises ValueError."""
         with pytest.raises(ValueError, match="Invalid date format"):
-            svc.create(
+            transaction_service.create(
                 date_str="10/05/2026",
                 concept="Bad date",
                 account_id=account_ars,
@@ -639,10 +541,10 @@ class TestCreate:
                 movement_type="egreso",
             )
 
-    def test_create_invalid_movement_type_raises(self, svc, account_ars, cat_supermarket):
+    def test_create_invalid_movement_type_raises(self, transaction_service, account_ars, cat_supermarket):
         """Unrecognized movement type raises ValueError."""
         with pytest.raises(ValueError, match="Invalid movement type"):
-            svc.create(
+            transaction_service.create(
                 date_str="2026-05-10",
                 concept="Bad type",
                 account_id=account_ars,
@@ -652,20 +554,20 @@ class TestCreate:
                 movement_type="gasto",
             )
 
-    def test_create_zero_amount_raises(self, svc, account_ars, cat_supermarket):
+    def test_create_zero_amount_raises(self, transaction_service, account_ars, cat_supermarket):
         """Zero amount raises ValueError."""
         with pytest.raises(ValueError, match="Amount must be positive"):
-            make_expense(svc, account_ars, cat_supermarket, amount=0.0)
+            make_expense(transaction_service, account_ars, cat_supermarket, amount=0.0)
 
-    def test_create_negative_amount_raises(self, svc, account_ars, cat_supermarket):
+    def test_create_negative_amount_raises(self, transaction_service, account_ars, cat_supermarket):
         """Negative amount raises ValueError."""
         with pytest.raises(ValueError, match="Amount must be positive"):
-            make_expense(svc, account_ars, cat_supermarket, amount=-100.0)
+            make_expense(transaction_service, account_ars, cat_supermarket, amount=-100.0)
 
-    def test_create_empty_concept_raises(self, svc, account_ars, cat_supermarket):
+    def test_create_empty_concept_raises(self, transaction_service, account_ars, cat_supermarket):
         """Whitespace-only concept raises TransactionError."""
         with pytest.raises(TransactionError, match="Concept cannot be empty"):
-            svc.create(
+            transaction_service.create(
                 date_str="2026-05-10",
                 concept="   ",
                 account_id=account_ars,
@@ -675,10 +577,10 @@ class TestCreate:
                 movement_type="egreso",
             )
 
-    def test_create_unknown_currency_raises(self, svc, account_ars, cat_supermarket):
+    def test_create_unknown_currency_raises(self, transaction_service, account_ars, cat_supermarket):
         """Unknown currency code raises CurrencyNotFoundError."""
         with pytest.raises(CurrencyNotFoundError):
-            svc.create(
+            transaction_service.create(
                 date_str="2026-05-10",
                 concept="Bad currency",
                 account_id=account_ars,
@@ -688,9 +590,9 @@ class TestCreate:
                 movement_type="egreso",
             )
 
-    def test_create_currency_code_case_insensitive(self, svc, account_ars, cat_supermarket):
+    def test_create_currency_code_case_insensitive(self, transaction_service, account_ars, cat_supermarket):
         """Lowercase currency code 'ars' should be accepted."""
-        result = svc.create(
+        result = transaction_service.create(
             date_str="2026-05-10",
             concept="Lowercase currency",
             account_id=account_ars,
@@ -701,13 +603,13 @@ class TestCreate:
         )
         assert result.success is True
 
-    def test_create_inactive_account_raises(self, svc, db, cat_supermarket):
+    def test_create_inactive_account_raises(self, transaction_service, db, cat_supermarket):
         """Transaction against an archived account raises AccountNotFoundError."""
         acc_id = db.execute(
             "INSERT INTO cuentas (nombre, tipo, activa) VALUES ('Closed', 'debito', 0);"
         )
         with pytest.raises(AccountNotFoundError):
-            svc.create(
+            transaction_service.create(
                 date_str="2026-05-10",
                 concept="Archived",
                 account_id=acc_id,
@@ -717,10 +619,10 @@ class TestCreate:
                 movement_type="egreso",
             )
 
-    def test_create_unknown_category_raises(self, svc, account_ars):
+    def test_create_unknown_category_raises(self, transaction_service, account_ars):
         """Non-existent category ID raises CategoryNotFoundError."""
         with pytest.raises(CategoryNotFoundError):
-            svc.create(
+            transaction_service.create(
                 date_str="2026-05-10",
                 concept="Bad category",
                 account_id=account_ars,
@@ -730,9 +632,9 @@ class TestCreate:
                 movement_type="egreso",
             )
 
-    def test_create_result_is_dataclass(self, svc, account_ars, cat_supermarket):
+    def test_create_result_is_dataclass(self, transaction_service, account_ars, cat_supermarket):
         """Result is a TransactionResult dataclass with expected fields."""
-        result = make_expense(svc, account_ars, cat_supermarket)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
         assert isinstance(result, TransactionResult)
         assert hasattr(result, "success")
         assert hasattr(result, "transaction_id")
@@ -746,10 +648,10 @@ class TestCreate:
 
 class TestTransfer:
 
-    def test_transfer_creates_two_transactions(self, svc, db, account_ars, account_usd, cat_transfer):
+    def test_transfer_creates_two_transactions(self, transaction_service, db, account_ars, account_usd, cat_transfer):
         """Transfer produces exactly two transaction rows."""
         before = db.fetchone("SELECT COUNT(*) AS n FROM transacciones;")["n"]
-        svc.create_transfer(
+        transaction_service.create_transfer(
             date_str="2026-05-15",
             origin_account_id=account_ars,
             dest_account_id=account_usd,
@@ -761,9 +663,9 @@ class TestTransfer:
         assert after - before == 2
 
 
-    def test_transfer_movement_types(self, svc, db, account_ars, account_usd, cat_transfer):
+    def test_transfer_movement_types(self, transaction_service, db, account_ars, account_usd, cat_transfer):
         """Out leg is egreso, in leg is ingreso."""
-        result = svc.create_transfer(
+        result = transaction_service.create_transfer(
             date_str="2026-05-15",
             origin_account_id=account_ars,
             dest_account_id=account_usd,
@@ -782,10 +684,10 @@ class TestTransfer:
         assert out["tipo_movimiento"] == "egreso"
         assert inn["tipo_movimiento"] == "ingreso"
 
-    def test_transfer_same_account_raises(self, svc, account_ars, cat_transfer):
+    def test_transfer_same_account_raises(self, transaction_service, account_ars, cat_transfer):
         """Same origin and destination raises TransactionError."""
         with pytest.raises(TransactionError, match="must be different"):
-            svc.create_transfer(
+            transaction_service.create_transfer(
                 date_str="2026-05-15",
                 origin_account_id=account_ars,
                 dest_account_id=account_ars,
@@ -794,9 +696,9 @@ class TestTransfer:
                 category_id=cat_transfer,
             )
 
-    def test_transfer_result_contains_both_ids(self, svc, account_ars, account_usd, cat_transfer):
+    def test_transfer_result_contains_both_ids(self, transaction_service, account_ars, account_usd, cat_transfer):
         """Result data contains out_transaction_id and in_transaction_id."""
-        result = svc.create_transfer(
+        result = transaction_service.create_transfer(
             date_str="2026-05-15",
             origin_account_id=account_ars,
             dest_account_id=account_usd,
@@ -815,46 +717,46 @@ class TestTransfer:
 
 class TestRead:
 
-    def test_get_returns_enriched_row(self, svc, account_ars, cat_supermarket):
+    def test_get_returns_enriched_row(self, transaction_service, account_ars, cat_supermarket):
         """get() joins account, category, and currency names."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        row = svc.get(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        row = transaction_service.get(result.transaction_id)
         assert row is not None
         assert row["account_name"]   == "Galicia ARS"
         assert row["category_name"]  == "Supermercado"
         assert row["currency_code"]  == "ARS"
 
-    def test_get_nonexistent_returns_none(self, svc):
+    def test_get_nonexistent_returns_none(self, transaction_service):
         """get() returns None for a missing ID."""
-        assert svc.get(99999) is None
+        assert transaction_service.get(99999) is None
 
-    def test_get_returns_soft_deleted(self, svc, account_ars, cat_supermarket):
+    def test_get_returns_soft_deleted(self, transaction_service, account_ars, cat_supermarket):
         """get() can retrieve a soft-deleted transaction (include_deleted=True)."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        svc.delete(result.transaction_id)
-        row = svc.get(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.delete(result.transaction_id)
+        row = transaction_service.get(result.transaction_id)
         assert row is not None
         assert row["deleted_at"] is not None
 
-    def test_list_no_filters_returns_all(self, svc, account_ars, cat_supermarket):
+    def test_list_no_filters_returns_all(self, transaction_service, account_ars, cat_supermarket):
         """list_transactions() with no filters returns all live transactions."""
         for i in range(5):
-            make_expense(svc, account_ars, cat_supermarket, amount=100.0 * (i + 1))
-        rows = svc.list_transactions()
+            make_expense(transaction_service, account_ars, cat_supermarket, amount=100.0 * (i + 1))
+        rows = transaction_service.list_transactions()
         assert len(rows) >= 5
 
-    def test_list_excludes_soft_deleted(self, svc, account_ars, cat_supermarket):
+    def test_list_excludes_soft_deleted(self, transaction_service, account_ars, cat_supermarket):
         """Soft-deleted transactions do not appear in list_transactions()."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        svc.delete(result.transaction_id)
-        rows = svc.list_transactions(account_id=account_ars)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.delete(result.transaction_id)
+        rows = transaction_service.list_transactions(account_id=account_ars)
         ids = [r["id"] for r in rows]
         assert result.transaction_id not in ids
 
-    def test_list_filter_by_account(self, svc, account_ars, account_usd, cat_supermarket):
+    def test_list_filter_by_account(self, transaction_service, account_ars, account_usd, cat_supermarket):
         """Filtering by account_id returns only that account's transactions."""
-        make_expense(svc, account_ars, cat_supermarket)
-        svc.create(
+        make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.create(
             date_str="2026-05-10",
             concept="USD expense",
             account_id=account_usd,
@@ -863,13 +765,13 @@ class TestRead:
             amount=50.0,
             movement_type="egreso",
         )
-        rows = svc.list_transactions(account_id=account_ars)
+        rows = transaction_service.list_transactions(account_id=account_ars)
         assert all(r["account_name"] == "Galicia ARS" for r in rows)
 
-    def test_list_filter_by_movement_type(self, svc, account_ars, cat_supermarket, cat_salary):
+    def test_list_filter_by_movement_type(self, transaction_service, account_ars, cat_supermarket, cat_salary):
         """Filtering by movement_type returns only matching rows."""
-        make_expense(svc, account_ars, cat_supermarket)
-        svc.create(
+        make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.create(
             date_str="2026-05-01",
             concept="Salary",
             account_id=account_ars,
@@ -878,43 +780,43 @@ class TestRead:
             amount=200000.0,
             movement_type="ingreso",
         )
-        rows = svc.list_transactions(movement_type="ingreso")
+        rows = transaction_service.list_transactions(movement_type="ingreso")
         assert all(r["tipo_movimiento"] == "ingreso" for r in rows)
 
-    def test_list_filter_by_date_range(self, svc, account_ars, cat_supermarket):
+    def test_list_filter_by_date_range(self, transaction_service, account_ars, cat_supermarket):
         """Date range filter is inclusive on both ends."""
-        make_expense(svc, account_ars, cat_supermarket, date_str="2026-04-15", amount=100.0)
-        make_expense(svc, account_ars, cat_supermarket, date_str="2026-05-10", amount=200.0)
-        make_expense(svc, account_ars, cat_supermarket, date_str="2026-06-01", amount=300.0)
+        make_expense(transaction_service, account_ars, cat_supermarket, date_str="2026-04-15", amount=100.0)
+        make_expense(transaction_service, account_ars, cat_supermarket, date_str="2026-05-10", amount=200.0)
+        make_expense(transaction_service, account_ars, cat_supermarket, date_str="2026-06-01", amount=300.0)
 
-        rows = svc.list_transactions(date_from="2026-05-01", date_to="2026-05-31")
+        rows = transaction_service.list_transactions(date_from="2026-05-01", date_to="2026-05-31")
         dates = [r["fecha"] for r in rows]
 
         assert all("2026-05" in d for d in dates)
         assert "2026-04-15" not in dates
         assert "2026-06-01" not in dates
 
-    def test_list_pagination_no_overlap(self, svc, account_ars, cat_supermarket):
+    def test_list_pagination_no_overlap(self, transaction_service, account_ars, cat_supermarket):
         """Pages do not share rows."""
         for i in range(10):
-            make_expense(svc, account_ars, cat_supermarket, amount=float(100 + i))
-        page1 = svc.list_transactions(per_page=4, page=1)
-        page2 = svc.list_transactions(per_page=4, page=2)
+            make_expense(transaction_service, account_ars, cat_supermarket, amount=float(100 + i))
+        page1 = transaction_service.list_transactions(per_page=4, page=1)
+        page2 = transaction_service.list_transactions(per_page=4, page=2)
         ids1 = {r["id"] for r in page1}
         ids2 = {r["id"] for r in page2}
         assert ids1.isdisjoint(ids2)
 
-    def test_count_matches_list_total(self, svc, account_ars, cat_supermarket):
+    def test_count_matches_list_total(self, transaction_service, account_ars, cat_supermarket):
         """count_transactions() equals the total rows list_transactions() would return."""
         for _ in range(7):
-            make_expense(svc, account_ars, cat_supermarket)
-        total = svc.count_transactions(account_id=account_ars, movement_type="egreso")
-        rows  = svc.list_transactions(account_id=account_ars, movement_type="egreso", per_page=100)
+            make_expense(transaction_service, account_ars, cat_supermarket)
+        total = transaction_service.count_transactions(account_id=account_ars, movement_type="egreso")
+        rows  = transaction_service.list_transactions(account_id=account_ars, movement_type="egreso", per_page=100)
         assert total == len(rows)
 
-    def test_monthly_summary_totals(self, svc, account_ars, cat_supermarket, cat_salary):
+    def test_monthly_summary_totals(self, transaction_service, account_ars, cat_supermarket, cat_salary):
         """monthly_summary correctly sums income, expenses, and net."""
-        svc.create(
+        transaction_service.create(
             date_str="2026-05-01",
             concept="Salary",
             account_id=account_ars,
@@ -923,19 +825,19 @@ class TestRead:
             amount=100000.0,
             movement_type="ingreso",
         )
-        make_expense(svc, account_ars, cat_supermarket, amount=30000.0)
-        make_expense(svc, account_ars, cat_supermarket, amount=20000.0)
+        make_expense(transaction_service, account_ars, cat_supermarket, amount=30000.0)
+        make_expense(transaction_service, account_ars, cat_supermarket, amount=20000.0)
 
-        rows = svc.monthly_summary(month=5, year=2026)
+        rows = transaction_service.monthly_summary(month=5, year=2026)
         ars = next((r for r in rows if r["currency_code"] == "ARS"), None)
         assert ars is not None
         assert ars["total_income_minor"]  == 10_000_000
         assert ars["total_expense_minor"] ==  5_000_000
         assert ars["net_minor"]           ==  5_000_000
 
-    def test_monthly_summary_december_year_boundary(self, svc, account_ars, cat_supermarket, cat_salary):
+    def test_monthly_summary_december_year_boundary(self, transaction_service, account_ars, cat_supermarket, cat_salary):
         """December summary does not bleed into January of next year."""
-        svc.create(
+        transaction_service.create(
             date_str="2026-12-15",
             concept="Dec salary",
             account_id=account_ars,
@@ -944,7 +846,7 @@ class TestRead:
             amount=100000.0,
             movement_type="ingreso",
         )
-        svc.create(
+        transaction_service.create(
             date_str="2027-01-05",
             concept="Jan expense",
             account_id=account_ars,
@@ -953,21 +855,21 @@ class TestRead:
             amount=5000.0,
             movement_type="egreso",
         )
-        rows = svc.monthly_summary(month=12, year=2026)
+        rows = transaction_service.monthly_summary(month=12, year=2026)
         ars = next((r for r in rows if r["currency_code"] == "ARS"), None)
         assert ars is not None
         assert ars["total_expense_minor"] == 0   # Jan expense must NOT be included
 
-    def test_monthly_summary_invalid_month_raises(self, svc):
+    def test_monthly_summary_invalid_month_raises(self, transaction_service):
         """Month outside 1–12 raises ValueError."""
         with pytest.raises(ValueError, match="Month must be between"):
-            svc.monthly_summary(month=13, year=2026)
+            transaction_service.monthly_summary(month=13, year=2026)
 
-    def test_monthly_summary_excludes_soft_deleted(self, svc, account_ars, cat_supermarket):
+    def test_monthly_summary_excludes_soft_deleted(self, transaction_service, account_ars, cat_supermarket):
         """Soft-deleted transactions are excluded from monthly_summary."""
-        result = make_expense(svc, account_ars, cat_supermarket, amount=5000.0)
-        svc.delete(result.transaction_id)
-        rows = svc.monthly_summary(month=5, year=2026)
+        result = make_expense(transaction_service, account_ars, cat_supermarket, amount=5000.0)
+        transaction_service.delete(result.transaction_id)
+        rows = transaction_service.monthly_summary(month=5, year=2026)
         ars = next((r for r in rows if r["currency_code"] == "ARS"), None)
         # Either no ARS row at all, or expenses are zero
         if ars:
@@ -980,62 +882,62 @@ class TestRead:
 
 class TestUpdate:
 
-    def test_update_concept(self, svc, db, account_ars, cat_supermarket):
+    def test_update_concept(self, transaction_service, db, account_ars, cat_supermarket):
         """Updated concept is persisted."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        svc.update(result.transaction_id, concept="New concept")
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.update(result.transaction_id, concept="New concept")
         row = db.fetchone(
             "SELECT concepto FROM transacciones WHERE id = ?;",
             (result.transaction_id,),
         )
         assert row["concepto"] == "New concept"
 
-    def test_update_amount_and_currency(self, svc, db, account_ars, cat_supermarket):
+    def test_update_amount_and_currency(self, transaction_service, db, account_ars, cat_supermarket):
         """Amount and currency updated together."""
-        result = make_expense(svc, account_ars, cat_supermarket, amount=100.0)
-        svc.update(result.transaction_id, amount=500.0, currency_code="ARS")
+        result = make_expense(transaction_service, account_ars, cat_supermarket, amount=100.0)
+        transaction_service.update(result.transaction_id, amount=500.0, currency_code="ARS")
         row = db.fetchone(
             "SELECT monto_minor FROM transacciones WHERE id = ?;",
             (result.transaction_id,),
         )
         assert row["monto_minor"] == 50000
 
-    def test_update_date(self, svc, db, account_ars, cat_supermarket):
+    def test_update_date(self, transaction_service, db, account_ars, cat_supermarket):
         """Updated date is persisted."""
-        result = make_expense(svc, account_ars, cat_supermarket, date_str="2026-05-01")
-        svc.update(result.transaction_id, date_str="2026-06-15")
+        result = make_expense(transaction_service, account_ars, cat_supermarket, date_str="2026-05-01")
+        transaction_service.update(result.transaction_id, date_str="2026-06-15")
         row = db.fetchone(
             "SELECT fecha FROM transacciones WHERE id = ?;",
             (result.transaction_id,),
         )
         assert row["fecha"] == "2026-06-15"
 
-    def test_update_amount_without_currency_raises(self, svc, account_ars, cat_supermarket):
+    def test_update_amount_without_currency_raises(self, transaction_service, account_ars, cat_supermarket):
         """Amount without currency_code raises ValueError."""
-        result = make_expense(svc, account_ars, cat_supermarket)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
         with pytest.raises(ValueError, match="must be updated together"):
-            svc.update(result.transaction_id, amount=999.0)
+            transaction_service.update(result.transaction_id, amount=999.0)
 
-    def test_update_currency_without_amount_raises(self, svc, account_ars, cat_supermarket):
+    def test_update_currency_without_amount_raises(self, transaction_service, account_ars, cat_supermarket):
         """currency_code without amount raises ValueError."""
-        result = make_expense(svc, account_ars, cat_supermarket)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
         with pytest.raises(ValueError, match="must be updated together"):
-            svc.update(result.transaction_id, currency_code="USD")
+            transaction_service.update(result.transaction_id, currency_code="USD")
 
-    def test_update_no_fields_returns_failure(self, svc, account_ars, cat_supermarket):
+    def test_update_no_fields_returns_failure(self, transaction_service, account_ars, cat_supermarket):
         """Calling update with no fields returns success=False."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        update_result = svc.update(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        update_result = transaction_service.update(result.transaction_id)
         assert update_result.success is False
 
-    def test_update_nonexistent_raises(self, svc):
+    def test_update_nonexistent_raises(self, transaction_service):
         """Updating a non-existent transaction raises TransactionError."""
         with pytest.raises(TransactionError, match="not found"):
-            svc.update(99999, concept="Ghost")
+            transaction_service.update(99999, concept="Ghost")
 
-    def test_update_clears_tag_with_empty_string(self, svc, db, account_ars, cat_supermarket):
+    def test_update_clears_tag_with_empty_string(self, transaction_service, db, account_ars, cat_supermarket):
         """Passing tag='' stores NULL in the DB."""
-        result = svc.create(
+        result = transaction_service.create(
             date_str="2026-05-10",
             concept="Tagged",
             account_id=account_ars,
@@ -1045,24 +947,24 @@ class TestUpdate:
             movement_type="egreso",
             tag="some_tag",
         )
-        svc.update(result.transaction_id, tag="")
+        transaction_service.update(result.transaction_id, tag="")
         row = db.fetchone(
             "SELECT tag FROM transacciones WHERE id = ?;",
             (result.transaction_id,),
         )
         assert row["tag"] is None
 
-    def test_update_empty_concept_raises(self, svc, account_ars, cat_supermarket):
+    def test_update_empty_concept_raises(self, transaction_service, account_ars, cat_supermarket):
         """Passing whitespace as concept raises TransactionError."""
-        result = make_expense(svc, account_ars, cat_supermarket)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
         with pytest.raises(TransactionError, match="Concept cannot be empty"):
-            svc.update(result.transaction_id, concept="   ")
+            transaction_service.update(result.transaction_id, concept="   ")
 
-    def test_update_invalid_category_raises(self, svc, account_ars, cat_supermarket):
+    def test_update_invalid_category_raises(self, transaction_service, account_ars, cat_supermarket):
         """Updating to a non-existent category raises CategoryNotFoundError."""
-        result = make_expense(svc, account_ars, cat_supermarket)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
         with pytest.raises(CategoryNotFoundError):
-            svc.update(result.transaction_id, category_id=99999)
+            transaction_service.update(result.transaction_id, category_id=99999)
 
 
 # =============================================================
@@ -1071,39 +973,39 @@ class TestUpdate:
 
 class TestDelete:
 
-    def test_delete_sets_deleted_at(self, svc, db, account_ars, cat_supermarket):
+    def test_delete_sets_deleted_at(self, transaction_service, db, account_ars, cat_supermarket):
         """After delete, deleted_at is not NULL."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        svc.delete(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.delete(result.transaction_id)
         row = db.fetchone(
             "SELECT deleted_at FROM transacciones WHERE id = ?;",
             (result.transaction_id,),
         )
         assert row["deleted_at"] is not None
 
-    def test_delete_row_still_exists_in_db(self, svc, db, account_ars, cat_supermarket):
+    def test_delete_row_still_exists_in_db(self, transaction_service, db, account_ars, cat_supermarket):
         """Soft delete does not physically remove the row."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        svc.delete(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        transaction_service.delete(result.transaction_id)
         row = db.fetchone(
             "SELECT id FROM transacciones WHERE id = ?;",
             (result.transaction_id,),
         )
         assert row is not None
 
-    def test_delete_nonexistent_returns_failure(self, svc):
+    def test_delete_nonexistent_returns_failure(self, transaction_service):
         """Deleting a non-existent ID returns success=False."""
-        result = svc.delete(99999)
+        result = transaction_service.delete(99999)
         assert result.success is False
 
-    def test_delete_result_carries_id(self, svc, account_ars, cat_supermarket):
+    def test_delete_result_carries_id(self, transaction_service, account_ars, cat_supermarket):
         """Result contains the deleted transaction's ID."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        delete_result = svc.delete(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        delete_result = transaction_service.delete(result.transaction_id)
         assert delete_result.transaction_id == result.transaction_id
 
-    def test_delete_plain_transaction_message_has_no_partner(self, svc, account_ars, cat_supermarket):
+    def test_delete_plain_transaction_message_has_no_partner(self, transaction_service, account_ars, cat_supermarket):
         """Non-transfer delete message does not mention partner."""
-        result = make_expense(svc, account_ars, cat_supermarket)
-        delete_result = svc.delete(result.transaction_id)
+        result = make_expense(transaction_service, account_ars, cat_supermarket)
+        delete_result = transaction_service.delete(result.transaction_id)
         assert "Partner" not in delete_result.message
