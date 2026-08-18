@@ -31,6 +31,7 @@ from typing import Optional
 
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
+from repositories.deudas_repository import DeudasRepository
 
 
 # =============================================================
@@ -104,6 +105,7 @@ class DebtsService:
             db: An initialized DatabaseManager. Schema + seed must already be applied.
         """
         self._db = db
+        self._repo = DeudasRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -120,7 +122,7 @@ class DebtsService:
         Returns:
             sqlite3.Row for the debt.
         """
-        row = self._db.fetchone("SELECT * FROM deudas WHERE id = ?;", (debt_id,))
+        row = self._repo.obtener_por_id(debt_id)
         if row is None:
             raise DebtNotFoundError(f"Debt id={debt_id} not found.")
         return row
@@ -258,18 +260,14 @@ class DebtsService:
         if due_date:
             validated_due = self._validate_date(due_date)
 
-        debt_id = self._db.execute(
-            """
-            INSERT INTO deudas
-                (entidad_persona, tipo, monto_original_minor, monto_pendiente_minor,
-                 moneda_id, fecha_inicio, fecha_vencimiento, origen_tipo, origen_id, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                person.strip(), validated_type, minor, minor,
-                currency["id"], validated_date, validated_due,
-                origen_tipo, origen_id, notes,
-            ),
+        # Migrado a DeudasRepository (Fase 2, paso 2): concept ahora se
+        # persiste en su propia columna deudas.concepto (agregada vía
+        # db/schema_migrations.py) — antes se validaba pero nunca se
+        # guardaba en ningún lado. notes sigue yendo a deudas.notas, sin
+        # cambios.
+        debt_id = self._repo.crear(
+            person.strip(), validated_type, minor, currency["id"], validated_date,
+            validated_due, origen_tipo, origen_id, notes, concepto=concept.strip(),
         )
 
         return DebtResult(
@@ -295,6 +293,8 @@ class DebtsService:
     # READ
     # ----------------------------------------------------------
 
+    # Migrado a DeudasRepository (Fase 2, paso 2): usa obtener_enriquecida(),
+    # que reproduce exactamente esta misma query con JOIN a monedas.
     def get(self, debt_id: int) -> Optional[sqlite3.Row]:
         """
         Fetches a single debt by ID, enriched with currency code via JOIN.
@@ -305,19 +305,11 @@ class DebtsService:
         Returns:
             sqlite3.Row if found, None if not.
         """
-        return (
-            QueryBuilder("deudas d", include_deleted=True)
-            .select(
-                "d.*",
-                "m.codigo AS currency_code",
-                "m.simbolo AS currency_symbol",
-                "m.decimales",
-            )
-            .join("monedas m", "m.id = d.moneda_id")
-            .where("d.id", debt_id)
-            .ejecutar_uno(self._db.conn)
-        )
+        return self._repo.obtener_enriquecida(debt_id)
 
+    # Migrado a DeudasRepository (Fase 2, paso 2): usa listar_enriquecida(),
+    # que reproduce esta misma query (filtros, orden, paginación y JOIN a
+    # monedas).
     def list_debts(
         self,
         person:       Optional[str] = None,
@@ -348,23 +340,14 @@ class DebtsService:
         if currency_code:
             currency_id = self._get_currency(currency_code)["id"]
 
-        return (
-            QueryBuilder("deudas d", include_deleted=True)
-            .select(
-                "d.*",
-                "m.codigo AS currency_code",
-                "m.simbolo AS currency_symbol",
-                "m.decimales",
-            )
-            .join("monedas m", "m.id = d.moneda_id")
-            .where("d.entidad_persona", person)
-            .where("d.tipo",            debt_type)
-            .where("d.estado",          estado)
-            .where("d.moneda_id",       currency_id)
-            .where("d.origen_tipo",     origen_tipo)
-            .order("d.fecha_inicio", "DESC")
-            .paginar(page, per_page)
-            .ejecutar(self._db.conn)
+        return self._repo.listar_enriquecida(
+            entidad_persona=person,
+            tipo=debt_type,
+            estado=estado,
+            moneda_id=currency_id,
+            origen_tipo=origen_tipo,
+            pagina=page,
+            por_pagina=per_page,
         )
 
     def list_active(
@@ -385,6 +368,11 @@ class DebtsService:
         """
         return self.list_debts(debt_type=debt_type, estado="activa", currency_code=currency_code)
 
+    # NO migrado a DeudasRepository (Fase 2, paso 2): hace LEFT JOIN con
+    # `transacciones` (no `monedas`), una tabla distinta de la que
+    # DeudasRepository administra — no es un CRUD de deudas/deuda_pagos, es
+    # una consulta que cruza dos dominios. Ver docstring de
+    # deudas_repository.py ("Fuera de alcance a propósito").
     def get_payments(self, debt_id: int) -> list[sqlite3.Row]:
         """
         Returns all payment records for a given debt, ordered by date.
@@ -407,6 +395,10 @@ class DebtsService:
             (debt_id,),
         )
 
+    # NO migrado a DeudasRepository (Fase 2, paso 2): mismo criterio que
+    # monthly_summary() en TransactionService — es un reporte agregado
+    # (GROUP BY persona+tipo), no un listado de filas de una sola tabla/
+    # agregado. Se deja en el service.
     def summary_by_person(self, currency_code: str = "ARS") -> list[sqlite3.Row]:
         """
         Returns a consolidated summary of active debts grouped by person and type.
@@ -533,36 +525,26 @@ class DebtsService:
                 f"the pending balance of {pending} {currency_code.upper()}."
             )
 
-        conn = self._db.conn
-        try:
-            # Insert payment record
-            conn.execute(
-                """
-                INSERT INTO deuda_pagos
-                    (deuda_id, transaccion_id, concepto, monto_applied_minor,
-                     tipo_pago, notas, fecha)
-                VALUES (?, ?, ?, ?, ?, ?, ?);
-                """,
-                (debt_id, transaction_id, concept, payment_minor, payment_type, notes, validated_dt),
-            )
+        # Migrado a DeudasRepository (Fase 2, paso 2): registrar_pago() ya
+        # garantiza la atomicidad INSERT+UPDATE por su cuenta (abre su
+        # propia transacción cuando no se le pasa conn) — no hace falta que
+        # este método maneje conn/commit/rollback a mano como antes.
+        # register_payment() no orquesta ninguna otra escritura además de
+        # esta, así que no hay una transacción externa que abrir acá.
+        new_pending = debt["monto_pendiente_minor"] - payment_minor
+        new_estado  = "saldada" if new_pending == 0 else "activa"
 
-            # Update pending balance
-            new_pending = debt["monto_pendiente_minor"] - payment_minor
-            new_estado  = "saldada" if new_pending == 0 else "activa"
-
-            conn.execute(
-                """
-                UPDATE deudas
-                SET monto_pendiente_minor = ?, estado = ?
-                WHERE id = ?;
-                """,
-                (new_pending, new_estado, debt_id),
-            )
-            conn.commit()
-
-        except Exception:
-            conn.rollback()
-            raise
+        self._repo.registrar_pago(
+            deuda_id=debt_id,
+            monto_applied_minor=payment_minor,
+            tipo_pago=payment_type,
+            fecha=validated_dt,
+            nuevo_monto_pendiente_minor=new_pending,
+            nuevo_estado=new_estado,
+            transaccion_id=transaction_id,
+            concepto=concept,
+            notas=notes,
+        )
 
         settled = new_estado == "saldada"
         return DebtResult(
@@ -618,45 +600,43 @@ class DebtsService:
         debt = self._get_debt(debt_id)
         self._assert_active(debt)
 
-        fields, values = [], []
+        # Migrado a DeudasRepository (Fase 2, paso 2) — y fix del bug donde
+        # concept y notes pisaban la misma columna `notas`: ahora concept va
+        # a campos_repo["concepto"] (columna deudas.concepto, agregada vía
+        # db/schema_migrations.py) y notes sigue yendo a
+        # campos_repo["notas"]. Pasar los dos en la misma llamada ya no hace
+        # que uno gane sobre el otro.
+        campos_repo: dict = {}
 
         if person is not None:
             if not person.strip():
                 raise DebtError("Person name cannot be empty.")
-            fields.append("entidad_persona = ?")
-            values.append(person.strip())
+            campos_repo["entidad_persona"] = person.strip()
 
         if concept is not None:
             if not concept.strip():
                 raise DebtError("Concept cannot be empty.")
-            fields.append("notas = ?")
-            values.append(concept.strip())
+            campos_repo["concepto"] = concept.strip()
 
         if due_date is not None:
-            fields.append("fecha_vencimiento = ?")
-            values.append(self._validate_date(due_date) if due_date else None)
+            campos_repo["fecha_vencimiento"] = self._validate_date(due_date) if due_date else None
 
         if notes is not None:
-            fields.append("notas = ?")
-            values.append(notes or None)
+            campos_repo["notas"] = notes or None
 
-        if not fields:
+        if not campos_repo:
             return DebtResult(
                 success=False,
                 debt_id=debt_id,
                 message="No fields to update were provided.",
             )
 
-        values.append(debt_id)
-        self._db.execute(
-            f"UPDATE deudas SET {', '.join(fields)} WHERE id = ?;",
-            tuple(values),
-        )
+        self._repo.actualizar(debt_id, **campos_repo)
 
         return DebtResult(
             success=True,
             debt_id=debt_id,
-            message=f"Debt #{debt_id} updated ({len(fields)} field(s) changed).",
+            message=f"Debt #{debt_id} updated ({len(campos_repo)} field(s) changed).",
         )
 
     # ----------------------------------------------------------
@@ -683,10 +663,8 @@ class DebtsService:
         debt = self._get_debt(debt_id)
         self._assert_active(debt)
 
-        self._db.execute(
-            "UPDATE deudas SET estado = 'incobrable', notas = ? WHERE id = ?;",
-            (notes, debt_id),
-        )
+        # Migrado a DeudasRepository (Fase 2, paso 2).
+        self._repo.write_off(debt_id, notes)
 
         return DebtResult(
             success=True,

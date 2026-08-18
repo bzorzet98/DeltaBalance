@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C . rev-parse --is-inside-work-tree)",
+      "Bash(awk -F: '{print $1\":\"$2}')"
+    ]
+  }
+}

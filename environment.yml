@@ -6,7 +6,7 @@ dependencies:
   - python=3.11
   - pip
   - pip:
-    - customtkinter       # UI desktop
+    - flet                # UI desktop
     - fastapi             # API futura
     - uvicorn             # servidor FastAPI
     - pydantic            # validación de datos

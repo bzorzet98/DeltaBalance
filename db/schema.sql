@@ -138,6 +138,28 @@ CREATE TABLE IF NOT EXISTS transacciones (
 );
 
 -- =============================================================
+-- AUTOTRANSFERENCIAS
+-- =============================================================
+-- Vínculo formal entre las dos filas de `transacciones` (egreso en origen,
+-- ingreso en destino) que genera TransactionService.create_transfer().
+-- Agregada recién ahora (ver docs/DATA_MODEL_DECISIONS.md) — el código
+-- legacy de db/database.py ya asumía su existencia e insertaba contra
+-- ella, pero nunca había sido creada en este schema.
+CREATE TABLE IF NOT EXISTS autotransferencias (
+    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    transaccion_salida_id       INTEGER NOT NULL REFERENCES transacciones(id),
+    transaccion_entrada_id      INTEGER NOT NULL REFERENCES transacciones(id),
+
+    notas                       TEXT,
+
+    creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(transaccion_salida_id, transaccion_entrada_id),
+    CHECK(transaccion_salida_id != transaccion_entrada_id)
+);
+
+-- =============================================================
 -- RESUMENES TARJETA
 -- =============================================================
 CREATE TABLE IF NOT EXISTS resumenes_tarjeta (
@@ -210,6 +232,19 @@ CREATE TABLE IF NOT EXISTS compras_cuotas (
     updated_en                     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Columnas agregadas a compras_cuotas para GASTOS COMPARTIDOS
+-- (monto_reintegro_minor, modo_deuda — ver docs/DATA_MODEL_DECISIONS.md
+-- sección 2). NO se agregan acá como ALTER TABLE: SQLite no soporta
+-- "ALTER TABLE ... ADD COLUMN IF NOT EXISTS" (a diferencia de CREATE TABLE/
+-- INDEX/TRIGGER/VIEW, que sí soportan IF NOT EXISTS), así que un ALTER TABLE
+-- suelto acá rompería schema.sql como DDL idempotente — fallaría con
+-- "duplicate column name" la segunda vez que se aplicara sobre una base que
+-- ya tiene la columna. Estas dos columnas se agregan vía
+-- db/schema_migrations.py, que primero chequea PRAGMA table_info antes de
+-- alterar. Cualquier columna nueva sobre una tabla existente va ahí, nunca
+-- como ALTER TABLE suelto en este archivo; las tablas nuevas sí siguen
+-- yendo acá con CREATE TABLE IF NOT EXISTS como siempre.
+
 -- =============================================================
 -- CUOTAS CREDITO
 -- =============================================================
@@ -246,6 +281,32 @@ CREATE TABLE IF NOT EXISTS cuotas_credito (
     notas                           TEXT,
 
     UNIQUE(compra_id, numero_cuota)
+);
+
+-- =============================================================
+-- RESUMEN CARGOS EXTRA
+-- =============================================================
+-- Cargos que componen monto_impuestos_minor de un resumen al cerrarlo
+-- (impuestos, recargos, ajustes). Ver docs/DATA_MODEL_DECISIONS.md sobre el
+-- rediseño de cómo se calculan los totales de resumenes_tarjeta.
+CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    resumen_id                      INTEGER NOT NULL REFERENCES resumenes_tarjeta(id),
+
+    concepto                        TEXT NOT NULL,
+
+    tipo                            TEXT NOT NULL
+                                    CHECK(tipo IN (
+                                        'impuesto',
+                                        'recargo',
+                                        'ajuste',
+                                        'otro'
+                                    )),
+
+    monto_minor                     INTEGER NOT NULL,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================
@@ -456,6 +517,305 @@ CREATE TABLE IF NOT EXISTS tipos_cambio (
 );
 
 -- =============================================================
+-- ACTIVOS FINANCIEROS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS activos_financieros (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    nombre                          TEXT NOT NULL,
+
+    tipo                            TEXT NOT NULL
+                                    CHECK(tipo IN (
+                                        'accion',
+                                        'fci',
+                                        'plazo_fijo',
+                                        'cripto',
+                                        'otro'
+                                    )),
+
+    moneda_id                       INTEGER NOT NULL REFERENCES monedas(id),
+
+    activa                          INTEGER NOT NULL DEFAULT 1,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
+-- MOVIMIENTOS DE ACTIVO
+-- =============================================================
+CREATE TABLE IF NOT EXISTS movimientos_activo (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    activo_id                       INTEGER NOT NULL REFERENCES activos_financieros(id),
+
+    tipo                            TEXT NOT NULL
+                                    CHECK(tipo IN (
+                                        'compra',
+                                        'venta',
+                                        'rendimiento'
+                                    )),
+
+    fecha                           TEXT NOT NULL
+                                    CHECK(fecha GLOB '????-??-??'),
+
+    cantidad                        REAL,
+
+    precio_unitario_minor           INTEGER,
+    monto_total_minor               INTEGER NOT NULL,
+
+    dolar_oficial_momento_minor     INTEGER,
+
+    notas                           TEXT,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
+-- OBJETIVOS DE AHORRO
+-- =============================================================
+CREATE TABLE IF NOT EXISTS objetivos_ahorro (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    nombre                          TEXT NOT NULL,
+
+    monto_meta_minor                INTEGER,
+
+    fecha_meta                      TEXT
+                                    CHECK(fecha_meta IS NULL OR fecha_meta GLOB '????-??-??'),
+
+    estado                          TEXT NOT NULL DEFAULT 'activo'
+                                    CHECK(estado IN (
+                                        'activo',
+                                        'cumplido',
+                                        'cancelado'
+                                    )),
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
+-- ASIGNACIONES (puente movimientos_activo <-> objetivos_ahorro)
+-- =============================================================
+-- NOTA: SQLite no puede expresar con un CHECK de columna la regla de negocio
+-- "la suma de porcentaje de todas las asignaciones de un mismo movimiento_id
+-- no puede superar 100%", porque un CHECK solo ve la fila que se está
+-- insertando/actualizando, no el resto de las filas de la tabla. Esa
+-- validación queda a cargo de la capa de servicio (SavingsService, fase
+-- futura) antes de insertar/actualizar en esta tabla.
+CREATE TABLE IF NOT EXISTS asignaciones (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    movimiento_id                   INTEGER NOT NULL REFERENCES movimientos_activo(id),
+    objetivo_id                     INTEGER NOT NULL REFERENCES objetivos_ahorro(id),
+
+    porcentaje                      REAL NOT NULL
+                                    CHECK(porcentaje > 0 AND porcentaje <= 100),
+
+    monto_asignado_minor            INTEGER NOT NULL,
+
+    UNIQUE(movimiento_id, objetivo_id)
+);
+
+-- =============================================================
+-- HOGARES
+-- =============================================================
+CREATE TABLE IF NOT EXISTS hogares (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    codigo_invitacion               TEXT NOT NULL UNIQUE,
+    nombre                          TEXT,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
+-- HOGAR MIEMBROS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS hogar_miembros (
+    hogar_id                        INTEGER NOT NULL,
+
+    -- String simple, no FK a una tabla de usuarios: todavía no existe auth
+    -- real (eso llega con sync/ + Supabase Auth, fase futura). Ver nota en
+    -- docs/DATA_MODEL_DECISIONS.md sección 2.
+    usuario_local                   TEXT NOT NULL,
+
+    porcentaje_default              REAL,
+
+    PRIMARY KEY (hogar_id, usuario_local),
+
+    FOREIGN KEY (hogar_id) REFERENCES hogares(id)
+);
+
+-- =============================================================
+-- GASTOS COMPARTIDOS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS gastos_compartidos (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    hogar_id                        INTEGER NOT NULL REFERENCES hogares(id),
+
+    -- String simple, no FK a una tabla de usuarios real todavía (ídem
+    -- hogar_miembros.usuario_local). Ver nota en DATA_MODEL_DECISIONS.md #2.
+    pagador                         TEXT NOT NULL,
+
+    -- origen_tipo/origen_id apuntan de forma polimórfica a transacciones.id,
+    -- compras_cuotas.id o cuotas_credito.id según el valor de origen_tipo —
+    -- no se declara FOREIGN KEY porque una sola columna no puede referenciar
+    -- tablas distintas según el caso. La integridad referencial la garantiza
+    -- la capa de servicio (SavingsService/DebtsService-equivalente futuro),
+    -- no el schema.
+    origen_tipo                     TEXT NOT NULL
+                                    CHECK(origen_tipo IN (
+                                        'transaccion',
+                                        'compra_cuotas',
+                                        'cuota_credito'
+                                    )),
+    origen_id                       INTEGER NOT NULL,
+
+    categoria_id                    INTEGER NOT NULL REFERENCES categorias(id),
+
+    -- Monto base ya con el reintegro descontado (si aplica).
+    monto_base_minor                INTEGER NOT NULL,
+
+    coeficiente_deuda               REAL NOT NULL
+                                    CHECK(coeficiente_deuda >= 0 AND coeficiente_deuda <= 100),
+
+    -- Puede ser NEGATIVO: si el reintegro de una cuota supera su monto, la
+    -- deuda se invierte y es el propio pagador quien termina debiendo, no al
+    -- revés. Ver docs/DATA_MODEL_DECISIONS.md sección 2.
+    monto_adeudado_minor            INTEGER NOT NULL,
+
+    -- Para origen_tipo = 'cuota_credito', es la fecha de vencimiento de ESA
+    -- cuota puntual, no la fecha de la compra original.
+    fecha                           TEXT NOT NULL
+                                    CHECK(fecha GLOB '????-??-??'),
+
+    descripcion                     TEXT,
+
+    estado                          TEXT NOT NULL DEFAULT 'pendiente'
+                                    CHECK(estado IN (
+                                        'pendiente',
+                                        'saldado'
+                                    )),
+
+    -- Queda NULL hasta que exista sync/ con Supabase.
+    sincronizado_en                 TEXT,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
+-- PRESTAMOS
+-- =============================================================
+CREATE TABLE IF NOT EXISTS prestamos (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    entidad                         TEXT NOT NULL,
+
+    tipo                            TEXT NOT NULL
+                                    CHECK(tipo IN (
+                                        'hipotecario',
+                                        'prendario',
+                                        'personal',
+                                        'otro'
+                                    )),
+
+    capital_original_minor          INTEGER NOT NULL,
+
+    -- Tasa anual en basis points, mismo patrón que
+    -- resumenes_tarjeta.porcentaje_impuesto_bp.
+    tasa_anual_bp                   INTEGER NOT NULL,
+
+    sistema_amortizacion            TEXT NOT NULL
+                                    CHECK(sistema_amortizacion IN (
+                                        'frances',
+                                        'aleman'
+                                    )),
+
+    moneda_id                       INTEGER NOT NULL REFERENCES monedas(id),
+
+    fecha_inicio                    TEXT NOT NULL
+                                    CHECK(fecha_inicio GLOB '????-??-??'),
+
+    plazo_meses                     INTEGER NOT NULL
+                                    CHECK(plazo_meses > 0),
+
+    cuenta_debito_id                INTEGER REFERENCES cuentas(id),
+
+    estado                          TEXT NOT NULL DEFAULT 'activo'
+                                    CHECK(estado IN (
+                                        'activo',
+                                        'cancelado',
+                                        'finalizado'
+                                    )),
+
+    notas                           TEXT,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
+-- CUOTAS PRESTAMO
+-- =============================================================
+-- El cálculo de amortización (francesa/alemana) que genera estas filas es
+-- responsabilidad de la capa de servicio (LoansService, fase futura) — el
+-- schema solo almacena el resultado ya calculado, nunca calcula nada.
+CREATE TABLE IF NOT EXISTS cuotas_prestamo (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    prestamo_id                     INTEGER NOT NULL REFERENCES prestamos(id),
+
+    numero_cuota                    INTEGER NOT NULL,
+
+    mes                             INTEGER NOT NULL
+                                    CHECK(mes BETWEEN 1 AND 12),
+    anio                            INTEGER NOT NULL,
+
+    monto_capital_minor             INTEGER NOT NULL,
+    monto_interes_minor             INTEGER NOT NULL,
+    monto_total_minor               INTEGER NOT NULL,
+
+    estado                          TEXT NOT NULL DEFAULT 'pendiente'
+                                    CHECK(estado IN (
+                                        'pendiente',
+                                        'pagado'
+                                    )),
+
+    fecha_pago                      TEXT
+                                    CHECK(fecha_pago IS NULL OR fecha_pago GLOB '????-??-??'),
+
+    UNIQUE(prestamo_id, numero_cuota)
+);
+
+-- =============================================================
+-- INDICES DE INFLACION
+-- =============================================================
+CREATE TABLE IF NOT EXISTS indices_inflacion (
+    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    mes                             INTEGER NOT NULL
+                                    CHECK(mes BETWEEN 1 AND 12),
+    anio                            INTEGER NOT NULL,
+
+    -- Número índice, no porcentaje. Convención: base 100 en un mes de
+    -- referencia arbitrario, o el valor directo del índice de precios que se
+    -- cargue (ej. IPC de INDEC). El ajuste de series históricas a moneda
+    -- constante (dividir/multiplicar por el índice correspondiente) es
+    -- lógica de servicio o de lab/, no del schema.
+    valor_indice                    REAL NOT NULL,
+
+    fuente                          TEXT,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(mes, anio)
+);
+
+-- =============================================================
 -- INDICES
 -- =============================================================
 
@@ -474,6 +834,12 @@ ON transacciones(moneda_id);
 CREATE INDEX IF NOT EXISTS idx_transacciones_tipo
 ON transacciones(tipo_movimiento);
 
+CREATE INDEX IF NOT EXISTS idx_autotransferencias_salida
+ON autotransferencias(transaccion_salida_id);
+
+CREATE INDEX IF NOT EXISTS idx_autotransferencias_entrada
+ON autotransferencias(transaccion_entrada_id);
+
 CREATE INDEX IF NOT EXISTS idx_cuotas_compra
 ON cuotas_credito(compra_id);
 
@@ -486,6 +852,9 @@ ON cuotas_credito(estado);
 CREATE INDEX IF NOT EXISTS idx_resumenes_periodo
 ON resumenes_tarjeta(anio, mes);
 
+CREATE INDEX IF NOT EXISTS idx_resumen_cargos_extra_resumen
+ON resumen_cargos_extra(resumen_id);
+
 CREATE INDEX IF NOT EXISTS idx_deudas_estado
 ON deudas(estado);
 
@@ -497,6 +866,42 @@ ON recibos_sueldo(anio, mes);
 
 CREATE INDEX IF NOT EXISTS idx_descuentos_periodo
 ON descuentos_programados(anio_aplicacion, mes_aplicacion);
+
+CREATE INDEX IF NOT EXISTS idx_movimientos_activo_activo
+ON movimientos_activo(activo_id);
+
+CREATE INDEX IF NOT EXISTS idx_asignaciones_movimiento
+ON asignaciones(movimiento_id);
+
+CREATE INDEX IF NOT EXISTS idx_asignaciones_objetivo
+ON asignaciones(objetivo_id);
+
+CREATE INDEX IF NOT EXISTS idx_gastos_compartidos_hogar
+ON gastos_compartidos(hogar_id);
+
+CREATE INDEX IF NOT EXISTS idx_gastos_compartidos_origen
+ON gastos_compartidos(origen_tipo, origen_id);
+
+CREATE INDEX IF NOT EXISTS idx_gastos_compartidos_estado
+ON gastos_compartidos(estado);
+
+CREATE INDEX IF NOT EXISTS idx_hogar_miembros_hogar
+ON hogar_miembros(hogar_id);
+
+CREATE INDEX IF NOT EXISTS idx_cuotas_prestamo_prestamo
+ON cuotas_prestamo(prestamo_id);
+
+CREATE INDEX IF NOT EXISTS idx_cuotas_prestamo_periodo
+ON cuotas_prestamo(anio, mes);
+
+CREATE INDEX IF NOT EXISTS idx_cuotas_prestamo_estado
+ON cuotas_prestamo(estado);
+
+CREATE INDEX IF NOT EXISTS idx_prestamos_estado
+ON prestamos(estado);
+
+CREATE INDEX IF NOT EXISTS idx_indices_inflacion_periodo
+ON indices_inflacion(anio, mes);
 
 -- =============================================================
 -- TRIGGERS UPDATED_EN
@@ -530,6 +935,38 @@ CREATE TRIGGER IF NOT EXISTS trg_empleos_updated
 AFTER UPDATE ON empleos
 BEGIN
     UPDATE empleos
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_activos_financieros_updated
+AFTER UPDATE ON activos_financieros
+BEGIN
+    UPDATE activos_financieros
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_objetivos_ahorro_updated
+AFTER UPDATE ON objetivos_ahorro
+BEGIN
+    UPDATE objetivos_ahorro
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_gastos_compartidos_updated
+AFTER UPDATE ON gastos_compartidos
+BEGIN
+    UPDATE gastos_compartidos
+    SET updated_en = CURRENT_TIMESTAMP
+    WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_prestamos_updated
+AFTER UPDATE ON prestamos
+BEGIN
+    UPDATE prestamos
     SET updated_en = CURRENT_TIMESTAMP
     WHERE id = NEW.id;
 END;
@@ -600,3 +1037,15 @@ FROM cuotas_credito qc
 JOIN compras_cuotas cc
     ON cc.id = qc.compra_id
 WHERE qc.estado != 'pagado';
+
+-- Saldo neto por hogar: un único número (ver DATA_MODEL_DECISIONS.md #2).
+-- Positivo = al pagador (SUM de sus gastos_compartidos pendientes) le deben
+-- plata en conjunto; negativo = el pagador termina debiendo en conjunto.
+-- Solo considera gastos_compartidos.estado = 'pendiente'.
+CREATE VIEW IF NOT EXISTS vw_saldo_neto_hogar AS
+SELECT
+    gc.hogar_id,
+    SUM(gc.monto_adeudado_minor) AS saldo_neto_minor
+FROM gastos_compartidos gc
+WHERE gc.estado = 'pendiente'
+GROUP BY gc.hogar_id;

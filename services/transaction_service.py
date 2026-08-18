@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
+from repositories.transacciones_repository import TransaccionesRepository
 
 
 # =============================================================
@@ -107,6 +108,11 @@ class TransactionService:
                 is already set up (schema + seed applied).
         """
         self._db = db
+        # Constructor sigue tomando solo `db` (no un TransaccionesRepository
+        # aparte) para no romper a quien ya instancia TransactionService(db)
+        # hoy (ver tests/conftest.py y el docstring de esta clase) — el
+        # repositorio se arma internamente.
+        self._repo = TransaccionesRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -245,6 +251,12 @@ class TransactionService:
     # CREATE
     # ----------------------------------------------------------
 
+    # Migrado a TransaccionesRepository (Fase 2, paso 3): el repositorio
+    # ahora expone crear(..., conn=...) para participar de una transacción
+    # externa. Cuando autocommit=False (create_transfer() llamando dos veces
+    # dentro de self._db.transaction()), se le pasa self._db.conn para que
+    # el INSERT no comitee por su cuenta — igual que antes con
+    # self._db.execute(..., autocommit=False).
     def create(
         self,
         date_str:      str,
@@ -298,19 +310,17 @@ class TransactionService:
         minor = to_minor(validated_amount, currency["decimales"])
 
         # --- Write ---
-        tx_id = self._db.execute(
-            """
-            INSERT INTO transacciones
-                (fecha, concepto, cuenta_id, categoria_id, moneda_id,
-                 tipo_movimiento, monto_minor, tag, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
+        if autocommit:
+            tx_id = self._repo.crear(
                 validated_date, concept.strip(), account_id, category_id,
                 currency["id"], validated_type, minor, tag, notes,
-            ),
-            autocommit=autocommit
-        )
+            )
+        else:
+            tx_id = self._repo.crear(
+                validated_date, concept.strip(), account_id, category_id,
+                currency["id"], validated_type, minor, tag, notes,
+                conn=self._db.conn,
+            )
 
         return TransactionResult(
             success=True,
@@ -343,8 +353,12 @@ class TransactionService:
         """
         Creates an auto-transfer between two accounts owned by the user.
         Produces two transaction rows (egreso from origin, ingreso to destination)
-        and one linking row in autotransferencias. The whole operation is atomic —
-        if anything fails, both rows are rolled back.
+        and one linking row in autotransferencias (via
+        TransaccionesRepository.crear_autotransferencia() — added when this
+        method's docstring was found to claim it wrote that row when it
+        actually didn't; see docs/DATA_MODEL_DECISIONS.md sección 13). The
+        whole operation is atomic — if anything fails, none of the three
+        rows (two transactions + the link) are persisted.
 
         Args:
             date_str:          Transfer date in 'YYYY-MM-DD'.
@@ -400,6 +414,13 @@ class TransactionService:
                 autocommit=False,
             )
 
+            # Formal link between the two transactions above
+            self._repo.crear_autotransferencia(
+                transaccion_salida_id=out_result.transaction_id,
+                transaccion_entrada_id=in_result.transaction_id,
+                notas=notes,
+                conn=conn,
+            )
 
         return TransactionResult(
             success=True,
@@ -423,6 +444,11 @@ class TransactionService:
     # READ
     # ----------------------------------------------------------
 
+    # Migrado a TransaccionesRepository (Fase 2, paso 3): usa
+    # obtener_enriquecida(), que reproduce exactamente esta misma query con
+    # JOINs. incluir_eliminadas=True replica el include_deleted=True que
+    # esta query tenía hardcodeado (get() siempre encuentra transacciones
+    # eliminadas, a diferencia de list_transactions()).
     def get(self, transaction_id: int) -> Optional[sqlite3.Row]:
         """
         Fetches a single transaction by its primary key, enriched with
@@ -434,24 +460,14 @@ class TransactionService:
         Returns:
             sqlite3.Row if found, None if not.
         """
-        return (
-            QueryBuilder("transacciones t", include_deleted=True)
-            .select(
-                "t.*",
-                "c.nombre AS account_name",
-                "cat.subcategoria AS category_name",
-                "cat.categoria_principal",
-                "m.codigo AS currency_code",
-                "m.simbolo AS currency_symbol",
-                "m.decimales",
-            )
-            .join("cuentas c",    "c.id = t.cuenta_id")
-            .join("categorias cat", "cat.id = t.categoria_id")
-            .join("monedas m",    "m.id = t.moneda_id")
-            .where("t.id", transaction_id)
-            .ejecutar_uno(self._db.conn)
-        )
+        return self._repo.obtener_enriquecida(transaction_id, incluir_eliminadas=True)
 
+    # Migrado a TransaccionesRepository (Fase 2, paso 3): usa
+    # listar_enriquecida(), que reproduce esta misma query (filtros,
+    # paginación, JOINs y subconjunto curado de columnas). No se pasa
+    # incluir_eliminadas — su default (False) replica el comportamiento
+    # anterior, que siempre excluía eliminadas y no tenía forma de pedir lo
+    # contrario.
     def list_transactions(
         self,
         account_id:    Optional[int] = None,
@@ -487,32 +503,16 @@ class TransactionService:
         if currency_code:
             currency_id = self._get_currency(currency_code)["id"]
 
-        return (
-            QueryBuilder("transacciones t")
-            .select(
-                "t.id", "t.fecha", "t.concepto", "t.tipo_movimiento",
-                "t.monto_minor", "t.tag", "t.notas", "t.creada_en",
-                "c.nombre AS account_name",
-                "cat.subcategoria AS category_name",
-                "cat.categoria_principal",
-                "m.codigo AS currency_code",
-                "m.simbolo AS currency_symbol",
-                "m.decimales",
-            )
-            .join("cuentas c",      "c.id = t.cuenta_id")
-            .join("categorias cat", "cat.id = t.categoria_id")
-            .join("monedas m",      "m.id = t.moneda_id")
-            .where("t.cuenta_id",       account_id)
-            .where("t.categoria_id",    category_id)
-            .where("t.moneda_id",       currency_id)
-            .where("t.tipo_movimiento", movement_type)
-            .where("t.fecha",           date_from, ">=")
-            .where("t.fecha",           date_to,   "<=")
-            .where("t.tag",             tag)
-            .order("t.fecha", "DESC")
-            .order("t.id",    "DESC")
-            .paginar(page, per_page)
-            .ejecutar(self._db.conn)
+        return self._repo.listar_enriquecida(
+            cuenta_id=account_id,
+            categoria_id=category_id,
+            moneda_id=currency_id,
+            tipo_movimiento=movement_type,
+            fecha_desde=date_from,
+            fecha_hasta=date_to,
+            tag=tag,
+            pagina=page,
+            por_pagina=per_page,
         )
 
     def count_transactions(
@@ -608,6 +608,13 @@ class TransactionService:
     # UPDATE
     # ----------------------------------------------------------
 
+    # Migrado a TransaccionesRepository (Fase 2, paso 3): usa
+    # actualizar() con el sentinel NO_CAMBIAR. Solo se arma un kwarg por
+    # campo que efectivamente cambia — los que no se pasan simplemente no
+    # entran en el dict, así que el repositorio los deja en NO_CAMBIAR (sin
+    # tocar). tag/notes siguen aceptando '' para borrar: `tag or None`
+    # calcula el None explícito que el repositorio ahora sabe interpretar
+    # como "escribir NULL a propósito" en vez de "no tocar".
     def update(
         self,
         transaction_id: int,
@@ -654,57 +661,46 @@ class TransactionService:
                 "Provide both or neither."
             )
 
-        fields, values = [], []
+        campos_repo: dict[str, Any] = {}
 
         if date_str is not None:
-            fields.append("fecha = ?")
-            values.append(self._validate_date(date_str))
+            campos_repo["fecha"] = self._validate_date(date_str)
 
         if concept is not None:
             if not concept.strip():
                 raise TransactionError("Concept cannot be empty.")
-            fields.append("concepto = ?")
-            values.append(concept.strip())
+            campos_repo["concepto"] = concept.strip()
 
         if category_id is not None:
             self._get_category(category_id)  # validate existence
-            fields.append("categoria_id = ?")
-            values.append(category_id)
+            campos_repo["categoria_id"] = category_id
 
         if amount is not None and currency_code is not None:
             self._validate_amount(amount)
             currency = self._get_currency(currency_code)
-            fields.append("moneda_id = ?")
-            values.append(currency["id"])
-            fields.append("monto_minor = ?")
-            values.append(to_minor(amount, currency["decimales"]))
+            campos_repo["moneda_id"] = currency["id"]
+            campos_repo["monto_minor"] = to_minor(amount, currency["decimales"])
 
         # tag and notes accept empty strings to clear the value
         if tag is not None:
-            fields.append("tag = ?")
-            values.append(tag or None)
+            campos_repo["tag"] = tag or None
 
         if notes is not None:
-            fields.append("notas = ?")
-            values.append(notes or None)
+            campos_repo["notas"] = notes or None
 
-        if not fields:
+        if not campos_repo:
             return TransactionResult(
                 success=False,
                 transaction_id=transaction_id,
                 message="No fields to update were provided.",
             )
 
-        values.append(transaction_id)
-        self._db.execute(
-            f"UPDATE transacciones SET {', '.join(fields)} WHERE id = ?;",
-            tuple(values),
-        )
+        self._repo.actualizar(transaction_id, **campos_repo)
 
         return TransactionResult(
             success=True,
             transaction_id=transaction_id,
-            message=f"Transaction #{transaction_id} updated ({len(fields)} field(s) changed).",
+            message=f"Transaction #{transaction_id} updated ({len(campos_repo)} field(s) changed).",
         )
 
     # ----------------------------------------------------------
@@ -721,7 +717,13 @@ class TransactionService:
         Returns:
             TransactionResult with success=True if deleted, False if not found.
         """
-        existing = self.get(transaction_id)
+        # Migrado a TransaccionesRepository (Fase 2): la existencia solo se
+        # chequea con `is None`, no se lee ningún campo enriquecido, así que
+        # obtener_por_id() alcanza. incluir_eliminadas=True replica el
+        # include_deleted=True que tenía self.get() acá — un transaction_id
+        # ya eliminado sigue "existiendo" para este chequeo (delete() sobre
+        # algo ya eliminado es idempotente, no un "not found").
+        existing = self._repo.obtener_por_id(transaction_id, incluir_eliminadas=True)
         if existing is None:
             return TransactionResult(
                 success=False,
@@ -731,11 +733,7 @@ class TransactionService:
 
         conn = self._db.conn
         try:
-            conn.execute(
-                "UPDATE transacciones SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                (transaction_id,),
-            )
-            conn.commit()
+            self._repo.eliminar(transaction_id)
 
         except Exception:
             conn.rollback()
