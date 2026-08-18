@@ -20,8 +20,12 @@ Purpose:
         1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito
         2. open_statement()       → creates or fetches a resumenes_tarjeta for a month
         3. confirm_fee()          → marks a cuota as 'en_resumen', linking it to a statement
-        4. close_statement()      → marks the statement as 'cerrado' for review
-        5. pay_statement()        → marks it 'pagado'; caller creates the transaction separately
+        4. close_statement()      → marks 'cerrado' AND consolidates real totals
+                                    (monto_consumos_minor, monto_impuestos_minor via
+                                    resumen_cargos_extra, and derived porcentaje_impuesto_bp)
+        5. pay_statement()        → marks it 'pagado', writes the paid amount
+                                    (monto_pagado_minor, now required); caller
+                                    creates the transaction separately
 
     Fee projection:
         fees_by_month()           → returns pending fees grouped by month/account/currency
@@ -36,6 +40,10 @@ from typing import Optional
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
 from utils.money import amount_display
+from repositories.compras_cuotas_repository import ComprasCuotasRepository
+from repositories.cuotas_credito_repository import CuotasCreditoRepository
+from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
+from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 
 # =============================================================
 # EXCEPTIONS
@@ -59,6 +67,10 @@ class FeeNotFoundError(FeesError):
 
 class StatementAlreadyPaidError(FeesError):
     """Raised when attempting to modify an already paid statement."""
+
+
+class StatementAlreadyClosedError(FeesError):
+    """Raised when attempting to modify a closed (but not yet paid) statement."""
 
 
 class FeeAlreadyConfirmedError(FeesError):
@@ -113,6 +125,10 @@ class FeesService:
             db: An initialized DatabaseManager. Schema + seed must already be applied.
         """
         self._db = db
+        self._compras_repo = ComprasCuotasRepository(db)
+        self._cuotas_repo = CuotasCreditoRepository(db)
+        self._resumenes_repo = ResumenesTarjetaRepository(db)
+        self._cargos_repo = ResumenCargosExtraRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -177,9 +193,7 @@ class FeesService:
         Returns:
             sqlite3.Row for the purchase.
         """
-        row = self._db.fetchone(
-            "SELECT * FROM compras_cuotas WHERE id = ?;", (purchase_id,)
-        )
+        row = self._compras_repo.obtener_por_id(purchase_id)
         if row is None:
             raise PurchaseNotFoundError(f"Purchase id={purchase_id} not found.")
         return row
@@ -195,9 +209,7 @@ class FeesService:
         Returns:
             sqlite3.Row for the statement.
         """
-        row = self._db.fetchone(
-            "SELECT * FROM resumenes_tarjeta WHERE id = ?;", (statement_id,)
-        )
+        row = self._resumenes_repo.obtener_por_id(statement_id)
         if row is None:
             raise StatementNotFoundError(f"Statement id={statement_id} not found.")
         return row
@@ -306,44 +318,37 @@ class FeesService:
         per_fee_minor   = to_minor(per_fee_amount, dec)
 
         conn = self._db.conn
-        try:
+        with self._db.transaction():
             # Create the purchase record
-            cur = conn.execute(
-                """
-                INSERT INTO compras_cuotas
-                    (fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
-                     monto_total_minor, total_cuotas, monto_por_cuota_minor, notas)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-                """,
-                (
-                    validated_date, concept.strip(), account_id, category_id,
-                    currency["id"], total_minor, total_fees, per_fee_minor, notes,
-                ),
+            purchase_id = self._compras_repo.crear(
+                fecha_compra=validated_date,
+                concepto=concept.strip(),
+                cuenta_id=account_id,
+                categoria_id=category_id,
+                moneda_id=currency["id"],
+                monto_total_minor=total_minor,
+                total_cuotas=total_fees,
+                monto_por_cuota_minor=per_fee_minor,
+                notas=notes,
+                conn=conn,
             )
-            purchase_id = cur.lastrowid
 
             # Auto-generate N fee rows projected month by month
             dt    = datetime.strptime(validated_date, "%Y-%m-%d")
             month = dt.month
             year  = dt.year
 
+            cuotas = []
             for n in range(1, total_fees + 1):
-                conn.execute(
-                    """
-                    INSERT INTO cuotas_credito
-                        (compra_id, numero_cuota, mes_proyectado,
-                         anio_proyectado, monto_cuota_minor)
-                    VALUES (?, ?, ?, ?, ?);
-                    """,
-                    (purchase_id, n, month, year, per_fee_minor),
-                )
+                cuotas.append({
+                    "numero_cuota": n,
+                    "mes_proyectado": month,
+                    "anio_proyectado": year,
+                    "monto_cuota_minor": per_fee_minor,
+                })
                 month, year = self._advance_month(month, year)
 
-            conn.commit()
-
-        except Exception:
-            conn.rollback()
-            raise
+            self._cuotas_repo.crear_lote(compra_id=purchase_id, cuotas=cuotas, conn=conn)
 
         return FeesResult(
             success=True,
@@ -377,22 +382,7 @@ class FeesService:
         Returns:
             sqlite3.Row if found, None if not.
         """
-        return (
-            QueryBuilder("compras_cuotas pc", include_deleted=True)
-            .select(
-                "pc.*",
-                "c.nombre AS account_name",
-                "cat.subcategoria AS category_name",
-                "m.codigo AS currency_code",
-                "m.simbolo AS currency_symbol",
-                "m.decimales",
-            )
-            .join("cuentas c",      "c.id = pc.cuenta_id")
-            .join("categorias cat", "cat.id = pc.categoria_id")
-            .join("monedas m",      "m.id = pc.moneda_id")
-            .where("pc.id", purchase_id)
-            .ejecutar_uno(self._db.conn)
-        )
+        return self._compras_repo.obtener_enriquecida(purchase_id)
 
     def list_purchases(
         self,
@@ -419,24 +409,12 @@ class FeesService:
         if currency_code:
             currency_id = self._get_currency(currency_code)["id"]
 
-        return (
-            QueryBuilder("compras_cuotas pc", include_deleted=True)
-            .select(
-                "pc.*",
-                "c.nombre AS account_name",
-                "cat.subcategoria AS category_name",
-                "m.codigo AS currency_code",
-                "m.decimales",
-            )
-            .join("cuentas c",      "c.id = pc.cuenta_id")
-            .join("categorias cat", "cat.id = pc.categoria_id")
-            .join("monedas m",      "m.id = pc.moneda_id")
-            .where("pc.cuenta_id", account_id)
-            .where("pc.estado",    estado)
-            .where("pc.moneda_id", currency_id)
-            .order("pc.fecha_compra", "DESC")
-            .paginar(page, per_page)
-            .ejecutar(self._db.conn)
+        return self._compras_repo.listar_enriquecida(
+            cuenta_id=account_id,
+            estado=estado,
+            moneda_id=currency_id,
+            pagina=page,
+            por_pagina=per_page,
         )
 
     def get_fees_for_purchase(self, purchase_id: int) -> list[sqlite3.Row]:
@@ -450,19 +428,19 @@ class FeesService:
             List of cuotas_credito rows ordered by numero_cuota ASC.
         """
         self._get_purchase(purchase_id)  # validate existence
-        return self._db.fetchall(
-            """
-            SELECT * FROM cuotas_credito
-            WHERE compra_id = ?
-            ORDER BY numero_cuota ASC;
-            """,
-            (purchase_id,),
-        )
+        return self._cuotas_repo.listar_por_compra(purchase_id)
 
     # ----------------------------------------------------------
     # FEE PROJECTION (the Google Sheets equivalent)
     # ----------------------------------------------------------
 
+    # NO migrado (Fase 2, COMPRAS_CUOTAS paso 2): es un reporte agregado
+    # (GROUP BY cuenta+moneda, con COUNT/SUM y JOINs a compras_cuotas/
+    # cuentas/monedas) — mismo criterio que monthly_summary()/
+    # summary_by_person() en los bloques anteriores. NO es lo mismo que
+    # CuotasCreditoRepository.listar_por_mes(), que devuelve filas planas de
+    # cuotas_credito sin agregación ni JOINs; ese método no cubre lo que
+    # fees_by_month() necesita.
     def fees_by_month(
         self,
         month:         int,
@@ -518,6 +496,9 @@ class FeesService:
             .ejecutar(self._db.conn)
         )
 
+    # NO migrado: no accede a ninguna tabla directamente — solo orquesta N
+    # llamadas a fees_by_month() (que tampoco migró, ver nota arriba). No
+    # hay SQL propio acá para mover a un repositorio.
     def fees_projection(
         self,
         months:        int = 6,
@@ -580,13 +561,7 @@ class FeesService:
         self._get_account(account_id)
 
         # Idempotent — return existing if already created
-        existing = self._db.fetchone(
-            """
-            SELECT * FROM resumenes_tarjeta
-            WHERE cuenta_id = ? AND mes = ? AND anio = ?;
-            """,
-            (account_id, month, year),
-        )
+        existing = self._resumenes_repo.obtener_por_periodo(account_id, month, year)
         if existing:
             return FeesResult(
                 success=True,
@@ -595,14 +570,11 @@ class FeesService:
                 message=f"Statement for {month:02d}/{year} already exists (id={existing['id']}).",
             )
 
-        stmt_id = self._db.execute(
-            """
-            INSERT INTO resumenes_tarjeta
-                (cuenta_id, mes, anio, monto_consumos_minor,
-                 monto_impuestos_minor, porcentaje_impuesto_bp, monto_total_pagado_minor)
-            VALUES (?, ?, ?, 0, 0, ?, 0);
-            """,
-            (account_id, month, year, tax_percentage_bp),
+        stmt_id = self._resumenes_repo.crear(
+            cuenta_id=account_id,
+            mes=month,
+            anio=year,
+            porcentaje_impuesto_bp=tax_percentage_bp,
         )
 
         return FeesResult(
@@ -651,9 +623,7 @@ class FeesService:
             StatementNotFoundError if the statement does not exist.
             StatementAlreadyPaidError if the statement is already paid.
         """
-        fee = self._db.fetchone(
-            "SELECT * FROM cuotas_credito WHERE id = ?;", (fee_id,)
-        )
+        fee = self._cuotas_repo.obtener_por_id(fee_id)
         if fee is None:
             raise FeeNotFoundError(f"Fee id={fee_id} not found.")
 
@@ -671,37 +641,36 @@ class FeesService:
         actual_month = real_month or fee["mes_proyectado"]
         actual_year  = real_year  or fee["anio_proyectado"]
 
+        # Same arithmetic as before (SQLite's integer "/" truncates like
+        # Python's "//" for positive operands): monto_total_pagado_minor
+        # keeps being an incremental estimate updated on every confirm_fee()
+        # call, using whatever porcentaje_impuesto_bp the statement already
+        # has (still the manual value from open_statement() — the DERIVED
+        # bp only replaces it at close_statement() time, see
+        # ResumenesTarjetaRepository.marcar_cerrado()). Preserved exactly,
+        # not one of the two sanctioned behavior changes for this task.
+        new_consumos = statement["monto_consumos_minor"] + fee["monto_cuota_minor"]
+        new_total = (new_consumos * (10000 + statement["porcentaje_impuesto_bp"])) // 10000
+
         conn = self._db.conn
-        try:
+        with self._db.transaction():
             # Link fee to statement
-            conn.execute(
-                """
-                UPDATE cuotas_credito
-                SET estado = 'en_resumen', resumen_id = ?,
-                    mes_real_pago = ?, anio_real_pago = ?, notas = ?
-                WHERE id = ?;
-                """,
-                (statement_id, actual_month, actual_year, notes, fee_id),
+            self._cuotas_repo.marcar_estado(
+                fee_id, "en_resumen",
+                resumen_id=statement_id,
+                mes_real_pago=actual_month,
+                anio_real_pago=actual_year,
+                notas=notes,
+                conn=conn,
             )
 
             # Update statement consumos total
-            conn.execute(
-                """
-                UPDATE resumenes_tarjeta
-                SET monto_consumos_minor = monto_consumos_minor + ?,
-                    monto_total_pagado_minor = (
-                        (monto_consumos_minor + ?) *
-                        (10000 + porcentaje_impuesto_bp) / 10000
-                    )
-                WHERE id = ?;
-                """,
-                (fee["monto_cuota_minor"], fee["monto_cuota_minor"], statement_id),
+            self._resumenes_repo.actualizar_totales(
+                statement_id,
+                monto_consumos_minor=new_consumos,
+                monto_total_pagado_minor=new_total,
+                conn=conn,
             )
-            conn.commit()
-
-        except Exception:
-            conn.rollback()
-            raise
 
         updated_stmt = self._get_statement(statement_id)
         return FeesResult(
@@ -718,16 +687,170 @@ class FeesService:
             message=f"Fee #{fee_id} confirmed on statement #{statement_id}.",
         )
 
+    # ----------------------------------------------------------
+    # EXTRA CHARGES (resumen_cargos_extra)
+    # ----------------------------------------------------------
+
+    _EXTRA_CHARGE_TYPES = ("impuesto", "recargo", "ajuste", "otro")
+
+    def add_extra_charge(
+        self,
+        statement_id: int,
+        concept:      str,
+        charge_type:  str,
+        amount_minor: int,
+    ) -> FeesResult:
+        """
+        Adds an extra charge (tax, surcharge, adjustment) to an OPEN
+        statement. Does NOT touch resumenes_tarjeta.monto_impuestos_minor /
+        porcentaje_impuesto_bp — those are only recalculated for real by
+        close_statement() (see its docstring and
+        docs/DATA_MODEL_DECISIONS.md sección 12). Adding a charge here only
+        writes to resumen_cargos_extra.
+
+        Args:
+            statement_id: The statement to add the charge to. Must be
+                         'abierto' — 'cerrado'/'pagado' statements reject
+                         further charges.
+            concept:      Description. E.g. 'IVA', 'Impuesto PAIS'.
+            charge_type:  One of 'impuesto', 'recargo', 'ajuste', 'otro'.
+            amount_minor: The charge amount in minor units. Can be negative
+                         (e.g. an adjustment in the user's favor).
+
+        Returns:
+            FeesResult with the new charge id.
+
+        Raises:
+            StatementNotFoundError if the statement does not exist.
+            FeesError if concept is empty.
+            ValueError if charge_type is not one of the valid types.
+            StatementAlreadyPaidError if the statement is already paid.
+            StatementAlreadyClosedError if the statement is closed (but not paid).
+        """
+        statement = self._get_statement(statement_id)
+
+        if not concept or not concept.strip():
+            raise FeesError("Concept cannot be empty.")
+        if charge_type not in self._EXTRA_CHARGE_TYPES:
+            raise ValueError(
+                f"Invalid charge_type: '{charge_type}'. "
+                f"Expected one of {self._EXTRA_CHARGE_TYPES}."
+            )
+
+        if statement["estado"] == "pagado":
+            raise StatementAlreadyPaidError(
+                f"Statement id={statement_id} is already paid and cannot be modified."
+            )
+        if statement["estado"] == "cerrado":
+            raise StatementAlreadyClosedError(
+                f"Statement id={statement_id} is closed and cannot be modified."
+            )
+
+        charge_id = self._cargos_repo.agregar(
+            statement_id, concept.strip(), charge_type, amount_minor,
+        )
+
+        return FeesResult(
+            success=True,
+            entity_id=charge_id,
+            data={
+                "charge_id":    charge_id,
+                "statement_id": statement_id,
+                "concept":      concept.strip(),
+                "charge_type":  charge_type,
+                "amount_minor": amount_minor,
+            },
+            message=f"Extra charge '{concept.strip()}' ({charge_type}) added to statement #{statement_id}.",
+        )
+
+    def list_extra_charges(self, statement_id: int) -> list[sqlite3.Row]:
+        """
+        Returns all extra charges of a statement.
+
+        Args:
+            statement_id: Primary key in resumenes_tarjeta.
+
+        Returns:
+            List of resumen_cargos_extra rows.
+
+        Raises:
+            StatementNotFoundError if the statement does not exist.
+        """
+        self._get_statement(statement_id)  # validate existence
+        return self._cargos_repo.listar_por_resumen(statement_id)
+
+    def remove_extra_charge(self, charge_id: int, statement_id: int) -> FeesResult:
+        """
+        Removes an extra charge from an OPEN statement. Requires both ids
+        so the charge's ownership can be validated — a charge_id that
+        exists but belongs to a different statement is rejected, instead
+        of silently deleting the wrong row.
+
+        Does NOT touch resumenes_tarjeta.monto_impuestos_minor /
+        porcentaje_impuesto_bp — same reasoning as add_extra_charge().
+
+        Args:
+            charge_id:    The resumen_cargos_extra row to remove.
+            statement_id: The statement it must belong to.
+
+        Returns:
+            FeesResult with success=True.
+
+        Raises:
+            StatementNotFoundError if the statement does not exist.
+            FeesError if the charge does not exist or belongs to a
+                      different statement.
+            StatementAlreadyPaidError if the statement is already paid.
+            StatementAlreadyClosedError if the statement is closed (but not paid).
+        """
+        statement = self._get_statement(statement_id)
+
+        charge = self._cargos_repo.obtener_por_id(charge_id)
+        if charge is None or charge["resumen_id"] != statement_id:
+            raise FeesError(
+                f"Extra charge id={charge_id} not found on statement id={statement_id}."
+            )
+
+        if statement["estado"] == "pagado":
+            raise StatementAlreadyPaidError(
+                f"Statement id={statement_id} is already paid and cannot be modified."
+            )
+        if statement["estado"] == "cerrado":
+            raise StatementAlreadyClosedError(
+                f"Statement id={statement_id} is closed and cannot be modified."
+            )
+
+        self._cargos_repo.eliminar(charge_id)
+
+        return FeesResult(
+            success=True,
+            entity_id=charge_id,
+            data={"charge_id": charge_id, "statement_id": statement_id},
+            message=f"Extra charge #{charge_id} removed from statement #{statement_id}.",
+        )
+
     def close_statement(self, statement_id: int) -> FeesResult:
         """
-        Marks a statement as 'cerrado' (reviewed, ready to pay).
-        After closing, no more fees can be added to it.
+        Marks a statement as 'cerrado' (reviewed, ready to pay) and
+        CONSOLIDATES its totals for real: monto_consumos_minor is
+        recalculated as the sum of every cuotas_credito row linked to this
+        statement, monto_impuestos_minor as the sum of every
+        resumen_cargos_extra row of this statement, and
+        porcentaje_impuesto_bp is derived from both
+        (monto_impuestos_minor*10000 // monto_consumos_minor, 0 if there are
+        no consumos). This is one of the two intentionally sanctioned
+        behavior changes of this migration (see
+        docs/DATA_MODEL_DECISIONS.md sección 12) — before this, closing a
+        statement only flipped `estado`, it never touched the totals.
+
+        Note: this does NOT touch monto_total_pagado_minor — that field is
+        only written by pay_statement() (see docstring there).
 
         Args:
             statement_id: The statement to close.
 
         Returns:
-            FeesResult with success=True.
+            FeesResult with the three consolidated totals in `data`.
 
         Raises:
             StatementNotFoundError if not found.
@@ -739,34 +862,51 @@ class FeesService:
                 f"Statement id={statement_id} is already paid."
             )
 
-        self._db.execute(
-            "UPDATE resumenes_tarjeta SET estado = 'cerrado' WHERE id = ?;",
-            (statement_id,),
-        )
+        totales = self._resumenes_repo.marcar_cerrado(statement_id)
 
         return FeesResult(
             success=True,
             entity_id=statement_id,
-            data={"total_minor": statement["monto_total_pagado_minor"]},
-            message=f"Statement #{statement_id} closed. Total: {statement['monto_total_pagado_minor']} minor.",
+            data={
+                "monto_consumos_minor":   totales["monto_consumos_minor"],
+                "monto_impuestos_minor":  totales["monto_impuestos_minor"],
+                "porcentaje_impuesto_bp": totales["porcentaje_impuesto_bp"],
+            },
+            message=(
+                f"Statement #{statement_id} closed. "
+                f"Consumos: {totales['monto_consumos_minor']} minor, "
+                f"Impuestos: {totales['monto_impuestos_minor']} minor, "
+                f"Tax: {totales['porcentaje_impuesto_bp']} bp."
+            ),
         )
 
     def pay_statement(
         self,
-        statement_id:   int,
-        payment_date:   str,
-        transaction_id: Optional[int] = None,
+        statement_id:       int,
+        payment_date:       str,
+        monto_pagado_minor: int,
+        transaction_id:     Optional[int] = None,
     ) -> FeesResult:
         """
         Marks a statement as 'pagado' and all its linked fees as 'pagado'.
         The actual cash transaction (egreso from your bank account) must be
         created separately via TransactionService and its id passed here.
 
+        CAMBIO DE FIRMA (Fase 2, COMPRAS_CUOTAS paso 2, sanctioned behavior
+        change): monto_pagado_minor is now a required parameter, written to
+        monto_total_pagado_minor. Before this migration, pay_statement()
+        never wrote monto_total_pagado_minor at all — it stayed whatever
+        confirm_fee() had last accumulated using the statement's manual
+        porcentaje_impuesto_bp (see confirm_fee() docstring). Now the
+        caller passes the real amount paid explicitly.
+
         Args:
-            statement_id:   The statement being paid.
-            payment_date:   Payment date in 'YYYY-MM-DD'.
-            transaction_id: Optional ID from TransactionService.create() that
-                            represents the actual cash outflow.
+            statement_id:       The statement being paid.
+            payment_date:       Payment date in 'YYYY-MM-DD'.
+            monto_pagado_minor: The real amount paid, in minor units. Written
+                                to monto_total_pagado_minor.
+            transaction_id:     Optional ID from TransactionService.create()
+                                that represents the actual cash outflow.
 
         Returns:
             FeesResult with success=True.
@@ -784,31 +924,19 @@ class FeesService:
             )
 
         conn = self._db.conn
-        try:
+        with self._db.transaction():
             # Mark all fees in this statement as paid
-            conn.execute(
-                """
-                UPDATE cuotas_credito
-                SET estado = 'pagado'
-                WHERE resumen_id = ? AND estado = 'en_resumen';
-                """,
-                (statement_id,),
+            self._cuotas_repo.marcar_estado_por_resumen(
+                statement_id, "en_resumen", "pagado", conn=conn,
             )
 
             # Mark the statement itself as paid
-            conn.execute(
-                """
-                UPDATE resumenes_tarjeta
-                SET estado = 'pagado', fecha_pago = ?
-                WHERE id = ?;
-                """,
-                (validated_dt, statement_id),
+            self._resumenes_repo.marcar_pagado(
+                statement_id,
+                fecha_pago=validated_dt,
+                monto_pagado_minor=monto_pagado_minor,
+                conn=conn,
             )
-            conn.commit()
-
-        except Exception:
-            conn.rollback()
-            raise
 
         return FeesResult(
             success=True,
@@ -816,7 +944,7 @@ class FeesService:
             data={
                 "statement_id":  statement_id,
                 "payment_date":  validated_dt,
-                "total_paid":    statement["monto_total_pagado_minor"],
+                "total_paid":    monto_pagado_minor,
                 "transaction_id": transaction_id,
             },
             message=(
@@ -839,13 +967,7 @@ class FeesService:
         Returns:
             sqlite3.Row if found, None if not.
         """
-        return (
-            QueryBuilder("resumenes_tarjeta rt", include_deleted=True)
-            .select("rt.*", "c.nombre AS account_name")
-            .join("cuentas c", "c.id = rt.cuenta_id")
-            .where("rt.id", statement_id)
-            .ejecutar_uno(self._db.conn)
-        )
+        return self._resumenes_repo.obtener_enriquecida(statement_id)
 
     def list_statements(
         self,
@@ -868,18 +990,13 @@ class FeesService:
         Returns:
             List of sqlite3.Row ordered by year DESC, month DESC.
         """
-        builder = (
-            QueryBuilder("resumenes_tarjeta rt", include_deleted=True)
-            .select("rt.*", "c.nombre AS account_name")
-            .join("cuentas c", "c.id = rt.cuenta_id")
-            .where("rt.cuenta_id", account_id)
-            .where("rt.estado",    estado)
-            .where("rt.anio",      year)
-            .order("rt.anio",  "DESC")
-            .order("rt.mes",   "DESC")
-            .paginar(page, per_page)
+        return self._resumenes_repo.listar_enriquecida(
+            cuenta_id=account_id,
+            estado=estado,
+            anio=year,
+            pagina=page,
+            por_pagina=per_page,
         )
-        return builder.ejecutar(self._db.conn)
 
     # ----------------------------------------------------------
     # CANCEL PURCHASE
@@ -909,26 +1026,11 @@ class FeesService:
             )
 
         conn = self._db.conn
-        try:
-            cur = conn.execute(
-                """
-                UPDATE cuotas_credito
-                SET estado = 'omitido', notas = ?
-                WHERE compra_id = ? AND estado = 'pendiente';
-                """,
-                (notes, purchase_id),
+        with self._db.transaction():
+            fees_cancelled = self._cuotas_repo.marcar_estado_por_compra(
+                purchase_id, "pendiente", "omitido", notas=notes, conn=conn,
             )
-            fees_cancelled = cur.rowcount
-
-            conn.execute(
-                "UPDATE compras_cuotas SET estado = 'cancelada', notas = ? WHERE id = ?;",
-                (notes, purchase_id),
-            )
-            conn.commit()
-
-        except Exception:
-            conn.rollback()
-            raise
+            self._compras_repo.cancelar(purchase_id, notas=notes, conn=conn)
 
         return FeesResult(
             success=True,
