@@ -33,6 +33,7 @@ compartidos por todas las subcarpetas, no pertenecen a un dominio puntual.
 | `ahorros/`                            | Activos financieros, objetivos de ahorro, movimientos y asignaciones |
 | `hogares_gastos_compartidos/`         | Hogares, miembros de hogar, gastos compartidos                   |
 | `prestamos/`                          | Préstamos (hipotecario/prendario/personal) y su cronograma de cuotas |
+| `dashboard/`                          | Agregaciones de solo lectura para el dashboard (patrimonio, gasto por categoría, comparación vs. presupuesto) |
 
 Un script nuevo va en la subcarpeta del bloque de dominio al que pertenece; si abre un
 bloque nuevo que todavía no tiene subcarpeta, se crea una.

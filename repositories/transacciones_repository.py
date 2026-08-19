@@ -213,13 +213,25 @@ class TransaccionesRepository:
         Misma firma de filtros y paginación que listar(), pero con el shape
         enriquecido (JOINs a cuentas/categorias/monedas) y el subconjunto
         curado de columnas que usa TransactionService.list_transactions().
-        Réplica exacta de esa query (Fase 2, TRANSACCIONES paso 3).
+        Réplica exacta de esa query (Fase 2, TRANSACCIONES paso 3) — con un
+        agregado: t.cuenta_id/t.categoria_id/t.moneda_id ahora también van
+        seleccionados (antes solo se usaban como filtro WHERE, no viajaban
+        en la fila). Hacía falta para el Registro de transacciones del
+        dashboard (edición inline por celda, Fase 5): sin el id crudo, la
+        única forma de saber a qué categoría/cuenta pertenece una fila para
+        precargar el dropdown de edición era matchear por
+        category_name/account_name, y `subcategoria` NO es única por sí
+        sola en el schema (solo UNIQUE(categoria_principal, subcategoria)
+        combinados) — dos categorías de grupos distintos podrían compartir
+        nombre de subcategoría y confundir la edición. Con el id crudo no
+        hay ambigüedad posible.
         """
         return (
             QueryBuilder("transacciones t", include_deleted=incluir_eliminadas)
             .select(
                 "t.id", "t.fecha", "t.concepto", "t.tipo_movimiento",
                 "t.monto_minor", "t.tag", "t.notas", "t.creada_en",
+                "t.cuenta_id", "t.categoria_id", "t.moneda_id",
                 "c.nombre AS account_name",
                 "cat.subcategoria AS category_name",
                 "cat.categoria_principal",

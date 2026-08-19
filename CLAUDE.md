@@ -126,3 +126,14 @@ cuenta, al diseñar cualquier tabla o servicio nuevo, que en algún momento un s
 - Si agregaste un service nuevo, crea (o dejá pedido explícitamente) su script en
   `verify/`.
 - No toques `ui/` a menos que el prompt sea específicamente sobre UI.
+
+## 8. Convenciones de layout en `ui/`
+
+Toda pantalla en `ui/screens/` (y cualquier componente en `ui/components/`) debe
+definir TODOS sus valores de layout que no vengan de `theme/tokens.py` (anchos de
+columna en píxeles, alturas fijas, cantidades por default, límites de paginación,
+etc.) como constantes nombradas en MAYÚSCULAS al principio del archivo, agrupadas
+bajo un comentario `# --- Configuración de layout ---` o similar. Nada de números
+sueltos en medio del código de construcción de widgets. Esto es además de (no en
+reemplazo de) usar los tokens de `theme/tokens.py` para colores/spacing/tipografía
+genéricos — es específicamente para los valores particulares de esa pantalla.
