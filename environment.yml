@@ -7,6 +7,7 @@ dependencies:
   - pip
   - pip:
     - flet                # UI desktop
+    - flet-charts
     - fastapi             # API futura
     - uvicorn             # servidor FastAPI
     - pydantic            # validación de datos

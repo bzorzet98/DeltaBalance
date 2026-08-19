@@ -153,3 +153,50 @@ INSERT correspondiente.
   `movimientos_activo`.
 - No hay migración retroactiva de transferencias históricas sin vínculo — queda
   pendiente para una fase futura de migración de datos, no se resuelve acá.
+
+## 14. Multi-moneda por cuenta, y relación cuentas ↔ activos_financieros
+
+**Multi-moneda por cuenta — ✅ ya soportado en schema.sql, recién expuesto ahora
+desde el service.** `cuentas_saldos` (`cuenta_id`, `moneda_id`, `saldo_inicial_minor`,
+PK `(cuenta_id, moneda_id)`) ya permitía desde el diseño original que una misma
+`cuentas` operara en más de una moneda (ej. una tarjeta que factura en ARS y en USD).
+La limitación estaba en `AccountsService`, que hasta la Fase 5 solo exponía
+`create_account()`/`get_account()`/`list_accounts()` para una única moneda por cuenta
+— no en el schema. Se corrige acá:
+- `AccountsService.create_account()` recibe `monedas: list[int]` (mínimo una, sin
+  duplicados) y crea la cuenta más una fila en `cuentas_saldos` por cada moneda, todo
+  atómico en una sola transacción.
+- `AccountsService.add_currency_to_account()` agrega una moneda nueva a una cuenta ya
+  existente, con saldo inicial 0. El set de monedas de una cuenta solo puede
+  **crecer** — no existe (todavía) una forma de sacarle una moneda a una cuenta:
+  hacerlo implicaría decidir qué pasa con el historial de transacciones en esa
+  moneda, que queda fuera de alcance por ahora.
+- `get_account()`/`list_accounts()` devuelven una lista `saldos` (uno por moneda
+  operativa) en vez de un único saldo/moneda_codigo sueltos — `archive_account()` y
+  `get_total_balance()` se ajustaron en consecuencia (una cuenta solo se puede
+  archivar con saldo 0 en **todas** sus monedas; el patrimonio total nunca mezcla
+  monedas distintas en una sola suma).
+- `CuentasRepository.crear()` ahora acepta un `conn` opcional (mismo patrón que
+  `ComprasCuotasRepository.crear()`) para poder participar de la transacción externa
+  que arma `create_account()`; `crear_saldo_inicial()` es el método nuevo para las
+  monedas adicionales de la lista.
+
+**Relación cuentas ↔ activos_financieros — informal a propósito, no pendiente
+técnico.** `activos_financieros`/`movimientos_activo` (sección 4) no tienen ninguna
+columna que los vincule a una `cuentas` puntual — de qué cuenta salió la plata para
+comprar un activo, o a qué cuenta vuelve al venderlo, es una decisión consciente de
+**no formalizar todavía**, no un hueco que falte cerrar. Si en el futuro hace falta
+ese vínculo (ej. para que el saldo de una cuenta de inversión se calcule solo,
+descontando compras y sumando ventas), la forma de agregarlo sería una columna
+opcional `cuenta_origen_id` en `movimientos_activo` (vía `db/schema_migrations.py`,
+como toda columna nueva sobre una tabla existente) — no una tabla puente nueva ni un
+cambio a `cuentas_saldos`.
+
+**DELETE físico de cuentas — ✅ implementado en `AccountsService.delete_account()`.**
+Ventana de corrección temprana (CLAUDE.md §4) aplicada a `cuentas`: una cuenta se
+puede borrar de verdad solo si nunca tuvo actividad real — cero filas en
+`transacciones` que la referencien (contando también las soft-deleted: si una
+transacción se cargó y después se borró lógicamente, la cuenta *tuvo* actividad,
+aunque ya no sea visible), cero filas en `cuentas_saldos` con `saldo_inicial_minor
+!= 0`, y ninguna otra cuenta que la use como `cuenta_pago_id`. Si falla cualquiera de
+las tres, se archiva en vez de borrarse — nunca se reescribe en silencio.

@@ -55,6 +55,11 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         columna="concepto",
         ddl_columna="concepto TEXT",
     ),
+    MigracionColumna(
+        tabla="cuentas",
+        columna="color_hex",
+        ddl_columna="color_hex TEXT DEFAULT '#5F5E5A'",
+    ),
 ]
 
 
