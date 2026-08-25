@@ -129,6 +129,26 @@ def main() -> None:
     )
 
     # ============================================================
+    # list_my_hogares()
+    # ============================================================
+    print("\n--- list_my_hogares() ---")
+    hogares_de_bruno = svc.list_my_hogares("bruno")
+    caso("list_my_hogares('bruno') trae hogar_favor (creador)", True, hogar_favor in [h["hogar_id"] for h in hogares_de_bruno])
+    caso(
+        "list_my_hogares('bruno') trae el nombre del hogar",
+        "Hogar Favor",
+        next(h["nombre"] for h in hogares_de_bruno if h["hogar_id"] == hogar_favor),
+    )
+    hogares_de_martina = svc.list_my_hogares("martina")
+    caso("list_my_hogares('martina') trae exactamente hogar_favor", [hogar_favor], [h["hogar_id"] for h in hogares_de_martina])
+    caso(
+        "list_my_hogares('martina') trae su porcentaje_default (40.0)",
+        40.0,
+        hogares_de_martina[0]["porcentaje_default"],
+    )
+    caso("list_my_hogares() de alguien sin hogares devuelve lista vacía", [], svc.list_my_hogares("nadie"))
+
+    # ============================================================
     # get_suggested_coefficient()
     # ============================================================
     print("\n--- get_suggested_coefficient() ---")
@@ -246,6 +266,18 @@ def main() -> None:
     )
     caso("gasto_4: monto_adeudado_minor = round(6000*20/100) = 1200", 1200, gasto_4.data["monto_adeudado_minor"])
     gasto_4_id = gasto_4.entity_id
+
+    # ============================================================
+    # get_shared_expense_by_origin()
+    # ============================================================
+    print("\n--- get_shared_expense_by_origin() ---")
+    encontrado = svc.get_shared_expense_by_origin("transaccion", 2001)
+    caso("get_shared_expense_by_origin() encuentra el gasto de origen_id=2001", gasto_1_id, encontrado["id"] if encontrado else None)
+    caso(
+        "get_shared_expense_by_origin() de un origen sin gasto compartido devuelve None",
+        None,
+        svc.get_shared_expense_by_origin("transaccion", 999999),
+    )
 
     # ============================================================
     # list_shared_expenses()

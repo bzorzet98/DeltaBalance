@@ -69,6 +69,36 @@ docs.flet.dev/controls/autocomplete):
   `AutoCompleteSuggestion(key=, value=)`), `on_change`/`on_select`. Para texto
   libre con sugerencias, no para forzar una selección de una lista cerrada.
 
+## `ft.Row`/`ft.Column` con `wrap=True` no soportan hijos `expand=True`
+
+Confirmado por un bug real (reportado por el usuario corriendo `flet run --web`,
+sin ningún error en la consola del navegador — el fallo es puramente del lado
+de Flutter, nunca llega a la terminal de Python ni a la consola JS de forma
+visible). `wrap=True` hace que Flet renderice ese Row/Column como un `Wrap` de
+Flutter, y `Wrap` no soporta hijos flexibles (`Expanded`, que es lo que produce
+`expand=True` en un control hijo). El síntoma es un rectángulo gris sólido,
+exactamente del tamaño que hubiera ocupado el widget roto — es el
+`ErrorWidget` default de Flutter en un build release, no un placeholder
+puesto a propósito ni un color hardcodeado.
+
+Regla: nunca combinar `expand=True` en un hijo con `wrap=True` en su
+Row/Column contenedor. Si hace falta un "spacer" que empuje contenido a los
+extremos de una fila, usar `alignment=ft.MainAxisAlignment.SPACE_BETWEEN` (sin
+`wrap`) o sacar el `wrap=True` de esa fila en particular.
+
+## Patrones nuevos sin confirmar (agregados en la tarea de "Compartir" del Registro)
+
+- `page.client_storage.get(clave)` / `.set(clave, valor)`: usado en
+  ui/components/compartir_gasto.py para recordar el nombre local del
+  usuario en hogares compartidos (la app todavía no tiene auth real). No
+  usado en ningún otro lugar del proyecto todavía, así que no hay
+  precedente confirmado — el código lo envuelve en try/except por las
+  dudas. Confirmar corriendo la app y sacar esta nota si anda.
+- `ft.Container(on_hover=...)` con `e.data` normalizado como
+  `str(e.data).lower() == "true"`: usado para mostrar el ícono "Compartir"
+  solo al pasar el mouse por una fila del Registro. Tampoco tiene
+  precedente en este proyecto. Confirmar corriendo la app.
+
 ## Regla para trabajar en este proyecto
 
 1. Si un cambio de API está en esta lista, aplicalo con confianza — no hace falta

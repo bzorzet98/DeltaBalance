@@ -214,9 +214,10 @@ def credit_account(db):
 
 @pytest.fixture
 def category_hogar(db):
-    """Returns ID of 'Hogar: Mantenimiento' category from seed."""
+    """Returns ID of 'Hogar' category from seed (renombrada desde 'Hogar:
+    Mantenimiento' — ver migration/migrar_categorias_simplificadas.py)."""
     row = db.fetchone(
-        "SELECT id FROM categorias WHERE subcategoria = 'Hogar: Mantenimiento';"
+        "SELECT id FROM categorias WHERE subcategoria = 'Hogar';"
     )
-    assert row, "Hogar: Mantenimiento missing — check seed.sql"
+    assert row, "Hogar missing — check seed.sql"
     return row["id"]

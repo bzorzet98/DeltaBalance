@@ -30,6 +30,33 @@ class CategoriasRepository:
     def obtener_por_id(self, categoria_id: int) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM categorias WHERE id = ?;", (categoria_id,))
 
+    def actualizar(
+        self,
+        categoria_id: int,
+        categoria_principal: Optional[str] = None,
+        subcategoria: Optional[str] = None,
+        tipo: Optional[str] = None,
+    ) -> None:
+        """
+        Actualiza campos editables. None = no tocar ese campo — mismo
+        criterio que CuentasRepository.actualizar(). Sin lógica de negocio:
+        no valida si la categoría está protegida (eso vive en el service).
+        """
+        campos, valores = [], []
+        if categoria_principal is not None:
+            campos.append("categoria_principal = ?")
+            valores.append(categoria_principal)
+        if subcategoria is not None:
+            campos.append("subcategoria = ?")
+            valores.append(subcategoria)
+        if tipo is not None:
+            campos.append("tipo = ?")
+            valores.append(tipo)
+        if not campos:
+            return
+        valores.append(categoria_id)
+        self._db.execute(f"UPDATE categorias SET {', '.join(campos)} WHERE id = ?;", tuple(valores))
+
     def listar(
         self, tipo: Optional[str] = None, incluir_inactivas: bool = False
     ) -> list[sqlite3.Row]:

@@ -122,7 +122,7 @@ def build(
         label="Categoría",
         dense=True,
         options=[
-            ft.dropdown.Option(key=str(c["id"]), text=f"{c['categoria_principal']} · {c['subcategoria']}")
+            ft.dropdown.Option(key=str(c["id"]), text=c["subcategoria"])
             for c in categorias
         ],
         value=str(categorias[0]["id"]) if categorias else None,

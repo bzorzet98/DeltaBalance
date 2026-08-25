@@ -20,14 +20,24 @@ INSERT OR IGNORE INTO monedas (codigo, simbolo, decimales) VALUES
 -- =============================================================
 -- CATEGORIAS
 -- tipo: 'ingreso' | 'egreso' | 'movimiento'
+--
+-- Lista simplificada (21 categorías, antes 27) — propuesta y aprobada por
+-- el usuario el 2026-08-25 para reducir categorías redundantes/demasiado
+-- específicas para el uso diario. INSERT OR IGNORE solo alcanza a bases
+-- NUEVAS (nunca renombra ni fusiona filas ya sembradas con los nombres
+-- viejos) — una base ya existente (como data/deltabalance.db) necesita
+-- correr migration/migrar_categorias_simplificadas.py para llegar al mismo
+-- estado. Ver ese script para el detalle de qué categoría vieja se fusionó
+-- en cuál nueva. Las dos categorías protegidas (services/categorias_service.py
+-- CATEGORIAS_PROTEGIDAS: INGRESOS · Sueldo, MOVIMIENTO CAPITAL ·
+-- Autotransferencia) no cambiaron de nombre.
 -- =============================================================
 
 -- INGRESOS
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
     ('INGRESOS', 'Sueldo',               'ingreso'),
     ('INGRESOS', 'Cobro Deuda',          'ingreso'),
-    ('INGRESOS', 'Reintegro',            'ingreso'),
-    ('INGRESOS', 'Reintegro Promocion',  'ingreso');
+    ('INGRESOS', 'Reintegro',            'ingreso');
 
 -- EGRESOS FIJOS
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
@@ -39,27 +49,22 @@ INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUE
 
 -- EGRESOS VARIABLES
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
-    ('EGRESOS VARIABLES', 'Supermercado',          'egreso'),
-    ('EGRESOS VARIABLES', 'Hogar: Mantenimiento',  'egreso'),
-    ('EGRESOS VARIABLES', 'Vivero y Jardin',        'egreso'),
-    ('EGRESOS VARIABLES', 'Bienestar y Deporte',   'egreso'),
-    ('EGRESOS VARIABLES', 'Ocio: Salidas',          'egreso'),
-    ('EGRESOS VARIABLES', 'Ocio: Entretenimiento', 'egreso'),
-    ('EGRESOS VARIABLES', 'Comidas y Bebidas',     'egreso'),
-    ('EGRESOS VARIABLES', 'Transporte / Auto',     'egreso'),
-    ('EGRESOS VARIABLES', 'Salud',                 'egreso'),
-    ('EGRESOS VARIABLES', 'Ropa',                  'egreso'),
-    ('EGRESOS VARIABLES', 'Regalos',               'egreso'),
-    ('EGRESOS VARIABLES', 'Mascotas',              'egreso');
+    ('EGRESOS VARIABLES', 'Supermercado',        'egreso'),
+    ('EGRESOS VARIABLES', 'Hogar',                'egreso'),
+    ('EGRESOS VARIABLES', 'Bienestar y Deporte',  'egreso'),
+    ('EGRESOS VARIABLES', 'Ocio',                 'egreso'),
+    ('EGRESOS VARIABLES', 'Comidas y Bebidas',    'egreso'),
+    ('EGRESOS VARIABLES', 'Transporte / Auto',    'egreso'),
+    ('EGRESOS VARIABLES', 'Salud',                'egreso'),
+    ('EGRESOS VARIABLES', 'Ropa',                 'egreso'),
+    ('EGRESOS VARIABLES', 'Regalos y Mascotas',   'egreso');
 
 -- MOVIMIENTO CAPITAL
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
     ('MOVIMIENTO CAPITAL', 'Autotransferencia',  'movimiento'),
     ('MOVIMIENTO CAPITAL', 'Rendimientos',        'ingreso'),
     ('MOVIMIENTO CAPITAL', 'Inversiones',         'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Cambio Moneda',       'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Salud: Obra Social',  'egreso'),
-    ('MOVIMIENTO CAPITAL', 'Sinking Funds',       'movimiento');
+    ('MOVIMIENTO CAPITAL', 'Cambio Moneda',       'movimiento');
 
 -- =============================================================
 -- CUENTA INICIAL: Efectivo ARS
