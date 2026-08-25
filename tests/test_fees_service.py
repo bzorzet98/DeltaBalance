@@ -199,7 +199,7 @@ class TestReadPurchases:
         row = fees_service.get_purchase(result.entity_id)
         assert row is not None
         assert row["account_name"]   == "Visa Galicia"
-        assert row["category_name"]  == "Hogar: Mantenimiento"
+        assert row["category_name"]  == "Hogar"
         assert row["currency_code"]  == "ARS"
 
     def test_get_purchase_nonexistent_returns_none(self, fees_service):

@@ -2,15 +2,37 @@
 DeltaBalance — ui/components/registro_transacciones.py
 
 Componente de "Registro de transacciones" estilo planilla: barra de
-herramientas (mes/año, modo Todos-del-mes/Últimos-N, filtro por banco) +
-fila de alta fija (campos en línea, navegables por teclado) + tabla de
-movimientos con edición inline celda por celda. Vive en ui/components/
-porque ui/screens/compras_cuotas.py va a reusar este mismo patrón visual
-de fila de tabla más adelante (tarea aparte, todavía no aplicada ahí — ver
+herramientas en una sola fila (período navegable ‹ Mes Año › → filtro de
+Banco → filtro de Categoría → búsqueda por texto en concepto, alineada al
+extremo derecho — ver ui/components/selector_periodo.py) + divisor sutil +
+fila de alta SIEMPRE presente (se resetea sola tras guardar, nunca hay un
+botón separado de "agregar otra entrada") + tabla de movimientos con
+edición inline celda por celda y un ícono de "Compartir" por fila (ver
+ui/components/compartir_gasto.py), filas separadas por ft.Divider (sin
+Container con borde por fila). Vive en ui/components/ porque
+ui/screens/compras_cuotas.py va a reusar este mismo patrón visual de fila
+de tabla más adelante (tarea aparte, todavía no aplicada ahí — ver
 CLAUDE.md §8 para la regla de layout que este archivo sigue).
 
+El Registro siempre muestra TODAS las transacciones del período
+seleccionado — el selector "Todos los del mes / Últimos N" que existía
+antes se sacó por completo (pedido explícito): ya no hay modo "últimos N".
+
 Reglas de arquitectura: solo AccountsService/CategoriasService/
-TransactionService — nunca repositories/ ni db/ directo (CLAUDE.md §2/§3).
+TransactionService/SharedExpensesService — nunca repositories/ ni db/
+directo (CLAUDE.md §2/§3).
+
+Tarjetas de crédito (cuentas.tipo='credito') se excluyen de todos los
+selectores de banco de este archivo (fila de alta y filtro de la barra de
+herramientas) — solo aparecen en ui/screens/compras_cuotas.py, nunca en el
+Registro de transacciones.
+
+Categoría: el texto visible de cada opción es SOLO el nombre de la
+subcategoría (nunca "categoria_principal · subcategoria").
+
+Búsqueda por concepto: filtrado client-side sobre los datos ya cargados del
+período — TransaccionesRepository no soporta un filtro de texto libre, y
+agregarlo ahí está fuera de alcance de esta tarea.
 
 Limitación real descubierta al revisar TransactionService.update() (no
 asumida): NO acepta account_id ni movement_type como parámetros — hoy no
@@ -29,23 +51,37 @@ editable=True) — confirmado por docs.flet.dev (ver docs/FLET_API_NOTES.md).
 OJO con el bug conocido documentado ahí (issue #5338 de flet-dev/flet):
 seleccionar una opción con teclado (flechas + Enter) puede no disparar
 on_select ni actualizar .value, aunque el texto visible cambie — la
-selección con click SÍ confirma. No lo pude probar acá (no hay forma de
-ejecutar la app desde este entorno), así que el flujo de teclado en esos
-dos campos específicos queda como mejora "best effort" (se intenta
-encadenar el foco igual, por si el bug no aplica a este caso puntual) y NO
-como camino confirmado — click sigue siendo el camino principal. El resto
-de la fila (TextField simples: Concepto/Monto/Fecha) no tiene ese problema,
-on_submit ahí es un evento estándar de TextField sin cambios documentados.
+selección con click SÍ confirma. El resto de la fila (TextField simples:
+Concepto/Monto/Fecha) no tiene ese problema.
+
+Fila de alta — reset tras guardar: la fila NUNCA desaparece ni se agrega
+una nueva; on_cambio() (ver docstring de build()) reconstruye TODO el
+Registro, lo que de por sí recrea la fila de alta desde cero con sus
+valores default (campo_concepto_alta usa autofocus=True, así que además
+recupera el foco solo — no hace falta lógica de reset manual). Si el
+guardado falla (TransactionError/ValueError), _confirmar_alta() vuelve
+("return") ANTES de llamar on_cambio(), así que la fila nunca se
+reconstruye y los valores tipeados quedan intactos para corregir.
+
+Ícono "Compartir" por fila (ver ui/components/compartir_gasto.py): visible
+siempre si la transacción YA tiene un gasto compartido asociado (indicador
+persistente), o solo al hacer hover sobre la fila si todavía no lo tiene
+(acción de descubrimiento, para no ensuciar visualmente el caso común).
+Hover implementado con Container.on_hover — normalizado defensivamente
+(str(e.data).lower() == "true") por si el shape de HoverEvent cambió en
+0.80+; no está en la lista de cambios confirmados de
+docs/FLET_API_NOTES.md, avisar si no dispara corriendo la app.
 
 Refresco: cada acción que cambia datos (alta, edición de celda, cambio de
-mes/año/modo/cantidad/filtro banco en la barra de herramientas) llama a
-on_cambio(), que el dashboard usa para reconstruir toda la pantalla
-(patrimonio + este registro + gráfico) — no hay refresco parcial local acá
-adentro, todo pasa por ese único mecanismo ya existente.
+período/búsqueda/filtro banco/filtro categoría en la barra de herramientas,
+alta de un gasto compartido) llama a on_cambio(), que el dashboard usa para
+reconstruir toda la pantalla (patrimonio + este registro) — no hay refresco
+parcial local acá adentro, todo pasa por ese único mecanismo ya existente.
 
 Diálogos/SnackBar/botones: mismas convenciones de Flet 0.86.5 que el resto
 de ui/ — ver docs/FLET_API_NOTES.md. Este componente no abre AlertDialog
-(la edición es inline), así que solo aplica el patrón de SnackBar acá.
+propio (la edición es inline) — los diálogos de "Compartir" viven en
+ui/components/compartir_gasto.py.
 """
 
 from datetime import date, datetime
@@ -55,37 +91,35 @@ import flet as ft
 
 from services.accounts_service import AccountsService
 from services.categorias_service import CategoriasService
+from services.shared_expenses_service import SharedExpensesService
 from services.transaction_service import TransactionService, TransactionError
+from ui.components import compartir_gasto, selector_periodo
 from ui.components.color_chip import color_chip
+from ui.theme.tokens import TypographyTokens
 from utils.money import amount_display
 
 # --- Configuración de layout ---
 # Anchos generosos a propósito: Concepto y Categoría son los textos más
-# largos (texto libre y "categoria_principal · subcategoria" en la edición
-# respectivamente) — lo que no entra se trunca con ellipsis + tooltip (ver
+# largos — lo que no entra se trunca con ellipsis + tooltip (ver
 # _texto_celda()) en vez de romper el alineado de la fila.
 ANCHO_COL_CONCEPTO = 220
 ANCHO_COL_BANCO = 160
-ANCHO_COL_CATEGORIA = 220
+ANCHO_COL_CATEGORIA = 180
 ANCHO_COL_MONTO = 120
 ANCHO_COL_FECHA = 110
 ANCHO_COL_MONEDA = 80
+ANCHO_COL_COMPARTIR = 48
 ANCHO_BOTON_CONFIRMAR = 48
-ANCHO_TOOLBAR_MES = 150
-ANCHO_TOOLBAR_ANIO = 100
-ANCHO_TOOLBAR_MODO = 170
-ANCHO_TOOLBAR_CANTIDAD = 90
-ANCHO_TOOLBAR_FILTRO_BANCO = 170
+ANCHO_TOOLBAR_BUSQUEDA = 200
+ANCHO_TOOLBAR_FILTRO_BANCO = 150
+ANCHO_TOOLBAR_FILTRO_CATEGORIA = 160
 ESPACIADO_FILA = 8
-ANIOS_HACIA_ATRAS = 3
-OPCIONES_CANTIDAD_ULTIMOS = (10, 20, 50)
-CANTIDAD_ULTIMOS_DEFAULT = 20
-LIMITE_TRANSACCIONES_DEL_MES = 500  # tope de per_page al pedir "todos los del mes"
+LIMITE_TRANSACCIONES_DEL_MES = 500  # tope de per_page al pedir las transacciones del período
 
-_MESES = [
-    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
-    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
-]
+
+def _cuentas_no_credito(cuentas: list[dict]) -> list[dict]:
+    """Excluye tarjetas de crédito — solo aparecen en Compras en cuotas."""
+    return [c for c in cuentas if c["tipo"] != "credito"]
 
 
 def build(
@@ -93,31 +127,30 @@ def build(
     accounts_service: AccountsService,
     categorias_service: CategoriasService,
     transaction_service: TransactionService,
+    shared_expenses_service: SharedExpensesService,
     estado: dict,
     on_cambio: Callable[[], None],
 ) -> ft.Control:
     """
     Args:
-        estado:    Dict MUTABLE del caller (el `estado` del dashboard,
-                   compartido con _seccion_gasto()) — {"mes", "anio",
-                   "modo": "mes"|"ultimos", "cantidad", "filtro_banco":
-                   int|None}. Se completa con setdefault() la primera vez.
-                   Mes/año viven acá (se movieron desde arriba del
-                   dashboard a esta barra de herramientas) pero siguen
-                   siendo el mismo período que usa el gráfico de gasto de
-                   más abajo — por eso cambiar mes/año acá dispara
-                   on_cambio() (reconstruye TODO el dashboard), no un
-                   refresco local.
+        estado:    Dict MUTABLE del caller (el `estado` del dashboard) —
+                   {"mes", "anio", "filtro_banco": int|None,
+                   "filtro_categoria": int|None, "busqueda": str}. Se
+                   completa con setdefault() la primera vez. Mes/año viven
+                   acá (barra de herramientas del Registro) — Estadísticas
+                   mantiene su propio período independiente, no comparten
+                   este dict.
         on_cambio: Callback tras cualquier cambio (alta, edición de celda,
-                   o cualquier control de la barra de herramientas). El
-                   dashboard reconstruye la pantalla entera con esto.
+                   gasto compartido nuevo, o cualquier control de la barra
+                   de herramientas). El dashboard reconstruye la pantalla
+                   entera con esto.
     """
     hoy = date.today()
     estado.setdefault("mes", hoy.month)
     estado.setdefault("anio", hoy.year)
-    estado.setdefault("modo", "mes")
-    estado.setdefault("cantidad", CANTIDAD_ULTIMOS_DEFAULT)
     estado.setdefault("filtro_banco", None)
+    estado.setdefault("filtro_categoria", None)
+    estado.setdefault("busqueda", "")
 
     def _mostrar_mensaje(mensaje: str, es_error: bool = False) -> None:
         snack = ft.SnackBar(
@@ -139,35 +172,28 @@ def build(
         return ft.Text(
             texto,
             color=color,
-            weight=weight,
+            weight=weight or TypographyTokens.TABLE_CONTENT_WEIGHT_REGULAR,
+            size=TypographyTokens.TABLE_CONTENT_SIZE,
             max_lines=1,
             overflow=ft.TextOverflow.ELLIPSIS,
             tooltip=texto,
         )
 
-    cuentas_activas = accounts_service.list_accounts(solo_activas=True)
+    cuentas_activas = _cuentas_no_credito(accounts_service.list_accounts(solo_activas=True))
     cuentas_todas = accounts_service.list_accounts(solo_activas=False)
+    cuentas_todas_no_credito = _cuentas_no_credito(cuentas_todas)
     cuentas_por_id = {c["id"]: c for c in cuentas_todas}
     categorias = [c for c in categorias_service.list_categories() if c["tipo"] in ("ingreso", "egreso")]
 
     # ------------------------------------------------------------
-    # BARRA DE HERRAMIENTAS: mes/año, modo, cantidad, filtro por banco
+    # BARRA DE HERRAMIENTAS: período → banco → categoría → búsqueda
     # ------------------------------------------------------------
 
-    def _on_select_mes(e: ft.ControlEvent) -> None:
-        estado["mes"] = int(dropdown_mes.value)
+    def _on_cambio_periodo() -> None:
         on_cambio()
 
-    def _on_select_anio(e: ft.ControlEvent) -> None:
-        estado["anio"] = int(dropdown_anio.value)
-        on_cambio()
-
-    def _on_select_modo(e: ft.ControlEvent) -> None:
-        estado["modo"] = dropdown_modo.value
-        on_cambio()
-
-    def _on_select_cantidad(e: ft.ControlEvent) -> None:
-        estado["cantidad"] = int(dropdown_cantidad.value)
+    def _on_change_busqueda(e: ft.ControlEvent) -> None:
+        estado["busqueda"] = campo_busqueda.value or ""
         on_cambio()
 
     def _on_select_filtro_banco(e: ft.ControlEvent) -> None:
@@ -175,60 +201,67 @@ def build(
         estado["filtro_banco"] = int(valor) if valor else None
         on_cambio()
 
-    dropdown_mes = ft.Dropdown(
-        label="Mes",
-        width=ANCHO_TOOLBAR_MES,
-        dense=True,
-        options=[ft.dropdown.Option(key=str(i + 1), text=nombre) for i, nombre in enumerate(_MESES)],
-        value=str(estado["mes"]),
-        on_select=_on_select_mes,
-    )
-    anios_disponibles = list(range(hoy.year - ANIOS_HACIA_ATRAS, hoy.year + 1))
-    dropdown_anio = ft.Dropdown(
-        label="Año",
-        width=ANCHO_TOOLBAR_ANIO,
-        dense=True,
-        options=[ft.dropdown.Option(key=str(a), text=str(a)) for a in reversed(anios_disponibles)],
-        value=str(estado["anio"]),
-        on_select=_on_select_anio,
-    )
-    dropdown_modo = ft.Dropdown(
-        width=ANCHO_TOOLBAR_MODO,
-        dense=True,
-        options=[
-            ft.dropdown.Option(key="mes", text="Todos los del mes"),
-            ft.dropdown.Option(key="ultimos", text="Últimos N"),
-        ],
-        value=estado["modo"],
-        on_select=_on_select_modo,
-    )
-    dropdown_cantidad = ft.Dropdown(
-        width=ANCHO_TOOLBAR_CANTIDAD,
-        dense=True,
-        options=[ft.dropdown.Option(key=str(n), text=str(n)) for n in OPCIONES_CANTIDAD_ULTIMOS],
-        value=str(estado["cantidad"]),
-        visible=estado["modo"] == "ultimos",
-        on_select=_on_select_cantidad,
-    )
+    def _on_select_filtro_categoria(e: ft.ControlEvent) -> None:
+        valor = dropdown_filtro_categoria.value
+        estado["filtro_categoria"] = int(valor) if valor else None
+        on_cambio()
+
+    control_periodo = selector_periodo.build(estado, _on_cambio_periodo)
+
     dropdown_filtro_banco = ft.Dropdown(
         label="Banco",
         width=ANCHO_TOOLBAR_FILTRO_BANCO,
         dense=True,
         options=[ft.dropdown.Option(key="", text="Todos")] + [
-            ft.dropdown.Option(key=str(c["id"]), text=c["nombre"]) for c in cuentas_todas
+            ft.dropdown.Option(key=str(c["id"]), text=c["nombre"]) for c in cuentas_todas_no_credito
         ],
         value=str(estado["filtro_banco"]) if estado["filtro_banco"] is not None else "",
         on_select=_on_select_filtro_banco,
     )
+    dropdown_filtro_categoria = ft.Dropdown(
+        label="Categoría",
+        width=ANCHO_TOOLBAR_FILTRO_CATEGORIA,
+        dense=True,
+        options=[ft.dropdown.Option(key="", text="Todas")] + [
+            ft.dropdown.Option(key=str(c["id"]), text=c["subcategoria"]) for c in categorias
+        ],
+        value=str(estado["filtro_categoria"]) if estado["filtro_categoria"] is not None else "",
+        on_select=_on_select_filtro_categoria,
+    )
+    # on_submit (Enter) confirma la búsqueda — mismo criterio que el resto
+    # de los campos de esta pantalla (nada se filtra "en vivo" tecla por
+    # tecla, cada acción se confirma explícitamente antes de reconstruir).
+    campo_busqueda = ft.TextField(
+        width=ANCHO_TOOLBAR_BUSQUEDA,
+        label="Buscar",
+        hint_text="Concepto... (Enter)",
+        dense=True,
+        prefix_icon=ft.Icons.SEARCH,
+        value=estado["busqueda"],
+        on_submit=_on_change_busqueda,
+    )
 
+    # Período → Banco → Categoría → (spacer) → Búsqueda, alineada al
+    # extremo derecho. SIN wrap=True acá a propósito: Wrap (lo que Flet
+    # renderiza cuando wrap=True) no soporta hijos flexibles/expand —
+    # combinarlos tira un error de layout del lado de Flutter (nunca llega
+    # a la consola de Python) que en un build web release se ve como un
+    # rectángulo gris sólido del tamaño del widget roto. Bug real
+    # encontrado y corregido — no reintroducir wrap=True acá mientras el
+    # spacer expand=True siga estando.
     barra_herramientas = ft.Row(
-        [dropdown_mes, dropdown_anio, dropdown_modo, dropdown_cantidad, dropdown_filtro_banco],
+        [
+            control_periodo,
+            dropdown_filtro_banco,
+            dropdown_filtro_categoria,
+            ft.Container(expand=True),
+            campo_busqueda,
+        ],
         spacing=ESPACIADO_FILA,
-        wrap=True,
     )
 
     # ------------------------------------------------------------
-    # FILA DE ALTA (campos en línea, no diálogo)
+    # FILA DE ALTA (siempre presente, se resetea sola tras guardar)
     # ------------------------------------------------------------
 
     def _refrescar_moneda_alta(cuenta_id: int) -> None:
@@ -244,7 +277,7 @@ def build(
 
     def _confirmar_alta(e: Optional[ft.ControlEvent] = None) -> None:
         if not cuentas_activas:
-            _mostrar_error("Primero cargá una cuenta en Configuración → Cuentas.")
+            _mostrar_error("Primero cargá una cuenta (no tarjeta de crédito) en Configuración → Cuentas.")
             return
         if not categorias:
             _mostrar_error("No hay categorías cargadas.")
@@ -280,13 +313,21 @@ def build(
                 movement_type="egreso" if monto_con_signo < 0 else "ingreso",
             )
         except (TransactionError, ValueError) as err:
+            # NO se resetea la fila: se vuelve acá antes de on_cambio(), así
+            # que la reconstrucción (que es lo único que recrea la fila con
+            # valores default) nunca se dispara — lo tipeado queda intacto.
             _mostrar_error(str(err))
             return
 
         _mostrar_ok(f"Movimiento #{resultado.transaction_id} registrado.")
+        # on_cambio() reconstruye todo el Registro — la fila de alta se
+        # recrea desde cero con sus valores default (Fecha=hoy, Moneda=
+        # default de la primera cuenta activa, resto vacío) y
+        # campo_concepto_alta.autofocus=True le devuelve el foco sin
+        # lógica extra.
         on_cambio()
 
-    campo_concepto_alta = ft.TextField(width=ANCHO_COL_CONCEPTO, label="Concepto", dense=True)
+    campo_concepto_alta = ft.TextField(width=ANCHO_COL_CONCEPTO, label="Concepto", dense=True, autofocus=True)
     dropdown_cuenta_alta = ft.Dropdown(
         width=ANCHO_COL_BANCO,
         label="Banco",
@@ -304,7 +345,7 @@ def build(
         enable_filter=True,
         editable=True,
         options=[
-            ft.dropdown.Option(key=str(c["id"]), text=f"{c['categoria_principal']} · {c['subcategoria']}")
+            ft.dropdown.Option(key=str(c["id"]), text=c["subcategoria"])
             for c in categorias
         ],
         value=str(categorias[0]["id"]) if categorias else None,
@@ -322,16 +363,7 @@ def build(
     )
 
     # Encadenado de foco por teclado (Enter avanza al siguiente campo; el
-    # último dispara el mismo guardado que el botón). Se asigna acá, con
-    # todos los campos ya construidos, para no depender del orden de
-    # definición. Concepto/Monto/Fecha son TextField simples (on_submit
-    # estándar, sin cambios documentados). Banco/Categoría son Dropdown
-    # enable_filter+editable — encadenar su on_submit es "best effort": el
-    # bug conocido de selección por teclado (ver docstring del módulo)
-    # podría hacer que Enter no confirme una opción ahí, sin forma de
-    # probarlo desde acá. Tab nativo (orden de foco de Flutter, no de este
-    # código) debería cubrir la navegación igual aunque ese punto falle —
-    # sin confirmar corriendo la app.
+    # último dispara el mismo guardado que el botón).
     campo_concepto_alta.on_submit = lambda e: dropdown_cuenta_alta.focus()
     dropdown_cuenta_alta.on_submit = lambda e: dropdown_categoria_alta.focus()
     dropdown_categoria_alta.on_submit = lambda e: campo_monto_alta.focus()
@@ -368,12 +400,13 @@ def build(
         valor_inicial: str,
         on_confirmar: Callable[[str], None],
         width: int,
+        weight=None,
     ) -> ft.Control:
         contenedor = ft.Container(width=width, padding=4)
 
         def _mostrar() -> None:
             contenedor.content = ft.Container(
-                content=_texto_celda(texto_mostrado, color=color_texto),
+                content=_texto_celda(texto_mostrado, color=color_texto, weight=weight),
                 on_click=lambda e: _editar(),
                 ink=True,
                 padding=4,
@@ -506,7 +539,7 @@ def build(
 
         celda_categoria = _celda_dropdown(
             texto_mostrado=t["category_name"],
-            opciones=[(str(c["id"]), f"{c['categoria_principal']} · {c['subcategoria']}") for c in categorias],
+            opciones=[(str(c["id"]), c["subcategoria"]) for c in categorias],
             valor_inicial=str(t["categoria_id"]),
             on_confirmar=_confirmar_categoria,
             width=ANCHO_COL_CATEGORIA,
@@ -527,6 +560,7 @@ def build(
             valor_inicial=f"{monto_abs_actual:.2f}",
             on_confirmar=_confirmar_monto,
             width=ANCHO_COL_MONTO,
+            weight=TypographyTokens.TABLE_CONTENT_WEIGHT,
         )
 
         def _confirmar_fecha(nuevo_texto: str) -> None:
@@ -563,47 +597,70 @@ def build(
             width=ANCHO_COL_MONEDA,
         )
 
-        return ft.Container(
-            padding=ft.Padding.symmetric(vertical=4, horizontal=0),
-            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-            border_radius=4,
-            content=ft.Row(
-                [celda_concepto, celda_banco, celda_categoria, celda_monto, celda_fecha, celda_moneda],
-                spacing=ESPACIADO_FILA,
-            ),
+        icono_compartir, ya_compartido = compartir_gasto.build_icon(page, shared_expenses_service, t, on_cambio)
+        celda_compartir = ft.Container(
+            width=ANCHO_COL_COMPARTIR,
+            content=icono_compartir,
+            opacity=1.0 if ya_compartido else 0.0,
         )
+
+        fila_contenido = ft.Row(
+            [celda_concepto, celda_banco, celda_categoria, celda_monto, celda_fecha, celda_moneda, celda_compartir],
+            spacing=ESPACIADO_FILA,
+        )
+
+        def _on_hover_fila(e: ft.ControlEvent) -> None:
+            # Normalizado defensivamente — ver docstring del módulo.
+            hover_activo = str(e.data).lower() == "true"
+            celda_compartir.opacity = 1.0 if (hover_activo or ya_compartido) else 0.0
+            page.update()
+
+        return ft.Container(content=fila_contenido, on_hover=_on_hover_fila)
 
     # ------------------------------------------------------------
     # CARGA DE DATOS + TABLA
     # ------------------------------------------------------------
 
     def _cargar_transacciones() -> list:
-        filtro_cuenta = estado["filtro_banco"]
-        if estado["modo"] == "ultimos":
-            return transaction_service.list_transactions(
-                account_id=filtro_cuenta, per_page=estado["cantidad"],
-            )
-        return transaction_service.list_transactions(
-            account_id=filtro_cuenta,
+        transacciones = transaction_service.list_transactions(
+            account_id=estado["filtro_banco"],
+            category_id=estado["filtro_categoria"],
             date_from=f"{estado['anio']:04d}-{estado['mes']:02d}-01",
             date_to=f"{estado['anio']:04d}-{estado['mes']:02d}-31",
             per_page=LIMITE_TRANSACCIONES_DEL_MES,
         )
+        texto_busqueda = (estado["busqueda"] or "").strip().lower()
+        if texto_busqueda:
+            transacciones = [t for t in transacciones if texto_busqueda in t["concepto"].lower()]
+        return transacciones
 
     transacciones = _cargar_transacciones()
+    filas_tabla: list[ft.Control] = []
     if transacciones:
-        filas_tabla: list[ft.Control] = [_fila_transaccion(t) for t in transacciones]
+        for i, t in enumerate(transacciones):
+            if i > 0:
+                filas_tabla.append(ft.Divider(height=1))
+            filas_tabla.append(_fila_transaccion(t))
     else:
         filas_tabla = [ft.Text("No hay movimientos para mostrar.", italic=True, color=ft.Colors.OUTLINE)]
 
+    def _header(texto: str, width: int) -> ft.Text:
+        return ft.Text(
+            texto,
+            size=TypographyTokens.TABLE_HEADER_SIZE,
+            weight=TypographyTokens.TABLE_HEADER_WEIGHT,
+            width=width,
+        )
+
     encabezado_columnas = ft.Row(
         [
-            ft.Text("Concepto", size=11, weight=ft.FontWeight.BOLD, width=ANCHO_COL_CONCEPTO),
-            ft.Text("Banco", size=11, weight=ft.FontWeight.BOLD, width=ANCHO_COL_BANCO),
-            ft.Text("Categoría", size=11, weight=ft.FontWeight.BOLD, width=ANCHO_COL_CATEGORIA),
-            ft.Text("Monto", size=11, weight=ft.FontWeight.BOLD, width=ANCHO_COL_MONTO),
-            ft.Text("Fecha", size=11, weight=ft.FontWeight.BOLD, width=ANCHO_COL_FECHA),
-            ft.Text("Moneda", size=11, weight=ft.FontWeight.BOLD, width=ANCHO_COL_MONEDA),
+            _header("Concepto", ANCHO_COL_CONCEPTO),
+            _header("Banco", ANCHO_COL_BANCO),
+            _header("Categoría", ANCHO_COL_CATEGORIA),
+            _header("Monto", ANCHO_COL_MONTO),
+            _header("Fecha", ANCHO_COL_FECHA),
+            _header("Moneda", ANCHO_COL_MONEDA),
+            _header("", ANCHO_COL_COMPARTIR),
         ],
         spacing=ESPACIADO_FILA,
     )
@@ -614,13 +671,18 @@ def build(
         border_radius=8,
         content=ft.Column(
             [
-                ft.Text("Registro de transacciones", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "Registro de transacciones",
+                    size=TypographyTokens.SECTION_TITLE_SIZE,
+                    weight=TypographyTokens.SECTION_TITLE_WEIGHT,
+                ),
                 ft.Container(height=8),
                 barra_herramientas,
-                ft.Container(height=8),
+                ft.Divider(height=1),
                 fila_alta,
                 ft.Divider(),
                 encabezado_columnas,
+                ft.Divider(height=1),
                 ft.Column(filas_tabla, spacing=ESPACIADO_FILA),
             ],
             spacing=4,

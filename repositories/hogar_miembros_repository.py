@@ -72,6 +72,21 @@ class HogarMiembrosRepository:
             .ejecutar(self._db.conn)
         )
 
+    def listar_hogares_de_usuario(self, usuario_local: str) -> list[sqlite3.Row]:
+        """
+        Filas de hogar_miembros (hogar_id, usuario_local, porcentaje_default)
+        donde usuario_local es miembro. Agregado para que
+        SharedExpensesService.list_my_hogares() pueda armar "mis hogares" —
+        antes solo se consultaba en la dirección hogar->miembros
+        (listar_miembros()), nunca en la dirección usuario->hogares.
+        """
+        return (
+            QueryBuilder("hogar_miembros", include_deleted=True)
+            .where("usuario_local", usuario_local)
+            .order("hogar_id")
+            .ejecutar(self._db.conn)
+        )
+
     def obtener_miembro(self, hogar_id: int, usuario_local: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("hogar_miembros", include_deleted=True)

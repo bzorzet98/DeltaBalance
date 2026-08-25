@@ -264,6 +264,38 @@ class SharedExpensesService:
     def list_miembros(self, hogar_id: int) -> list[sqlite3.Row]:
         return self._miembros_repo.listar_miembros(hogar_id)
 
+    def list_my_hogares(self, usuario_local: str) -> list[dict]:
+        """
+        Lista los hogares de los que usuario_local es miembro. Agregado para
+        la UI del ícono "Compartir" del Registro (necesita saber si el
+        usuario ya pertenece a algún hogar antes de ofrecer compartir un
+        gasto, y entre cuáles elegir si tiene más de uno). No existía forma
+        de responder "a qué hogares pertenezco" — HogarMiembrosRepository
+        solo se consultaba en la dirección hogar->miembros
+        (listar_miembros()) — así que compone
+        HogarMiembrosRepository.listar_hogares_de_usuario() (nueva, agregada
+        junto con este método) + HogaresRepository.obtener_por_id() por cada
+        fila, mismo patrón de composición ya usado en DashboardService.
+
+        Returns:
+            Lista de dicts {hogar_id, nombre, codigo_invitacion,
+            porcentaje_default}, ordenada por hogar_id. Lista vacía si
+            usuario_local no es miembro de ningún hogar.
+        """
+        filas_miembro = self._miembros_repo.listar_hogares_de_usuario(usuario_local)
+        hogares = []
+        for fila in filas_miembro:
+            hogar = self._hogares_repo.obtener_por_id(fila["hogar_id"])
+            if hogar is None:
+                continue
+            hogares.append({
+                "hogar_id": hogar["id"],
+                "nombre": hogar["nombre"],
+                "codigo_invitacion": hogar["codigo_invitacion"],
+                "porcentaje_default": fila["porcentaje_default"],
+            })
+        return hogares
+
     def get_suggested_coefficient(
         self, hogar_id: int, usuario_local_otro_miembro: str,
     ) -> Optional[float]:
@@ -385,6 +417,20 @@ class SharedExpensesService:
         pagador: Optional[str] = None,
     ) -> list[sqlite3.Row]:
         return self._gastos_repo.listar_enriquecida(hogar_id, estado=estado, pagador=pagador)
+
+    def get_shared_expense_by_origin(self, origen_tipo: str, origen_id: int) -> Optional[sqlite3.Row]:
+        """
+        Devuelve el gasto compartido asociado a un origen
+        (transacción/compra en cuotas/cuota de crédito) si ya existe, o
+        None. Agregado para que la UI (ícono "Compartir" por fila del
+        Registro) sepa si una transacción ya tiene un gasto compartido
+        antes de ofrecer crear uno nuevo — mismo chequeo que
+        add_shared_expense() hace internamente para bloquear duplicados con
+        GastoCompartidoDuplicadoError, expuesto acá de forma consultable sin
+        tener que intentar crear uno para descubrirlo.
+        """
+        filas = self._gastos_repo.listar_por_origen(origen_tipo, origen_id)
+        return filas[0] if filas else None
 
     def settle_expense(self, gasto_id: int, hogar_id: int) -> SharedExpensesResult:
         """

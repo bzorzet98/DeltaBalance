@@ -114,6 +114,25 @@ def main() -> None:
     repo.actualizar_porcentaje_default(hogar_1, "martina", None)
     caso("actualizar_porcentaje_default(None) escribe NULL explícito", None, repo.obtener_miembro(hogar_1, "martina")["porcentaje_default"])
 
+    print("\n--- listar_hogares_de_usuario() ---")
+    hogares_de_bruno = repo.listar_hogares_de_usuario("bruno")
+    caso(
+        "listar_hogares_de_usuario('bruno') trae hogar_1 y hogar_2 (es miembro de los dos)",
+        {hogar_1, hogar_2},
+        {f["hogar_id"] for f in hogares_de_bruno},
+    )
+    hogares_de_martina = repo.listar_hogares_de_usuario("martina")
+    caso(
+        "listar_hogares_de_usuario('martina') trae solo hogar_1",
+        [hogar_1],
+        [f["hogar_id"] for f in hogares_de_martina],
+    )
+    caso(
+        "listar_hogares_de_usuario() de alguien sin hogares devuelve lista vacía",
+        [],
+        repo.listar_hogares_de_usuario("nadie"),
+    )
+
     print("\n--- actualizar_porcentaje_default(conn=...) — participa de una transacción externa ---")
     conn_externo = manager.conn
     with manager.transaction():
