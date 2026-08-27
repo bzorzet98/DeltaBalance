@@ -71,16 +71,27 @@ class PresupuestosRepository:
         monto_estimado_minor: int,
         es_recurrente: bool = False,
         notas: Optional[str] = None,
+        formula_estimado: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
         INSERT ... ON CONFLICT(categoria_id, mes, anio) DO UPDATE, usando el
         UNIQUE de la tabla. En el camino de UPDATE se reescriben
-        monto_estimado_minor, es_recurrente y notas — es_recurrente es tan
-        editable como los demás campos, sin excepción especial (corregido;
-        la versión original de upsert_presupuesto() no lo reescribía, ver
-        docstring del módulo). moneda_id NO se reescribe en el camino
-        UPDATE.
+        monto_estimado_minor, es_recurrente, notas y formula_estimado —
+        es_recurrente es tan editable como los demás campos, sin excepción
+        especial (corregido; la versión original de upsert_presupuesto() no
+        lo reescribía, ver docstring del módulo). moneda_id NO se reescribe
+        en el camino UPDATE.
+
+        formula_estimado (columna agregada vía db/schema_migrations.py):
+        texto de la fórmula tal cual se tipeó (con el "=" incluido) si
+        monto_estimado_minor se calculó con utils/calculadora_segura.py, o
+        None si se cargó como número directo. SIEMPRE se reescribe en el
+        camino UPDATE igual que los demás campos (sin sentinel de "no
+        tocar") — pasar None a propósito es lo que permite que sobreescribir
+        un presupuesto que tenía fórmula con un número directo limpie
+        formula_estimado a NULL, en vez de dejar una fórmula vieja
+        asociada a un monto que ya no le corresponde.
 
         Devuelve la cantidad de filas afectadas (siempre 1 si la llamada es
         válida). NO devuelve un id fabricado a partir de
@@ -91,16 +102,17 @@ class PresupuestosRepository:
         """
         sql = """
             INSERT INTO presupuestos
-                (categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas, formula_estimado)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(categoria_id, mes, anio)
             DO UPDATE SET monto_estimado_minor = excluded.monto_estimado_minor,
                           es_recurrente = excluded.es_recurrente,
-                          notas = excluded.notas;
+                          notas = excluded.notas,
+                          formula_estimado = excluded.formula_estimado;
         """
         params = (
             categoria_id, moneda_id, mes, anio,
-            monto_estimado_minor, int(es_recurrente), notas,
+            monto_estimado_minor, int(es_recurrente), notas, formula_estimado,
         )
         if conn is not None:
             return conn.execute(sql, params).rowcount
@@ -121,6 +133,17 @@ class PresupuestosRepository:
             .where("anio", anio)
             .ejecutar_uno(self._db.conn)
         )
+
+    def listar_categoria_ids_con_presupuesto(self) -> list[int]:
+        """
+        IDs distintos de categoria_id que tienen al menos una fila en
+        `presupuestos`, en CUALQUIER período (sin filtrar por mes/anio) —
+        para que la pantalla de Presupuestos pueda mostrar por default solo
+        las categorías que el usuario ya presupuestó alguna vez, en vez de
+        las ~15-20 categorías de egreso completas del catálogo.
+        """
+        filas = self._db.fetchall("SELECT DISTINCT categoria_id FROM presupuestos;")
+        return [f["categoria_id"] for f in filas]
 
     def listar_por_periodo(self, mes: int, anio: int) -> list[sqlite3.Row]:
         """

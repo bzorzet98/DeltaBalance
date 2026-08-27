@@ -17,15 +17,12 @@ Identidad del usuario local: la app todavía no tiene autenticación real
 (hogar_miembros.usuario_local es un string simple — auth con Supabase llega
 en una fase futura, ver docstring de services/shared_expenses_service.py).
 Mientras tanto, el nombre que te identifica en los hogares compartidos se
-guarda en page.client_storage bajo CLAVE_USUARIO_LOCAL, la primera vez que
-creás o te unís a un hogar desde acá — no hay pantalla de configuración
-separada para esto todavía. SIN CONFIRMAR contra una instalación real de
-Flet 0.86.5 (page.client_storage no está en la lista de cambios de
-docs/FLET_API_NOTES.md ni se usa en ningún otro lugar de este proyecto
-todavía) — si falla al correr la app, avisar para ajustarlo; por eso
-get/set están defensivamente envueltos en try/except (si client_storage no
-está disponible, se trata como "usuario_local desconocido" en vez de
-romper toda la pantalla).
+guarda en page.client_storage, la primera vez que creás o te unís a un
+hogar desde acá — no hay pantalla de configuración separada para esto
+todavía. El get/set en sí vive en ui/components/usuario_local.py (extraído
+de acá cuando ui/components/compartir_compra.py necesitó la misma lógica,
+para no duplicarla) — ver ese módulo para el detalle de por qué no está
+confirmado contra una instalación real de Flet 0.86.5.
 
 Íconos: PEOPLE / PEOPLE_OUTLINE es el par outline/filled estándar de
 Material Icons — no confirmados contra la versión instalada (mismo caveat
@@ -41,25 +38,11 @@ from typing import Callable, Optional
 import flet as ft
 
 from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
+from ui.components.usuario_local import abrir_dialogo_sin_hogar, obtener_usuario_local
 from utils.money import amount_display
 
 # --- Configuración de layout ---
-CLAVE_USUARIO_LOCAL = "usuario_local"
 ANCHO_DIALOGO = 360
-
-
-def _obtener_usuario_local(page: ft.Page) -> Optional[str]:
-    try:
-        return page.client_storage.get(CLAVE_USUARIO_LOCAL)
-    except Exception:
-        return None
-
-
-def _guardar_usuario_local(page: ft.Page, nombre: str) -> None:
-    try:
-        page.client_storage.set(CLAVE_USUARIO_LOCAL, nombre)
-    except Exception:
-        pass
 
 
 def build_icon(
@@ -88,77 +71,12 @@ def build_icon(
         page.pop_dialog()
 
     # ------------------------------------------------------------
-    # PASO "sin hogar todavía": crear uno nuevo o unirse por código
+    # PASO "sin hogar todavía": diálogo compartido con compartir_compra.py
+    # (ver ui/components/usuario_local.py) — crear uno nuevo o unirse por
+    # código.
     # ------------------------------------------------------------
     def _abrir_sin_hogar(nombre_prellenado: str) -> None:
-        campo_nombre = ft.TextField(
-            label="Tu nombre en hogares compartidos", value=nombre_prellenado, autofocus=True,
-        )
-        campo_hogar_nombre = ft.TextField(label="Nombre del hogar (opcional)")
-        campo_codigo = ft.TextField(label="Código de invitación")
-
-        def _crear(e: ft.ControlEvent) -> None:
-            if not campo_nombre.value or not campo_nombre.value.strip():
-                _mostrar_mensaje("Ingresá tu nombre.", es_error=True)
-                return
-            try:
-                shared_expenses_service.create_hogar(
-                    nombre_creador_local=campo_nombre.value.strip(),
-                    nombre_hogar=(campo_hogar_nombre.value or "").strip() or None,
-                )
-            except (SharedExpensesError, ValueError) as err:
-                _mostrar_mensaje(str(err), es_error=True)
-                return
-            _guardar_usuario_local(page, campo_nombre.value.strip())
-            _cerrar_dialogo()
-            _abrir_flujo()
-
-        def _unirse(e: ft.ControlEvent) -> None:
-            if not campo_nombre.value or not campo_nombre.value.strip():
-                _mostrar_mensaje("Ingresá tu nombre.", es_error=True)
-                return
-            if not campo_codigo.value or not campo_codigo.value.strip():
-                _mostrar_mensaje("Ingresá el código de invitación.", es_error=True)
-                return
-            try:
-                shared_expenses_service.join_hogar(
-                    codigo_invitacion=campo_codigo.value.strip(),
-                    nombre_local=campo_nombre.value.strip(),
-                )
-            except (SharedExpensesError, ValueError) as err:
-                _mostrar_mensaje(str(err), es_error=True)
-                return
-            _guardar_usuario_local(page, campo_nombre.value.strip())
-            _cerrar_dialogo()
-            _abrir_flujo()
-
-        dialogo = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Compartir gastos"),
-            content=ft.Container(
-                width=ANCHO_DIALOGO,
-                content=ft.Column(
-                    [
-                        ft.Text("Todavía no pertenecés a ningún hogar compartido."),
-                        campo_nombre,
-                        ft.Divider(),
-                        ft.Text("Crear un hogar nuevo", weight=ft.FontWeight.BOLD),
-                        campo_hogar_nombre,
-                        ft.ElevatedButton(content=ft.Text("Crear hogar"), on_click=_crear),
-                        ft.Divider(),
-                        ft.Text("Unirme a uno existente", weight=ft.FontWeight.BOLD),
-                        campo_codigo,
-                        ft.ElevatedButton(content=ft.Text("Unirme"), on_click=_unirse),
-                    ],
-                    tight=True,
-                    spacing=10,
-                    scroll=ft.ScrollMode.AUTO,
-                ),
-            ),
-            actions=[ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo)],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.show_dialog(dialogo)
+        abrir_dialogo_sin_hogar(page, shared_expenses_service, nombre_prellenado, on_listo=_abrir_flujo)
 
     # ------------------------------------------------------------
     # PASO "cargar el gasto compartido" — popover compacto
@@ -280,7 +198,7 @@ def build_icon(
     # ENTRY POINT
     # ------------------------------------------------------------
     def _abrir_flujo() -> None:
-        usuario_local = _obtener_usuario_local(page)
+        usuario_local = obtener_usuario_local(page)
         mis_hogares = shared_expenses_service.list_my_hogares(usuario_local) if usuario_local else []
         if not mis_hogares:
             _abrir_sin_hogar(nombre_prellenado=usuario_local or "")

@@ -16,6 +16,15 @@ copiar_periodo() devuelven la cantidad real de filas afectadas, leída de
 cur.rowcount sobre un cursor real — no el valor fabricado que devolvía
 DatabaseManager.execute() para UPDATE/upsert.
 
+Cubre además: listar_categoria_ids_con_presupuesto() (categorías con
+presupuesto en cualquier período, sin duplicados), y formula_estimado
+(columna nueva de esta tarea): upsert() con fórmula persiste el texto Y el
+monto ya calculado, upsert() sin fórmula deja la columna en NULL, y
+sobreescribir una fila que tenía fórmula con un número directo LIMPIA
+formula_estimado a NULL (nunca queda una fórmula vieja asociada a un monto
+que ya no le corresponde) — mismo criterio de "siempre se reescribe en el
+camino UPDATE" que ya usan monto_estimado_minor/es_recurrente/notas.
+
 Correlo con:
     python verify/presupuestos_ingresos_empleos/verify_presupuestos_repository.py
 """
@@ -175,6 +184,49 @@ def main() -> None:
     except RuntimeError:
         pass
     caso("copiar_periodo(conn=...) con rollback: ninguna fila quedó persistida", None, repo.obtener_por_periodo(cat_1, 8, 2026))
+
+    print("\n--- listar_categoria_ids_con_presupuesto() ---")
+    # cat_1/cat_2 ya tienen presupuestos cargados en varios períodos por los
+    # casos de arriba — cat_3 (nueva acá) nunca tuvo ninguno, para confirmar
+    # que se excluye.
+    cat_3 = manager.fetchall("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 3;")[2]["id"]
+    ids_con_presupuesto = repo.listar_categoria_ids_con_presupuesto()
+    caso("listar_categoria_ids_con_presupuesto() incluye cat_1", True, cat_1 in ids_con_presupuesto)
+    caso("listar_categoria_ids_con_presupuesto() incluye cat_2", True, cat_2 in ids_con_presupuesto)
+    caso("listar_categoria_ids_con_presupuesto() NO incluye cat_3 (nunca presupuestada)", False, cat_3 in ids_con_presupuesto)
+    caso(
+        "listar_categoria_ids_con_presupuesto() no duplica cat_1 pese a tener presupuestos en varios períodos",
+        1,
+        ids_con_presupuesto.count(cat_1),
+    )
+
+    print("\n--- upsert() — formula_estimado: guardar con fórmula persiste AMBOS campos ---")
+    categorias_5 = manager.fetchall("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 5;")
+    cat_4, cat_5 = categorias_5[3]["id"], categorias_5[4]["id"]
+    filas_formula = repo.upsert(
+        categoria_id=cat_4, mes=1, anio=2026, moneda_id=moneda_ars,
+        monto_estimado_minor=17700, formula_estimado="=15000+3200-500",
+    )
+    caso("upsert() con formula_estimado devuelve 1 fila afectada", 1, filas_formula)
+    fila_con_formula = repo.obtener_por_periodo(cat_4, 1, 2026)
+    caso("upsert() con formula_estimado persiste el monto_estimado_minor ya calculado", 17700, fila_con_formula["monto_estimado_minor"])
+    caso("upsert() con formula_estimado persiste el texto de la fórmula tal cual (con el '=')", "=15000+3200-500", fila_con_formula["formula_estimado"])
+
+    print("\n--- upsert() — formula_estimado: guardar SIN fórmula deja la columna en NULL ---")
+    repo.upsert(categoria_id=cat_5, mes=1, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=50000)
+    fila_sin_formula = repo.obtener_por_periodo(cat_5, 1, 2026)
+    caso("upsert() sin pasar formula_estimado (default None) deja la columna en NULL", None, fila_sin_formula["formula_estimado"])
+
+    print("\n--- upsert() — formula_estimado: sobreescribir una fila con fórmula con un número directo limpia a NULL ---")
+    repo.upsert(categoria_id=cat_4, mes=1, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=99999)  # sin formula_estimado -> None
+    fila_tras_sobreescribir = repo.obtener_por_periodo(cat_4, 1, 2026)
+    caso("upsert() sobre una fila que tenía fórmula: el nuevo monto_estimado_minor se persiste", 99999, fila_tras_sobreescribir["monto_estimado_minor"])
+    caso(
+        "upsert() sobre una fila que tenía fórmula: al no pasar formula_estimado de nuevo, queda en NULL "
+        "(no se arrastra una fórmula vieja asociada a un monto que ya no le corresponde)",
+        None,
+        fila_tras_sobreescribir["formula_estimado"],
+    )
 
     manager.desconectar()
 

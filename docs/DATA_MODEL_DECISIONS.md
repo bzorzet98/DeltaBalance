@@ -17,6 +17,21 @@ Tabla `gastos_compartidos`, generalizada con `origen_tipo` ∈
   compartida se genera una vez sobre el total, o una fila por cuota.
 - Si `modo_deuda = 'prorrateado'`, el reintegro (`compras_cuotas.monto_reintegro_minor`)
   se descuenta prorrateado entre cuotas antes de aplicar el coeficiente.
+- **Orquestación de ambos modos — ✅ implementada**:
+  `SharedExpensesService.add_shared_purchase(compra_id, hogar_id, pagador,
+  coeficiente_deuda)`. Estas columnas estuvieron en el schema mucho tiempo sin
+  ningún método que las usara — confirmado por lectura de
+  `services/shared_expenses_service.py` y `services/fees_service.py` antes de
+  escribirlo, no había ninguna orquestación real. Vive en `SharedExpensesService`
+  (no en `FeesService`) porque el resultado son filas de `gastos_compartidos`, tabla
+  que ya posee ese service; lee `ComprasCuotasRepository`/`CuotasCreditoRepository`
+  solo para lectura. En modo `prorrateado`, el reintegro por cuota se calcula como
+  `round(monto_reintegro_minor / total_cuotas)` aplicado igual a cada cuota (no
+  reparte el resto de la división para que la suma dé exacto — ver docstring del
+  método); las cuotas que ya tienen un gasto compartido asociado se SALTEAN en vez
+  de abortar todo el lote. `fecha` de cada gasto en modo prorrateado es el primer
+  día del `mes_proyectado`/`anio_proyectado` de esa cuota (`cuotas_credito` no
+  guarda un día exacto de vencimiento, solo mes/año).
 - `compras_cuotas.monto_reintegro_minor` y `compras_cuotas.modo_deuda` se agregan vía
   `db/schema_migrations.py`, no como `ALTER TABLE` directo en `schema.sql`: SQLite no
   soporta `ADD COLUMN IF NOT EXISTS`, y `schema.sql` se reaplica completo en cada
@@ -200,3 +215,180 @@ transacción se cargó y después se borró lógicamente, la cuenta *tuvo* activ
 aunque ya no sea visible), cero filas en `cuentas_saldos` con `saldo_inicial_minor
 != 0`, y ninguna otra cuenta que la use como `cuenta_pago_id`. Si falla cualquiera de
 las tres, se archiva en vez de borrarse — nunca se reescribe en silencio.
+
+## 15. Ambigüedad de moneda en `resumen_cargos_extra` — decisión de diseño, sin cambio de schema
+
+`FeesService.resumen_por_tarjeta(mes, anio)` (Tarea 4: desglose del dashboard por
+tarjeta de crédito) necesita sumarle a las `cuotas_credito` que vencen ese mes los
+cargos extra (`resumen_cargos_extra`) del resumen de esa misma cuenta/mes/año, sin
+mezclar monedas distintas en un mismo total (mismo principio que el resto del
+dashboard — ver sección de `get_gasto_por_categoria()` en
+`services/dashboard_service.py`).
+
+El problema: `resumen_cargos_extra.monto_minor` no tiene columna de moneda propia, y
+`resumenes_tarjeta` tampoco — un resumen es por `(cuenta_id, mes, anio)`, no por
+`(cuenta_id, mes, anio, moneda_id)`, porque el diseño original asume que una tarjeta
+física factura en una sola moneda por mes (cierto en el uso real). El schema, sin
+embargo, sí permite en teoría que la MISMA tarjeta tenga `cuotas_credito` venciendo en
+más de una moneda el mismo mes (`compras_cuotas.moneda_id` es por compra, no por
+cuenta) — un caso límite que hoy no ocurre en la práctica pero que el modelo no
+prohíbe.
+
+**No se agregó una columna `moneda_id` a `resumen_cargos_extra` ni a
+`resumenes_tarjeta` para esto** — hubiera sido una migración de schema para resolver
+un caso que no se ha dado nunca, y esta tarea no pedía tocar `schema.sql`. En cambio,
+`resumen_por_tarjeta()` resuelve la ambigüedad en tiempo de lectura: si una tarjeta
+tiene cuotas venciendo en una sola moneda ese mes (el caso normal), los cargos extra
+se suman ahí sin problema. Si tiene cuotas en más de una moneda ese mismo mes (el
+caso límite), los cargos extra NO se suman a ninguno de los dos totales — se dejan en
+0 en ambos, y el dict de esa cuenta lleva `cargos_extra_multiples_monedas=True` para
+que quien consuma el resultado sepa que hay un monto sin asignar, en vez de adivinar
+a cuál de las dos monedas pertenece.
+
+Si en el futuro una tarjeta real empieza a facturar en más de una moneda por mes de
+forma habitual, la resolución correcta sería agregar `moneda_id` a
+`resumenes_tarjeta` (un resumen por cuenta/mes/año/moneda) vía
+`db/schema_migrations.py` — no antes, siguiendo el mismo criterio de "no anticipar
+schema para un caso que todavía no pasó" ya aplicado en la sección 14.
+
+## 16. Vínculo entre movimientos de ahorro y transacciones reales — ✅ implementado (Tarea 6b)
+
+Decisión tomada tras discutirlo con el usuario (ver docs/PROXIMOS_PASOS.md, Tarea 6b):
+los aportes/retiros de ahorro deben poder generar una transacción real que
+descuente/acredite la cuenta de origen, porque el patrimonio total del dashboard
+tiene que coincidir siempre con lo que las apps de los bancos muestran de verdad — un
+ahorro "aparte" que no toca el saldo real generaría una desincronización inaceptable.
+Cubre los dos casos reales que diferenció el usuario: cuentas donde se reserva plata
+dentro del mismo saldo global (ej. Mercado Pago) y luego se "reingresa" como ingreso
+al usarla, y cuentas exclusivas de ahorro/inversión (ej. FCI de Cocos) donde la plata
+realmente se transfiere afuera — ambos casos usan el mismo mecanismo.
+
+- `movimientos_activo.transaccion_id INTEGER REFERENCES transacciones(id)`, nullable,
+  agregada vía `db/schema_migrations.py` (no `ALTER TABLE` directo en `schema.sql`,
+  mismo motivo que el resto de las columnas de esa lista: SQLite no soporta
+  `ADD COLUMN IF NOT EXISTS` y `schema.sql` se reaplica completo en cada
+  `DatabaseManager.inicializar()`). Mismo patrón exacto que
+  `recibos_sueldo.transaccion_id` (esa sí nace en `schema.sql` porque `recibos_sueldo`
+  es una tabla nueva, no una columna agregada a una existente). NULL para movimientos
+  puramente informales — comportamiento previo sin cambios.
+- `SavingsService.register_purchase()`/`register_sale()` ganan un parámetro opcional
+  `cuenta_id`. Si se pasa, dentro de la MISMA transacción atómica que ya arma el
+  movimiento (+ asignaciones), se crea además una transacción real vía
+  `TransaccionesRepository.crear(conn=...)` — egreso para `register_purchase()`
+  (aporte: plata que sale de la cuenta hacia el ahorro), ingreso para
+  `register_sale()` (retiro: plata que vuelve a estar disponible) — y se vincula su id
+  en `movimientos_activo.transaccion_id`. La moneda de esa transacción es
+  `activos_financieros.moneda_id` del activo involucrado: es la única moneda
+  disponible en el método (no se le pasa moneda/currency_code aparte), bajo el
+  supuesto de que la cuenta indicada opera en esa moneda.
+- **`categoria_id` es OBLIGATORIO cuando se pasa `cuenta_id`** (`ValueError` si falta)
+  — no se asume ninguna categoría por default, el caller la elige explícitamente.
+  Mismo criterio exacto que `EmpleosService.create_receipt()` con `cuenta_id`/
+  `categoria_id`, que ya resolvía este mismo cruce hacia `transacciones` antes. Se
+  prefirió este criterio (parámetro explícito) por sobre asumir una categoría
+  "razonable" automáticamente: el catálogo actual no tiene todavía una categoría
+  protegida dedicada a ahorro (la futura "Ahorro/Inversión" de la Tarea 1b de
+  docs/PROXIMOS_PASOS.md, UI, no existe aún en este paso) y elegir una sin que el
+  caller lo sepa hubiera sido inventar una convención no pedida (CLAUDE.md §0.4). El
+  verify de este service usa la categoría ya sembrada "MOVIMIENTO CAPITAL ·
+  Inversiones" como categoría de ejemplo razonable — no es una categoría protegida ni
+  hardcodeada dentro del service.
+- `register_return()` (rendimiento) NO gana `cuenta_id` — fuera de alcance de esta
+  tarea. Un movimiento tipo='rendimiento' nunca tiene `transaccion_id` todavía.
+- `SavingsService.get_balance_por_cuenta(objetivo_id) -> list[dict]`: agregación de
+  solo lectura, cuánto de lo aportado/retirado a un objetivo pasó realmente por cada
+  cuenta real (join `asignaciones` → `movimientos_activo` → `transacciones` →
+  `cuentas`, filtrando implícitamente por `transaccion_id IS NOT NULL` vía INNER
+  JOIN). Agrupa por `(cuenta_id, moneda_id)` — nunca mezcla monedas distintas en una
+  misma suma, mismo criterio que `DashboardService.get_gasto_por_categoria()`. Vive en
+  el service (no en un repositorio) por el mismo motivo que esa función: es
+  agregación de reporte cruzando varias tablas, no CRUD de una sola.
+
+## 17. Categorías especiales Autotransferencia / Ahorro-Inversión en el Registro — ✅ implementado (Tarea 1b)
+
+Sin cambios de schema — esta tarea es routing de UI + un método nuevo de servicio.
+Decisión tomada: la fuente de verdad para cargar CUALQUIER movimiento (incluidas
+transferencias entre cuentas y aportes a ahorro) es el Registro de transacciones —
+mismo mecanismo de routing por categoría ya construido para "Impuesto tarjeta"/
+"Recargo tarjeta"/"Ajuste/Reintegro tarjeta" en Compras en cuotas (sección 12/Tarea 3).
+
+- **"MOVIMIENTO CAPITAL · Autotransferencia" ya existía** en `db/seed.sql` y en
+  `CATEGORIAS_PROTEGIDAS` de `services/categorias_service.py` desde antes de esta
+  tarea — la documentaba `TransactionService.create_transfer()` como la categoría
+  esperada, pero ningún caller real la usaba todavía. Esta tarea es la primera que
+  la conecta de verdad: `ui/components/registro_transacciones.py` la reconoce como
+  categoría de routing y abre un mini-diálogo (Cuenta destino) que llama a
+  `create_transfer()`. No hizo falta agregarla a seed.sql ni a
+  CATEGORIAS_PROTEGIDAS — ya estaba.
+- **"MOVIMIENTO CAPITAL · Ahorro/Inversión" SÍ es nueva** — agregada a
+  `db/seed.sql` (bases nuevas) y a `migration/agregar_categoria_ahorro_inversion.py`
+  (bases existentes, mismo patrón que `migration/agregar_categorias_tarjeta.py` de
+  la sección 3 — `INSERT OR IGNORE` en seed.sql no alcanza a una base que ya
+  existía antes del cambio). Se agregó también a `CATEGORIAS_PROTEGIDAS`.
+- **`create_transfer()` exige `category_id`** (no es opcional, a diferencia de
+  `register_purchase()`/`register_sale()` de la sección 16) — se le pasa el id de
+  la propia categoría "Autotransferencia" elegida en la fila. `create_transfer()`
+  tampoco tiene parámetro `concept` (hardcodea "Auto-transfer (out/in)" en las dos
+  transacciones que genera, firma real revisada antes de implementar) — el
+  concepto tipeado en la fila viaja como `notes` en su lugar, el mapeo más cercano
+  disponible.
+- **El signo tipeado en Monto se ignora en ambos flujos especiales** (se usa
+  `abs(monto)`): a diferencia de una categoría normal, acá el tipo de movimiento lo
+  fuerza el método de destino (`create_transfer()` siempre arma egreso+ingreso;
+  `register_purchase()` siempre es un aporte/egreso — no existe todavía un flujo de
+  "retiro" con Ahorro/Inversión desde el Registro, fuera de alcance de esta tarea).
+  Mismo criterio que ya usa `ui/screens/compras_cuotas.py` para las categorías
+  especiales de tarjeta (el signo no decide el tipo de cargo ahí tampoco).
+- **`SavingsService.get_or_create_reserved_cash_asset(cuenta_nombre, moneda_id)`**
+  (método nuevo): busca por nombre exacto `f"Efectivo reservado en {cuenta_nombre}"`
+  un `activo_financiero` tipo='otro' ya existente (incluyendo inactivos —
+  `solo_activos=False` — para nunca duplicar uno que el usuario haya desactivado a
+  mano) y lo reusa; si no existe, lo crea. Vive en `SavingsService` (motor de
+  datos), no en la UI — así queda testeable con un verify normal
+  (`verify/ahorros/verify_savings_service.py`) y reusable fuera del Registro si
+  algún día hace falta (ej. `migration/`). Coherente con la sección 14
+  ("Relación cuentas ↔ activos_financieros — informal a propósito"): la identidad
+  de "a qué cuenta pertenece" sigue siendo el nombre exacto del activo, no una
+  columna nueva — no se necesitó tocar el schema para esto.
+- La moneda del activo genérico se fija en el momento de su PRIMERA creación (la
+  moneda elegida en esa primera fila del Registro) y no se reescribe después — si
+  una carga posterior a la misma cuenta usa una moneda distinta, la transacción
+  vinculada de todos modos queda en la moneda original del activo (limitación
+  conocida, no resuelta acá: no se pidió un selector de moneda por activo ni
+  activos separados por cuenta+moneda, y el caso de una cuenta reservando ahorro en
+  más de una moneda a la vez no es el uso típico descripto por el usuario).
+
+## 18. Persistencia de la fórmula del campo Estimado (Presupuestos) — ✅ implementado
+
+`presupuestos.formula_estimado TEXT`, nullable, agregada vía `db/schema_migrations.py`
+(no `ALTER TABLE` directo en `schema.sql`, mismo motivo que el resto de las columnas de
+esa lista). Guarda el texto tal cual se tipeó en el campo Estimado de
+`ui/screens/presupuestos.py`, CON el `"="` incluido (ej. `"=15000+3200-500"`), cuando
+`monto_estimado_minor` se calculó con `utils/calculadora_segura.py`; `NULL` si se cargó
+como número directo.
+
+- `PresupuestosRepository.upsert()` recibe `formula_estimado` opcional (default `None`)
+  y lo reescribe SIEMPRE en el camino `UPDATE` (`ON CONFLICT ... DO UPDATE SET
+  formula_estimado = excluded.formula_estimado`) — mismo criterio sin excepción que ya
+  aplica a `monto_estimado_minor`/`es_recurrente`/`notas` (sección de `upsert()`, no hay
+  sentinel de "no tocar" en este repositorio). Esto es deliberado: sobreescribir un
+  presupuesto que tenía fórmula con un número directo (`formula_estimado=None`
+  explícito) debe limpiar la columna a `NULL` — nunca debe quedar una fórmula vieja
+  asociada a un monto que ya no le corresponde.
+- **`PresupuestosRepository.copiar_periodo()` (usado por `copy_period()` sin fórmula) NO
+  se tocó a propósito** — su `INSERT OR IGNORE` no incluye `formula_estimado`, así que
+  todo presupuesto copiado a un período nuevo queda con la columna en `NULL`, aunque el
+  origen tuviera fórmula. Decisión, no descuido: copiar un presupuesto recurrente lleva
+  el MONTO ya calculado hacia adelante, no una fórmula "viva" que deba recalcularse cada
+  vez — la fórmula es metadata de cómo se originó ESE número puntual en ESE período, no
+  algo que tenga sentido reproducir automáticamente en el destino. Si en el futuro hace
+  falta lo contrario, es un cambio deliberado aparte, no implícito acá.
+- Falso positivo corregido en `verify/utils/verify_calculadora_segura.py`: el chequeo
+  original de "el módulo nunca usa eval()/exec()" era un substring plano
+  (`"eval(" in codigo_fuente`), que fallaba porque el propio docstring de
+  `calculadora_segura.py` dice, en prosa, "NUNCA usa eval()/exec()" — esa advertencia
+  CONTIENE el substring. El chequeo corregido parsea el código fuente con `ast.parse()`
+  (análisis estático, no ejecución — mismo principio que el propio módulo aplica sobre
+  la expresión del usuario) y busca específicamente nodos `ast.Call` con
+  `func = ast.Name(id='eval'|'exec')` — 0 matches reales, confirmado por lectura del AST,
+  no por ejecutar nada.

@@ -65,6 +65,7 @@ def main() -> None:
     print("\n--- list_categories() — incluir_inactivas ---")
     categoria_a_desactivar = next(c for c in todas if (c["categoria_principal"], c["subcategoria"]) not in {
         ("INGRESOS", "Sueldo"), ("MOVIMIENTO CAPITAL", "Autotransferencia"),
+        ("MOVIMIENTO CAPITAL", "Ahorro/Inversión"),
     })
     manager.execute("UPDATE categorias SET activa = 0 WHERE id = ?;", (categoria_a_desactivar["id"],))
 
@@ -182,6 +183,24 @@ def main() -> None:
             True,
             svc.activate_category(autotransferencia["id"]).success,
         )
+
+    print("\n--- Categorías protegidas: MOVIMIENTO CAPITAL · Ahorro/Inversión (Tarea 1b) ---")
+    ahorro_inversion = manager.fetchone(
+        "SELECT * FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' AND subcategoria = 'Ahorro/Inversión';"
+    )
+    caso("la categoría 'Ahorro/Inversión' existe en el seed (precondición del caso)", True, ahorro_inversion is not None)
+    if ahorro_inversion is not None:
+        try:
+            svc.update_category(ahorro_inversion["id"], categoria_principal="OTRO")
+            caso("update_category() sobre 'Ahorro/Inversión' lanza CategoryProtegidaError", "CategoryProtegidaError", "no lanzó excepción")
+        except CategoryProtegidaError:
+            caso("update_category() sobre 'Ahorro/Inversión' lanza CategoryProtegidaError", "CategoryProtegidaError", "CategoryProtegidaError")
+
+        try:
+            svc.deactivate_category(ahorro_inversion["id"])
+            caso("deactivate_category() sobre 'Ahorro/Inversión' lanza CategoryProtegidaError", "CategoryProtegidaError", "no lanzó excepción")
+        except CategoryProtegidaError:
+            caso("deactivate_category() sobre 'Ahorro/Inversión' lanza CategoryProtegidaError", "CategoryProtegidaError", "CategoryProtegidaError")
 
     manager.desconectar()
 

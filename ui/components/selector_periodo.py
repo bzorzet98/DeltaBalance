@@ -14,7 +14,7 @@ completa de la pantalla que lo usa, así que basta con calcular el texto una
 sola vez al construir.
 """
 
-from typing import Callable
+from typing import Callable, Optional
 
 import flet as ft
 
@@ -34,6 +34,7 @@ def build(
     on_cambio: Callable[[], None],
     mes_key: str = "mes",
     anio_key: str = "anio",
+    text_size: Optional[int] = None,
 ) -> ft.Control:
     """
     Args:
@@ -42,6 +43,13 @@ def build(
                    llamar acá si hace falta).
         on_cambio: Callback tras avanzar/retroceder de mes — el caller
                    reconstruye su pantalla entera con esto.
+        text_size: Tamaño de fuente del texto "Mes Año". None (default)
+                   preserva el tamaño histórico (TypographyTokens.
+                   SECTION_TITLE_SIZE, look de título) — usado por
+                   ui/screens/estadisticas.py, que no pidió cambiarlo.
+                   Los callers que lo usan como parte de una barra de
+                   filtros chica (ver ui/components/barra_filtros.py) le
+                   pasan TypographyTokens.FILTER_SIZE explícitamente acá.
     """
 
     def _avanzar(delta: int, e: ft.ControlEvent) -> None:
@@ -66,7 +74,7 @@ def build(
             ),
             ft.Text(
                 f"{_MESES[estado[mes_key] - 1]} {estado[anio_key]}",
-                size=TypographyTokens.SECTION_TITLE_SIZE,
+                size=text_size if text_size is not None else TypographyTokens.SECTION_TITLE_SIZE,
                 weight=TypographyTokens.SECTION_TITLE_WEIGHT,
                 width=ANCHO_TEXTO_PERIODO,
                 text_align=ft.TextAlign.CENTER,

@@ -45,6 +45,26 @@ from repositories.cuotas_credito_repository import CuotasCreditoRepository
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
 from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 
+# Mapeo nombre de categoría especial (categoria_principal, subcategoria —
+# ver services/categorias_service.py CATEGORIAS_PROTEGIDAS, que las
+# protege de renombre/desactivación por esta misma dependencia) →
+# charge_type de resumen_cargos_extra (Tarea 3 de
+# docs/PROXIMOS_PASOS.md). Vive acá (motor de datos) y no en ui/ porque es
+# una regla de negocio real — "elegir esta categoría significa esto es un
+# cargo extra de tipo X, no una compra" — que un futuro script de lab/ que
+# importe datos históricos también podría necesitar (CLAUDE.md §2), no un
+# detalle de presentación. Keyed por (categoria_principal, subcategoria) y
+# no por id, mismo motivo que CATEGORIAS_PROTEGIDAS: el id varía entre
+# bases (dummy DB de verify/, DB real del usuario), el par de nombres es
+# la identidad estable. Quien consuma esto (ui/screens/compras_cuotas.py)
+# resuelve el id real una sola vez contra la lista de categorías ya
+# cargada en pantalla.
+CATEGORIAS_CARGO_EXTRA: dict[tuple[str, str], str] = {
+    ("TARJETA DE CRÉDITO", "Impuesto tarjeta"): "impuesto",
+    ("TARJETA DE CRÉDITO", "Recargo tarjeta"): "recargo",
+    ("TARJETA DE CRÉDITO", "Ajuste/Reintegro tarjeta"): "ajuste",
+}
+
 # =============================================================
 # EXCEPTIONS
 # =============================================================
@@ -115,6 +135,11 @@ class FeesService:
             total_fees=12,
         )
         # → automatically generates 12 cuotas_credito rows, one per month
+
+        # Monthly per-card breakdown for the dashboard (Tarea 4)
+        svc.resumen_por_tarjeta(month=5, year=2026)
+        # → [{"cuenta_id": 2, "monto_total_minor": ..., ...}, ...] — only
+        #   cards with actual cuotas due that month.
     """
 
     def __init__(self, db: DatabaseManager):
@@ -526,6 +551,119 @@ class FeesService:
             month, year = self._advance_month(month, year)
 
         return result
+
+    # ----------------------------------------------------------
+    # DESGLOSE POR TARJETA (Tarea 4 del dashboard — cuotas + cargos extra)
+    # ----------------------------------------------------------
+
+    def resumen_por_tarjeta(self, mes: int, anio: int) -> list[dict]:
+        """
+        Desglose del total a pagar este mes por cada tarjeta de crédito
+        (cuentas.tipo='credito') CON ACTIVIDAD REAL ese período: solo
+        tarjetas con al menos una cuotas_credito venciendo (mes_proyectado/
+        anio_proyectado) en mes/anio — detección dinámica vía el INNER
+        JOIN de la query de abajo, nunca una lista fija de todas las
+        tarjetas existentes (mismo criterio que
+        DashboardService.get_movimientos_por_cuenta()).
+
+        Para cada grupo (cuenta_id, moneda_id):
+        - monto_cuotas_minor: suma de monto_cuota_minor de esas cuotas.
+          Excluye estado='omitido' (cuotas de compras canceladas vía
+          cancel_purchase() — no son "a pagar"). Incluye 'pendiente',
+          'en_resumen' y 'pagado': lo que importa acá es qué vencía ese
+          mes, no si ya se confirmó/pagó.
+        - monto_cargos_extra_minor: suma de resumen_cargos_extra del
+          resumen de esa cuenta/mes/año (vía
+          ResumenesTarjetaRepository.obtener_por_periodo() +
+          ResumenCargosExtraRepository.listar_por_resumen()) — 0 si el
+          resumen todavía no se abrió o no tiene cargos cargados (hoy no
+          hay UI para cargarlos, Tarea 3 pendiente — el cálculo ya los
+          suma para cuando esa UI exista).
+        - monto_total_minor: monto_cuotas_minor + monto_cargos_extra_minor.
+
+        Ambigüedad de moneda de los cargos extra (ver
+        docs/DATA_MODEL_DECISIONS.md sección 15): `resumen_cargos_extra`
+        no tiene columna de moneda propia — un resumen es por
+        cuenta/mes/año, no por cuenta/mes/año/moneda. Si la MISMA tarjeta
+        tuviera cuotas venciendo en más de una moneda el mismo mes (caso
+        límite que el schema permite pero no ocurre en el uso real: una
+        tarjeta física factura en una sola moneda), no hay forma de saber
+        a cuál de los dos totales sumar los cargos extra sin inventar una
+        convención no documentada — en ese caso monto_cargos_extra_minor
+        queda en 0 en TODOS los grupos de esa tarjeta ese mes, y
+        cargos_extra_multiples_monedas=True lo señala en vez de adivinar.
+        Con una sola moneda por tarjeta ese mes (caso normal) se suman sin
+        ambigüedad.
+
+        Args:
+            mes:  Mes 1–12.
+            anio: Año de 4 dígitos.
+
+        Returns:
+            Lista de dicts {cuenta_id, account_name, moneda_id,
+            currency_code, currency_symbol, decimales, monto_cuotas_minor,
+            monto_cargos_extra_minor, monto_total_minor,
+            cargos_extra_multiples_monedas}, ordenada por account_name.
+
+        Raises:
+            ValueError si mes está fuera de rango.
+        """
+        if not (1 <= mes <= 12):
+            raise ValueError(f"Month must be between 1 and 12. Received: {mes}.")
+
+        filas_cuotas = (
+            QueryBuilder("cuotas_credito qc", include_deleted=True)
+            .select(
+                "c.id AS cuenta_id",
+                "c.nombre AS account_name",
+                "m.id AS moneda_id",
+                "m.codigo AS currency_code",
+                "m.simbolo AS currency_symbol",
+                "m.decimales",
+                "SUM(qc.monto_cuota_minor) AS monto_cuotas_minor",
+            )
+            .join("compras_cuotas pc", "pc.id = qc.compra_id")
+            .join("cuentas c",         "c.id = pc.cuenta_id")
+            .join("monedas m",         "m.id = pc.moneda_id")
+            .where("qc.mes_proyectado",  mes)
+            .where("qc.anio_proyectado", anio)
+            .where("qc.estado", "omitido", "!=")
+            .where("c.tipo", "credito")
+            .group_by("c.id", "m.id")
+            .order("c.nombre")
+            .ejecutar(self._db.conn)
+        )
+
+        monedas_por_cuenta: dict[int, set] = {}
+        for fila in filas_cuotas:
+            monedas_por_cuenta.setdefault(fila["cuenta_id"], set()).add(fila["moneda_id"])
+
+        resultado = []
+        for fila in filas_cuotas:
+            cuenta_id = fila["cuenta_id"]
+            ambiguo = len(monedas_por_cuenta[cuenta_id]) > 1
+
+            cargos_extra_minor = 0
+            if not ambiguo:
+                resumen = self._resumenes_repo.obtener_por_periodo(cuenta_id, mes, anio)
+                if resumen:
+                    cargos = self._cargos_repo.listar_por_resumen(resumen["id"])
+                    cargos_extra_minor = sum(c["monto_minor"] for c in cargos)
+
+            resultado.append({
+                "cuenta_id":                       cuenta_id,
+                "account_name":                    fila["account_name"],
+                "moneda_id":                       fila["moneda_id"],
+                "currency_code":                   fila["currency_code"],
+                "currency_symbol":                 fila["currency_symbol"],
+                "decimales":                       fila["decimales"],
+                "monto_cuotas_minor":              fila["monto_cuotas_minor"],
+                "monto_cargos_extra_minor":        cargos_extra_minor,
+                "monto_total_minor":               fila["monto_cuotas_minor"] + cargos_extra_minor,
+                "cargos_extra_multiples_monedas":  ambiguo,
+            })
+
+        return resultado
 
     # ----------------------------------------------------------
     # STATEMENT MANAGEMENT

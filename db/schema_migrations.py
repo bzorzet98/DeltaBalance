@@ -60,6 +60,16 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         columna="color_hex",
         ddl_columna="color_hex TEXT DEFAULT '#5F5E5A'",
     ),
+    MigracionColumna(
+        tabla="movimientos_activo",
+        columna="transaccion_id",
+        ddl_columna="transaccion_id INTEGER REFERENCES transacciones(id)",
+    ),
+    MigracionColumna(
+        tabla="presupuestos",
+        columna="formula_estimado",
+        ddl_columna="formula_estimado TEXT",
+    ),
 ]
 
 

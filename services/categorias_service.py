@@ -30,7 +30,26 @@ cosas en silencio:
    "category_id: Should be the 'Autotransferencia' category" como el valor
    esperado que cualquier UI de transferencias entre cuentas debe pasar.
    tests/conftest.py la resuelve con
-   "WHERE subcategoria = 'Autotransferencia'" literal.
+   "WHERE subcategoria = 'Autotransferencia'" literal. Desde la Tarea 1b de
+   docs/PROXIMOS_PASOS.md, además, ui/components/registro_transacciones.py
+   la reconoce como categoría de routing especial: elegirla en la fila de
+   alta abre un mini-diálogo (Cuenta destino) y llama a
+   TransactionService.create_transfer() en vez de crear una transacción
+   simple.
+3. TARJETA DE CRÉDITO · Impuesto tarjeta / Recargo tarjeta /
+   Ajuste-Reintegro tarjeta (agregadas Tarea 3 de
+   docs/PROXIMOS_PASOS.md) — ui/screens/compras_cuotas.py resuelve sus
+   ids contra este mismo par de nombres al construir la fila de alta, y
+   rutea la carga a un cargo extra de resumen (resumen_cargos_extra) en
+   vez de una compra en cuotas si la categoría elegida es una de las
+   tres. Ver services/fees_service.py CATEGORIAS_CARGO_EXTRA para el
+   mapeo nombre → charge_type.
+4. MOVIMIENTO CAPITAL · Ahorro/Inversión (nueva, Tarea 1b de
+   docs/PROXIMOS_PASOS.md) — mismo mecanismo que el punto 2, pero
+   ui/components/registro_transacciones.py abre un mini-diálogo de
+   Objetivo de ahorro y llama a SavingsService.register_purchase() con
+   cuenta_id (mecanismo de la Tarea 6b) en vez de crear una transacción
+   simple. Ver docs/DATA_MODEL_DECISIONS.md sección 17.
 
 Otras categorías aparecen hardcodeadas en tests/conftest.py y en
 verify/dashboard/verify_dashboard_service.py (Supermercado, Salud,
@@ -67,6 +86,43 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
         "TransactionService.create_transfer() documenta esta categoría como "
         "la esperada para autotransferencias entre cuentas; tests/verify la "
         "buscan por este nombre exacto."
+    ),
+    # Las tres siguientes (Tarea 3 de docs/PROXIMOS_PASOS.md) alimentan el
+    # routing de cargos extra de resumen de tarjeta:
+    # ui/screens/compras_cuotas.py resuelve, al confirmar la fila de alta,
+    # si la categoría elegida es una de estas tres (por id, ya resuelto
+    # una vez contra este mismo par de nombres) para decidir si crea una
+    # compra en cuotas normal o un cargo extra (resumen_cargos_extra) del
+    # tipo correspondiente — ver services/fees_service.py
+    # CATEGORIAS_CARGO_EXTRA para el mapeo nombre → charge_type. Renombrar
+    # o desactivar cualquiera de las tres rompería ese routing en
+    # silencio (dejaría de reconocerlas como especiales, todo lo cargado
+    # con esa categoría empezaría a crear compras en cuotas normales).
+    ("TARJETA DE CRÉDITO", "Impuesto tarjeta"): (
+        "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
+        "tipo='impuesto' en vez de crear una compra en cuotas — ver "
+        "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
+    ),
+    ("TARJETA DE CRÉDITO", "Recargo tarjeta"): (
+        "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
+        "tipo='recargo' en vez de crear una compra en cuotas — ver "
+        "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
+    ),
+    ("TARJETA DE CRÉDITO", "Ajuste/Reintegro tarjeta"): (
+        "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
+        "tipo='ajuste' en vez de crear una compra en cuotas — ver "
+        "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
+    ),
+    # Tarea 1b de docs/PROXIMOS_PASOS.md — routing de categorías especiales
+    # en el Registro de transacciones. NOTA: "MOVIMIENTO CAPITAL ·
+    # Autotransferencia" ya estaba en esta lista desde antes (ver arriba,
+    # sección "Otras categorías..."); solo "Ahorro/Inversión" es nueva acá.
+    ("MOVIMIENTO CAPITAL", "Ahorro/Inversión"): (
+        "ui/components/registro_transacciones.py rutea esta categoría a un "
+        "mini-diálogo (elegir/crear Objetivo de ahorro) que llama a "
+        "SavingsService.register_purchase() con cuenta_id, en vez de crear "
+        "una transacción simple vía TransactionService.create() — ver "
+        "docs/DATA_MODEL_DECISIONS.md sección 17."
     ),
 }
 
