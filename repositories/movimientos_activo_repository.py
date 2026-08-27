@@ -21,6 +21,14 @@ crear() acepta `conn` desde el arranque: un movimiento de tipo 'compra'
 casi siempre se registra junto con su(s) asignacion(es) inicial(es) a un
 objetivo de ahorro en la misma operación atómica (ver
 AsignacionesRepository.crear(conn=...) y el verify de este módulo).
+
+`transaccion_id` (columna agregada vía db/schema_migrations.py, Fase 2,
+bloque AHORROS, Tarea 6b de docs/PROXIMOS_PASOS.md): vínculo opcional a la
+transacción real que descontó/acreditó una cuenta cuando el movimiento de
+ahorro no fue puramente informal — mismo patrón que
+`recibos_sueldo.transaccion_id`. Nullable: sigue en NULL para movimientos
+sin cuenta asociada (comportamiento previo, sin cambios). Orquestar CUÁNDO
+se llena es responsabilidad de SavingsService, no de este repositorio.
 """
 
 import sqlite3
@@ -48,10 +56,15 @@ class MovimientosActivoRepository:
         precio_unitario_minor: Optional[int] = None,
         dolar_oficial_momento_minor: Optional[int] = None,
         notas: Optional[str] = None,
+        transaccion_id: Optional[int] = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
         Inserta un movimiento de activo (compra/venta/rendimiento).
+
+        transaccion_id: opcional, ver docstring del módulo. NULL si el
+        movimiento es puramente informal (comportamiento previo, sin
+        cambios).
 
         Si se pasa `conn`, el INSERT se ejecuta ahí directamente sin
         comitear, para participar de la transacción externa que también
@@ -62,12 +75,14 @@ class MovimientosActivoRepository:
         sql = """
             INSERT INTO movimientos_activo
                 (activo_id, tipo, fecha, cantidad, precio_unitario_minor,
-                 monto_total_minor, dolar_oficial_momento_minor, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                 monto_total_minor, dolar_oficial_momento_minor, notas,
+                 transaccion_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             activo_id, tipo, fecha, cantidad, precio_unitario_minor,
             monto_total_minor, dolar_oficial_momento_minor, notas,
+            transaccion_id,
         )
         if conn is not None:
             return conn.execute(sql, params).lastrowid

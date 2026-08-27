@@ -57,6 +57,7 @@ class DashboardService:
 
         svc.get_patrimonio_total()                  # {"ARS": 1234500, "USD": 20000}
         svc.get_gasto_por_categoria(5, 2026)         # [{"categoria_id": 3, ...}, ...]
+        svc.get_movimientos_por_cuenta(5, 2026)      # [{"cuenta_id": 1, "net_minor": ..., ...}, ...]
         svc.get_comparacion_presupuesto(5, 2026)     # [{"categoria_id": 3, "estimado_minor": ..., "real_minor": ...}, ...]
     """
 
@@ -158,6 +159,71 @@ class DashboardService:
             }
             for fila in filas
         ]
+
+    # ----------------------------------------------------------
+    # MOVIMIENTOS POR CUENTA (desglose por banco — Tarea 4)
+    # ----------------------------------------------------------
+
+    def get_movimientos_por_cuenta(self, mes: int, anio: int) -> list[dict]:
+        """
+        Desglose de movimientos del mes/año dado, agrupado por
+        (cuenta_id, moneda_id) — SOLO cuentas con al menos una transacción
+        real en ese período: el INNER JOIN contra `cuentas` hace la
+        detección dinámica sola (nunca se parte de una lista fija de todas
+        las cuentas existentes, ni se filtra por `activa` — una cuenta ya
+        archivada que tuvo movimientos ese mes histórico igual debe
+        aparecer). Mismo criterio de ingreso/egreso/neto que
+        TransactionService.monthly_summary(), pero desagregado por cuenta
+        además de por moneda. Nunca mezcla monedas distintas en un mismo
+        total (agrupa por cuenta+moneda, no solo por cuenta) — mismo
+        principio que get_gasto_por_categoria() de acá arriba.
+
+        Args:
+            mes:  Mes 1–12.
+            anio: Año de 4 dígitos.
+
+        Returns:
+            Lista de dicts {cuenta_id, account_name, moneda_id,
+            currency_code, currency_symbol, decimales,
+            total_income_minor, total_expense_minor, net_minor}, ordenada
+            por account_name.
+
+        Raises:
+            ValueError si mes está fuera de rango.
+        """
+        inicio, fin = self._rango_mes(mes, anio)
+
+        filas = self._db.fetchall(
+            """
+            SELECT
+                c.id            AS cuenta_id,
+                c.nombre        AS account_name,
+                m.id            AS moneda_id,
+                m.codigo        AS currency_code,
+                m.simbolo       AS currency_symbol,
+                m.decimales,
+                SUM(CASE WHEN t.tipo_movimiento = 'ingreso'
+                         THEN t.monto_minor ELSE 0 END) AS total_income_minor,
+                SUM(CASE WHEN t.tipo_movimiento = 'egreso'
+                         THEN t.monto_minor ELSE 0 END) AS total_expense_minor,
+                SUM(CASE WHEN t.tipo_movimiento = 'ingreso'
+                         THEN  t.monto_minor
+                         WHEN t.tipo_movimiento = 'egreso'
+                         THEN -t.monto_minor
+                         ELSE  0 END)                   AS net_minor
+            FROM transacciones t
+            JOIN cuentas c ON c.id = t.cuenta_id
+            JOIN monedas m ON m.id = t.moneda_id
+            WHERE t.fecha >= ?
+              AND t.fecha < ?
+              AND t.deleted_at IS NULL
+            GROUP BY c.id, m.id
+            ORDER BY c.nombre;
+            """,
+            (inicio, fin),
+        )
+
+        return [dict(fila) for fila in filas]
 
     # ----------------------------------------------------------
     # COMPARACIÓN ESTIMADO VS. REAL

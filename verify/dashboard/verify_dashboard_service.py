@@ -6,10 +6,14 @@ cero en Fase 5. Cubre get_patrimonio_total() (delega en
 AccountsService.get_total_balance(), cuentas en dos monedas sin mezclar),
 get_gasto_por_categoria() (varias transacciones en varias categorías,
 confirmando el agrupamiento por categoría, el orden de mayor a menor, y un
-caso de dos monedas en el mismo mes/categoría sin mezclarse), y
-get_comparacion_presupuesto() con los tres casos: categoría con presupuesto
-y gasto real, categoría con presupuesto sin gasto real (real_minor=0), y
-categoría con gasto real pero sin presupuesto (excluida del resultado).
+caso de dos monedas en el mismo mes/categoría sin mezclarse),
+get_movimientos_por_cuenta() (Tarea 4: desglose por banco — dos cuentas con
+movimientos reales en dos monedas distintas sin mezclarse, y una tercera
+cuenta sin ningún movimiento ese mes que NO debe aparecer, confirmando la
+detección dinámica), y get_comparacion_presupuesto() con los tres casos:
+categoría con presupuesto y gasto real, categoría con presupuesto sin
+gasto real (real_minor=0), y categoría con gasto real pero sin presupuesto
+(excluida del resultado).
 
 Correlo con:
     python verify/dashboard/verify_dashboard_service.py
@@ -135,6 +139,53 @@ def main() -> None:
     except ValueError:
         caso_excepcion_mes_invalido = True
     caso("get_gasto_por_categoria() con mes fuera de rango lanza ValueError", True, caso_excepcion_mes_invalido)
+
+    # ------------------------------------------------------------
+    # get_movimientos_por_cuenta() — Tarea 4 (desglose por banco)
+    # ------------------------------------------------------------
+    print("\n--- get_movimientos_por_cuenta() — detección dinámica por cuenta ---")
+
+    cuenta_sin_movimientos = accounts_svc.create_account(
+        nombre="Cuenta sin movimientos en mayo", tipo="efectivo", monedas=[moneda_ars]
+    ).account_id
+
+    # cuenta_ars en mayo 2026: ingresos 100000 + 500000, egresos 30000 +
+    # 20000 + 15000 + 80000 (999999 de abril queda afuera) → neto 455000.
+    # cuenta_usd en mayo 2026: ingreso 5000, egreso 4000 → neto 1000, sin
+    # mezclarse con el neto en ARS de arriba.
+    movimientos_mayo = dash_svc.get_movimientos_por_cuenta(5, 2026)
+    por_cuenta_moneda = {(m["cuenta_id"], m["moneda_id"]): m for m in movimientos_mayo}
+
+    caso(
+        "get_movimientos_por_cuenta() incluye cuenta_ars con su neto correcto",
+        455000,
+        por_cuenta_moneda.get((cuenta_ars, moneda_ars), {}).get("net_minor"),
+    )
+    caso(
+        "get_movimientos_por_cuenta() incluye cuenta_usd con su propio neto, sin mezclar con ARS",
+        1000,
+        por_cuenta_moneda.get((cuenta_usd, moneda_usd), {}).get("net_minor"),
+    )
+    caso(
+        "get_movimientos_por_cuenta() NO incluye la cuenta sin movimientos ese mes (detección dinámica)",
+        False,
+        any(m["cuenta_id"] == cuenta_sin_movimientos for m in movimientos_mayo),
+    )
+    caso(
+        "get_movimientos_por_cuenta() trae total_income_minor/total_expense_minor coherentes con net_minor",
+        True,
+        all(
+            m["net_minor"] == m["total_income_minor"] - m["total_expense_minor"]
+            for m in movimientos_mayo
+        ),
+    )
+
+    caso_excepcion_mes_invalido_movimientos = False
+    try:
+        dash_svc.get_movimientos_por_cuenta(0, 2026)
+    except ValueError:
+        caso_excepcion_mes_invalido_movimientos = True
+    caso("get_movimientos_por_cuenta() con mes fuera de rango lanza ValueError", True, caso_excepcion_mes_invalido_movimientos)
 
     # ------------------------------------------------------------
     # get_comparacion_presupuesto()

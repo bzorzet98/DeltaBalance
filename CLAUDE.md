@@ -137,3 +137,18 @@ bajo un comentario `# --- Configuración de layout ---` o similar. Nada de núme
 sueltos en medio del código de construcción de widgets. Esto es además de (no en
 reemplazo de) usar los tokens de `theme/tokens.py` para colores/spacing/tipografía
 genéricos — es específicamente para los valores particulares de esa pantalla.
+
+Cualquier valor usado para decidir layout según plataforma o tamaño de pantalla
+(breakpoints de `page.width`, anchos de sidebar expandida/colapsada, umbrales de
+responsive, relaciones de aspecto) debe declararse como variable global al
+principio del archivo donde se usa — mismo criterio ya vigente para números
+mágicos en general, pero remarcado explícitamente para esto porque estos valores
+van a necesitar ajustarse distinto entre web, Android y desktop, y tienen que ser
+fáciles de encontrar y tocar sin buscar en medio del código.
+
+## 9. Campos de Monto
+
+Todo campo que reciba un monto en cualquier pantalla nueva o existente debe usar
+`ui/components/campo_monto.py` (`CampoMonto`), nunca un `TextField` crudo con
+validación numérica manual — así la calculadora de fórmulas queda disponible de
+forma consistente en toda la app sin tener que pedirlo pantalla por pantalla.

@@ -15,6 +15,13 @@ presupuesto que ya existe en el destino — mismo criterio "no pisar" que
 PresupuestosRepository.copiar_periodo() usa vía INSERT OR IGNORE (ver
 docstring de copy_period() en el service).
 
+Cubre además: list_budgeted_category_ids(), y formula_estimado (parámetro
+nuevo de set_budget(), pasthrough directo a
+PresupuestosRepository.upsert()): guardar con fórmula persiste el texto Y
+el monto ya calculado; guardar sin fórmula deja la columna en NULL;
+sobreescribir un presupuesto con fórmula con un set_budget() SIN
+formula_estimado limpia la columna a NULL.
+
 Correlo con:
     python verify/presupuestos_ingresos_empleos/verify_presupuestos_service.py
 """
@@ -154,6 +161,46 @@ def main() -> None:
         svc.get_budget(cat_1, 6, 2026)["monto_estimado_minor"],
     )
     caso("copy_period() con overlap parcial SÍ copia cat_2 (faltaba)", 50000, svc.get_budget(cat_2, 6, 2026)["monto_estimado_minor"])
+
+    print("\n--- list_budgeted_category_ids() ---")
+    cat_sin_presupuesto = manager.fetchall("SELECT id FROM categorias WHERE tipo = 'egreso';")[-1]["id"]
+    ids_presupuestadas = svc.list_budgeted_category_ids()
+    caso("list_budgeted_category_ids() incluye cat_1 (presupuestada en varios períodos)", True, cat_1 in ids_presupuestadas)
+    caso("list_budgeted_category_ids() incluye cat_2 (presupuestada)", True, cat_2 in ids_presupuestadas)
+    caso(
+        "list_budgeted_category_ids() no incluye una categoría de egreso que nunca se presupuestó",
+        False,
+        cat_sin_presupuesto in ids_presupuestadas,
+    )
+
+    print("\n--- set_budget() — formula_estimado: guardar con fórmula persiste AMBOS campos ---")
+    cat_formula = manager.fetchall("SELECT id FROM categorias WHERE tipo = 'egreso';")[-2]["id"]
+    res_con_formula = svc.set_budget(
+        categoria_id=cat_formula, mes=1, anio=2026, moneda_id=moneda_ars,
+        monto_estimado_minor=17700, formula_estimado="=15000+3200-500",
+    )
+    caso("set_budget() con formula_estimado devuelve success=True", True, res_con_formula.success)
+    caso("set_budget() con formula_estimado devuelve formula_estimado en data", "=15000+3200-500", res_con_formula.data["formula_estimado"])
+    fila_con_formula = svc.get_budget(cat_formula, 1, 2026)
+    caso("set_budget() con formula_estimado persiste el monto_estimado_minor ya calculado", 17700, fila_con_formula["monto_estimado_minor"])
+    caso("set_budget() con formula_estimado persiste el texto de la fórmula tal cual", "=15000+3200-500", fila_con_formula["formula_estimado"])
+
+    print("\n--- set_budget() — formula_estimado: guardar SIN fórmula deja la columna en NULL ---")
+    cat_sin_formula = manager.fetchall("SELECT id FROM categorias WHERE tipo = 'egreso';")[-3]["id"]
+    svc.set_budget(categoria_id=cat_sin_formula, mes=1, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=50000)
+    fila_sin_formula = svc.get_budget(cat_sin_formula, 1, 2026)
+    caso("set_budget() sin pasar formula_estimado (default None) deja la columna en NULL", None, fila_sin_formula["formula_estimado"])
+
+    print("\n--- set_budget() — formula_estimado: sobreescribir con un número directo limpia la fórmula vieja a NULL ---")
+    svc.set_budget(categoria_id=cat_formula, mes=1, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=99999)  # sin formula_estimado
+    fila_tras_sobreescribir = svc.get_budget(cat_formula, 1, 2026)
+    caso("set_budget() sobre una fila que tenía fórmula: el nuevo monto_estimado_minor se persiste", 99999, fila_tras_sobreescribir["monto_estimado_minor"])
+    caso(
+        "set_budget() sobre una fila que tenía fórmula: al no pasar formula_estimado de nuevo, queda en NULL "
+        "(no se arrastra una fórmula vieja asociada a un monto que ya no le corresponde)",
+        None,
+        fila_tras_sobreescribir["formula_estimado"],
+    )
 
     manager.desconectar()
 

@@ -124,6 +124,7 @@ class PresupuestosService:
         monto_estimado_minor: int,
         es_recurrente: bool = False,
         notas: Optional[str] = None,
+        formula_estimado: Optional[str] = None,
     ) -> PresupuestoResult:
         """
         Crea o actualiza el presupuesto de una categoría para un mes/año
@@ -135,10 +136,27 @@ class PresupuestosService:
             mes:                   1-12 (ValueError si no).
             anio:                  Año del presupuesto.
             moneda_id:              Debe existir (CurrencyNotFoundError si no).
-            monto_estimado_minor:  Debe ser > 0 (ValueError si no).
+            monto_estimado_minor:  Debe ser > 0 (ValueError si no) — el
+                                   RESULTADO ya calculado, sea de una
+                                   fórmula o de un número directo. Este
+                                   service no evalúa fórmulas (eso vive en
+                                   utils/calculadora_segura.py, capa de
+                                   ui/) — solo persiste el par
+                                   (resultado, fórmula que lo produjo).
             es_recurrente:         Si este presupuesto se copia por default
                                    en copy_period(solo_recurrentes=True).
             notas:                 Nota libre opcional.
+            formula_estimado:      Texto de la fórmula que produjo
+                                   monto_estimado_minor (con el "="
+                                   incluido), o None si se cargó como
+                                   número directo. SIEMPRE se reescribe en
+                                   el camino UPDATE (pasthrough directo de
+                                   PresupuestosRepository.upsert(), sin
+                                   sentinel de "no tocar") — pasar None a
+                                   propósito sobre un presupuesto que antes
+                                   tenía fórmula la limpia a NULL, para no
+                                   dejar una fórmula vieja asociada a un
+                                   monto que ya no le corresponde.
 
         Returns:
             PresupuestoResult con los datos del presupuesto seteado.
@@ -166,6 +184,7 @@ class PresupuestosService:
             monto_estimado_minor=monto_estimado_minor,
             es_recurrente=es_recurrente,
             notas=notas,
+            formula_estimado=formula_estimado,
         )
 
         return PresupuestoResult(
@@ -177,6 +196,7 @@ class PresupuestosService:
                 "moneda_id":             moneda_id,
                 "monto_estimado_minor":  monto_estimado_minor,
                 "es_recurrente":         es_recurrente,
+                "formula_estimado":      formula_estimado,
                 "filas_afectadas":       filas_afectadas,
             },
             message=f"Budget set for category {categoria_id} on {mes:02d}/{anio}.",
@@ -197,6 +217,17 @@ class PresupuestosService:
         en PresupuestosRepository.listar_por_periodo()).
         """
         return self._repo.listar_por_periodo(mes, anio)
+
+    def list_budgeted_category_ids(self) -> list[int]:
+        """
+        IDs de categorías con al menos un presupuesto cargado alguna vez,
+        en cualquier período — pasthrough directo de
+        PresupuestosRepository.listar_categoria_ids_con_presupuesto(). Sin
+        lógica de negocio propia: filtrar SOLO las de tipo='egreso' o
+        combinar con las agregadas a mano en la sesión es responsabilidad
+        de quien consume esto (ui/screens/presupuestos.py).
+        """
+        return self._repo.listar_categoria_ids_con_presupuesto()
 
     # ----------------------------------------------------------
     # UPDATE EXECUTED

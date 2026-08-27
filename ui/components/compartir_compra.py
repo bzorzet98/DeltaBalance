@@ -1,65 +1,108 @@
 """
-DeltaBalance — ui/components/compartir_gasto.py
+DeltaBalance — ui/components/compartir_compra.py
 
-Ícono + flujo de "Compartir" para una fila YA GUARDADA del Registro de
-transacciones (nunca en la fila de carga vacía). build_icon() decide su
-propio estado consultando SharedExpensesService.get_shared_expense_by_origin()
-para esa transacción puntual:
+Ícono + flujo de "Compartir" para una fila YA GUARDADA de Compras en
+cuotas (ui/screens/compras_cuotas.py) — mismo patrón visual/de
+interacción que ui/components/compartir_gasto.py para el Registro de
+transacciones (ícono que aparece al hover, popover compacto con hogar +
+coeficiente), pero apuntando a
+SharedExpensesService.add_shared_purchase() en vez de
+add_shared_expense(): acá el origen es una compra_cuotas/cuotas_credito
+completa, no una transacción suelta — ver docstring de
+add_shared_purchase() para el detalle de por qué esa orquestación no
+existía antes de esta ronda.
 
-- Sin gasto compartido asociado: ícono outline (ft.Icons.PEOPLE_OUTLINE),
-  tocarlo abre el flujo para cargar uno.
-- Con gasto compartido asociado: ícono relleno (ft.Icons.PEOPLE), tocarlo
-  muestra el detalle de solo lectura en vez de ofrecer crear uno nuevo
-  (evita duplicados — mismo criterio que GastoCompartidoDuplicadoError, que
-  el propio service ya usa internamente).
+Detección de "ya compartido": una compra puede compartirse de dos formas
+según su modo_deuda — 'total_unico' (un solo gasto_compartido,
+origen_tipo='compra_cuotas') o 'prorrateado' (uno por cada
+cuotas_credito, origen_tipo='cuota_credito'). _estado_compartido()
+resuelve cuál corresponde y devuelve (algo_compartido, todo_compartido,
+compartidas, total):
+- El ÍCONO usa "algo_compartido" (relleno si hay AL MENOS una unidad
+  compartida, aunque sea parcial) — mismo criterio binario simple que
+  compartir_gasto.py para decidir si queda siempre visible o solo aparece
+  al hover.
+- El CLICK, a diferencia de compartir_gasto.py, sí distingue parcial de
+  total: si "todo_compartido" abre el detalle de solo lectura (no hay
+  nada más que compartir); si es parcial o nada, abre el flujo de carga
+  — add_shared_purchase() ya sabe saltear las cuotas que ya tienen un
+  gasto compartido asociado, así que "compartir de nuevo" una compra
+  parcialmente compartida simplemente completa lo que falta, en vez de
+  duplicar o bloquear.
 
-Identidad del usuario local: la app todavía no tiene autenticación real
-(hogar_miembros.usuario_local es un string simple — auth con Supabase llega
-en una fase futura, ver docstring de services/shared_expenses_service.py).
-Mientras tanto, el nombre que te identifica en los hogares compartidos se
-guarda en page.client_storage, la primera vez que creás o te unís a un
-hogar desde acá — no hay pantalla de configuración separada para esto
-todavía. El get/set en sí vive en ui/components/usuario_local.py (extraído
-de acá cuando ui/components/compartir_compra.py necesitó la misma lógica,
-para no duplicarla) — ver ese módulo para el detalle de por qué no está
-confirmado contra una instalación real de Flet 0.86.5.
+No se puede elegir modo_deuda desde acá (pedido explícito): usa el que ya
+tiene la compra guardada (compras_cuotas.modo_deuda, default
+'prorrateado' si nunca se seteó explícito al crearla).
 
-Íconos: PEOPLE / PEOPLE_OUTLINE es el par outline/filled estándar de
-Material Icons — no confirmados contra la versión instalada (mismo caveat
-que flet_charts.PieChart en docs/FLET_API_NOTES.md, regla 2) — avisar si no
-existen corriendo la app.
+Identidad del usuario local y diálogo de "todavía no tenés hogar": ver
+ui/components/usuario_local.py, compartido con compartir_gasto.py.
 
-Reglas de arquitectura: solo SharedExpensesService — nunca repositories/ ni
-db/ directo (CLAUDE.md §2/§3).
+Reglas de arquitectura: SharedExpensesService (dueño de
+gastos_compartidos) y FeesService (solo LECTURA, para leer las cuotas de
+la compra al chequear estado y armar el detalle — nunca escribe
+compras_cuotas/cuotas_credito desde acá) — nunca repositories/ ni db/
+directo (CLAUDE.md §2/§3).
 """
 
 from typing import Callable, Optional
 
 import flet as ft
 
+from services.fees_service import FeesService
 from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
 from ui.components.usuario_local import abrir_dialogo_sin_hogar, obtener_usuario_local
-from utils.money import amount_display
 
 # --- Configuración de layout ---
 ANCHO_DIALOGO = 360
 
 
+def _estado_compartido(
+    shared_expenses_service: SharedExpensesService,
+    fees_service: FeesService,
+    compra: dict,
+) -> tuple[bool, bool, int, int]:
+    """
+    Returns:
+        (algo_compartido, todo_compartido, compartidas, total).
+        `total` es 1 para modo_deuda='total_unico' (una sola unidad
+        compartible), o la cantidad de cuotas_credito de la compra para
+        'prorrateado'. Una compra 'prorrateado' sin ninguna cuota
+        generada devuelve (False, False, 0, 0) — no debería pasar en la
+        práctica (create_purchase() siempre genera al menos 1), pero no
+        se asume.
+    """
+    if compra["modo_deuda"] == "total_unico":
+        existe = shared_expenses_service.get_shared_expense_by_origin("compra_cuotas", compra["id"]) is not None
+        return existe, existe, (1 if existe else 0), 1
+
+    cuotas = fees_service.get_fees_for_purchase(compra["id"])
+    if not cuotas:
+        return False, False, 0, 0
+    compartidas = sum(
+        1 for c in cuotas
+        if shared_expenses_service.get_shared_expense_by_origin("cuota_credito", c["id"]) is not None
+    )
+    return compartidas > 0, compartidas == len(cuotas), compartidas, len(cuotas)
+
+
 def build_icon(
     page: ft.Page,
     shared_expenses_service: SharedExpensesService,
-    transaccion: dict,
+    fees_service: FeesService,
+    compra: dict,
     on_cambio: Callable[[], None],
 ) -> tuple[ft.Control, bool]:
     """
     Returns:
-        (control, ya_compartido) — el caller (registro_transacciones.py)
+        (control, ya_compartido) — mismo contrato que
+        compartir_gasto.build_icon(): el caller (ui/screens/compras_cuotas.py)
         usa ya_compartido para decidir si el ícono queda siempre visible
-        (indicador persistente de "ya compartido") o solo aparece al hover
-        de la fila (acción de descubrimiento cuando todavía no se compartió).
+        (indicador persistente) o solo aparece al hover de la fila.
     """
-    gasto_existente = shared_expenses_service.get_shared_expense_by_origin("transaccion", transaccion["id"])
-    ya_compartido = gasto_existente is not None
+    algo_compartido, todo_compartido, compartidas, total = _estado_compartido(
+        shared_expenses_service, fees_service, compra,
+    )
+    ya_compartido = algo_compartido
 
     def _mostrar_mensaje(mensaje: str, es_error: bool = False) -> None:
         snack = ft.SnackBar(content=ft.Text(mensaje), bgcolor=ft.Colors.ERROR_CONTAINER if es_error else None)
@@ -70,18 +113,13 @@ def build_icon(
     def _cerrar_dialogo(e=None) -> None:
         page.pop_dialog()
 
-    # ------------------------------------------------------------
-    # PASO "sin hogar todavía": diálogo compartido con compartir_compra.py
-    # (ver ui/components/usuario_local.py) — crear uno nuevo o unirse por
-    # código.
-    # ------------------------------------------------------------
     def _abrir_sin_hogar(nombre_prellenado: str) -> None:
         abrir_dialogo_sin_hogar(page, shared_expenses_service, nombre_prellenado, on_listo=_abrir_flujo)
 
     # ------------------------------------------------------------
-    # PASO "cargar el gasto compartido" — popover compacto
+    # PASO "cargar/completar la compra compartida" — popover compacto
     # ------------------------------------------------------------
-    def _abrir_cargar_gasto(usuario_local: str, mis_hogares: list[dict]) -> None:
+    def _abrir_cargar_compra(usuario_local: str, mis_hogares: list[dict]) -> None:
         hogar_seleccionado = {"id": mis_hogares[0]["hogar_id"]}
 
         def _sugerencia(hogar_id: int) -> tuple[Optional[float], str]:
@@ -112,7 +150,15 @@ def build_icon(
             campo_coeficiente.helper_text = ayuda
             page.update()
 
-        controles: list[ft.Control] = []
+        controles: list[ft.Control] = [ft.Text(f"Modo de deuda de esta compra: {compra['modo_deuda']}.")]
+        if compra["modo_deuda"] == "prorrateado" and compartidas > 0:
+            controles.append(
+                ft.Text(
+                    f"{compartidas} de {total} cuota(s) ya tenían un gasto compartido y se van a saltear — "
+                    f"esto va a compartir las {total - compartidas} restante(s).",
+                    color=ft.Colors.OUTLINE,
+                )
+            )
         if len(mis_hogares) > 1:
             dropdown_hogar = ft.Dropdown(
                 label="Hogar",
@@ -134,26 +180,22 @@ def build_icon(
                 _mostrar_mensaje("El coeficiente no es un número válido.", es_error=True)
                 return
             try:
-                resultado = shared_expenses_service.add_shared_expense(
+                resultado = shared_expenses_service.add_shared_purchase(
+                    compra_id=compra["id"],
                     hogar_id=hogar_seleccionado["id"],
                     pagador=usuario_local,
-                    origen_tipo="transaccion",
-                    origen_id=transaccion["id"],
-                    categoria_id=transaccion["categoria_id"],
-                    monto_base_minor=transaccion["monto_minor"],
                     coeficiente_deuda=coeficiente,
-                    fecha=transaccion["fecha"],
                 )
             except (SharedExpensesError, ValueError) as err:
                 _mostrar_mensaje(str(err), es_error=True)
                 return
             _cerrar_dialogo()
-            _mostrar_mensaje(f"Gasto compartido #{resultado.entity_id} registrado.")
+            _mostrar_mensaje(f"{resultado.data['gastos_creados']} gasto(s) compartido(s) registrado(s).")
             on_cambio()
 
         dialogo = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Compartir este movimiento"),
+            title=ft.Text("Compartir esta compra"),
             content=ft.Container(
                 width=ANCHO_DIALOGO,
                 content=ft.Column(controles, tight=True, spacing=10, scroll=ft.ScrollMode.AUTO),
@@ -167,23 +209,23 @@ def build_icon(
         page.show_dialog(dialogo)
 
     # ------------------------------------------------------------
-    # PASO "ya compartido" — detalle de solo lectura
+    # PASO "ya compartido por completo" — detalle de solo lectura
     # ------------------------------------------------------------
-    def _abrir_detalle(gasto) -> None:
-        monto_texto = amount_display(
-            gasto["monto_adeudado_minor"], transaccion["decimales"], transaccion["currency_symbol"] or "",
+    def _abrir_detalle() -> None:
+        resumen = (
+            "Compartida como gasto único."
+            if compra["modo_deuda"] == "total_unico"
+            else f"{compartidas} de {total} cuota(s) compartida(s)."
         )
         dialogo = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Gasto compartido"),
+            title=ft.Text("Gasto compartido de esta compra"),
             content=ft.Container(
                 width=ANCHO_DIALOGO,
                 content=ft.Column(
                     [
-                        ft.Text(f"Pagador: {gasto['pagador']}"),
-                        ft.Text(f"Coeficiente: {gasto['coeficiente_deuda']}%"),
-                        ft.Text(f"Monto adeudado: {monto_texto}"),
-                        ft.Text(f"Estado: {gasto['estado']}"),
+                        ft.Text(f"Modo de deuda: {compra['modo_deuda']}."),
+                        ft.Text(resumen),
                     ],
                     tight=True,
                     spacing=6,
@@ -203,18 +245,22 @@ def build_icon(
         if not mis_hogares:
             _abrir_sin_hogar(nombre_prellenado=usuario_local or "")
             return
-        _abrir_cargar_gasto(usuario_local, mis_hogares)
+        _abrir_cargar_compra(usuario_local, mis_hogares)
 
     def _on_click(e: ft.ControlEvent) -> None:
-        if ya_compartido:
-            _abrir_detalle(gasto_existente)
+        if todo_compartido:
+            _abrir_detalle()
         else:
             _abrir_flujo()
 
     icono = ft.IconButton(
         icon=ft.Icons.PEOPLE if ya_compartido else ft.Icons.PEOPLE_OUTLINE,
         icon_color=ft.Colors.PRIMARY if ya_compartido else ft.Colors.OUTLINE,
-        tooltip="Gasto compartido (ya cargado)" if ya_compartido else "Compartir con hogar",
+        tooltip=(
+            "Gasto compartido (ya cargado)" if todo_compartido
+            else f"Compartido parcialmente ({compartidas}/{total}) — click para compartir el resto"
+            if algo_compartido else "Compartir con hogar"
+        ),
         on_click=_on_click,
     )
     return icono, ya_compartido

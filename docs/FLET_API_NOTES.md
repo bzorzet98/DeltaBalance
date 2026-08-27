@@ -49,25 +49,58 @@ Para el gasto por categoría del dashboard, el control relevante es `PieChart`.
 Para futuras pantallas de Estadísticas (línea temporal de gastos/ingresos a lo
 largo del tiempo), `LineChart` o `BarChart` son los candidatos.
 
-## Autocompletado / filtro al escribir
+## Autocompletado / filtro al escribir — Dropdown Y AutoComplete descartados para este caso de uso
 
-Confirmado por documentación oficial (docs.flet.dev/controls/dropdown,
-docs.flet.dev/controls/autocomplete):
+**Veredicto (después de probar los dos controles nativos en la práctica, en
+`ui/components/registro_transacciones.py` y `ui/screens/compras_cuotas.py`):
+ninguno de los dos sirve para un campo de "muchas opciones + necesita
+filtro" (Banco, Categoría) en esta versión de Flet. Se reemplazaron ambos
+por un componente propio, `ui/components/campo_filtrable.py`
+(`CampoFiltrable`) — TextField + lista de sugerencias propia, sin
+Dropdown ni AutoComplete. No volver a intentar ninguno de los dos para
+este caso de uso sin resolver primero los problemas de abajo.**
 
-- `ft.Dropdown(enable_filter=True, editable=True)`: dropdown que se filtra
-  escribiendo, comparación case-insensitive contra el texto de las opciones ya
-  cargadas. Es el control correcto para campos que deben referenciar una fila
-  existente (categoría, cuenta) pero se quieren escribir en vez de solo
-  scrollear una lista.
-  ⚠️ Bug conocido (issue #5338 del repo de Flet): seleccionar una opción con
-  teclado (flechas + Enter) puede no disparar `on_change` ni actualizar
-  `.value`, aunque el texto visible sí cambie — la selección con click de mouse
-  sí funciona bien. Si se necesita que Enter confirme la selección de forma
-  confiable, probarlo primero; si falla, manejar la confirmación por otro
-  evento en vez de asumir que `on_change` se disparó.
-- `ft.AutoComplete`: control separado con `suggestions` (lista de
-  `AutoCompleteSuggestion(key=, value=)`), `on_change`/`on_select`. Para texto
-  libre con sugerencias, no para forzar una selección de una lista cerrada.
+- `ft.Dropdown(enable_filter=True, editable=True)`: documentado por
+  docs.flet.dev/controls/dropdown como el control para filtrar
+  escribiendo (comparación case-insensitive contra `options` ya
+  cargadas). Problemas reales confirmados en este proyecto:
+  - ⚠️ Bug conocido (issue #5338 del repo de Flet): seleccionar una opción
+    con teclado (flechas + Enter) puede no disparar `on_change` ni
+    actualizar `.value`, aunque el texto visible sí cambie — la selección
+    con click de mouse sí funciona bien.
+  - ⚠️ El primer Tab hacia el campo enfoca el selector CERRADO, no un
+    campo de texto listo para escribir — hace falta un segundo Tab/Enter
+    para poder tipear. Confirmado en la práctica, no solo en teoría.
+  - Confirmado además por lectura del código fuente real instalado
+    (`flet/controls/material/dropdown.py`, Flet 0.86.5): `Dropdown` NO
+    tiene `on_submit` (solo `TextField` lo tiene) — cualquier código que
+    le asigne `dropdown.on_submit = ...` se ejecuta sin error pero nunca
+    dispara nada; usar `on_select` para confirmar por teclado/click.
+
+- `ft.AutoComplete`: documentado por docs.flet.dev/controls/autocomplete
+  como control separado con `suggestions` (lista de
+  `AutoCompleteSuggestion(key=, value=)`) y `on_change`/`on_select`, para
+  texto libre con sugerencias. Problema real confirmado en este proyecto:
+  - ⚠️ **No mostraba ninguna lista de sugerencias al escribir, en ninguna
+    pantalla** — confirmado por el usuario corriendo la app, con la
+    consola del navegador sin errores (no es una excepción atrapada). NO
+    se investigó la causa real a fondo (se decidió reemplazar el control
+    en vez de seguir depurando) — como hipótesis sin confirmar, podría
+    ser que `suggestions` no llegue a poblarse del lado del cliente en
+    esta versión, o que el popup se recorte por un contenedor padre con
+    overflow/clip; ninguna de las dos se verificó.
+  - Confirmado por lectura del código fuente real instalado
+    (`flet/controls/material/auto_complete.py`, Flet 0.86.5) — no por
+    documentación externa, que no refleja esto: en esta versión
+    `AutoComplete` es un control muy desnudo. Sus únicos campos son
+    `value`, `suggestions`, `suggestions_max_height`, `on_select`,
+    `on_change`, más `width`/`height` (heredados de `LayoutControl`). NO
+    tiene `label`, `hint_text`, `dense`, `text_size`, `text_style`,
+    `border`, `focus()` NI `on_submit` — a diferencia de `Dropdown` y
+    `TextField`, que sí heredan todo eso de `FormFieldControl`. Esto por
+    sí solo ya lo dejaba sin decoración visual propia y sin poder
+    participar de un encadenado de foco por Enter, aunque no explica por
+    sí solo el problema de las sugerencias que no aparecen.
 
 ## `ft.Row`/`ft.Column` con `wrap=True` no soportan hijos `expand=True`
 
@@ -98,6 +131,43 @@ extremos de una fila, usar `alignment=ft.MainAxisAlignment.SPACE_BETWEEN` (sin
   `str(e.data).lower() == "true"`: usado para mostrar el ícono "Compartir"
   solo al pasar el mouse por una fila del Registro. Tampoco tiene
   precedente en este proyecto. Confirmar corriendo la app.
+- `ui/components/campo_filtrable.py` (`CampoFiltrable`, reemplazo de
+  Dropdown/AutoComplete, ver sección de arriba): usa un `on_blur` ASYNC
+  (`async def`) con `await asyncio.sleep(0.2)` adentro, para dar tiempo a
+  que un click en una sugerencia (que también dispara blur en el
+  TextField) se termine de procesar antes de esconder/validar — técnica
+  de "delayed blur", no específica de Flet. Sin precedente en este
+  proyecto: Flet soporta handlers async de forma general (no es un
+  patrón nuevo del ciclo 0.80+), pero esta combinación puntual (blur
+  async + sleep + esconder una lista de sugerencias construida a mano)
+  no se había probado acá. Si al clickear una sugerencia el campo queda
+  vacío/en error en vez de tomar la selección, es la primera señal de que
+  este mecanismo necesita ajustarse (aumentar el delay, o revisar el
+  orden real de los eventos blur/click en la versión instalada).
+
+- **Arreglo de Tab en `CampoFiltrable` (reportado tras la ronda anterior):**
+  al confirmar un valor por click en una sugerencia o por auto-selección al
+  perder foco, Tab no avanzaba al siguiente campo de la fila. Causa más
+  probable (no confirmable al 100% sin correr la app — la implementación
+  real de `visible` vive en el lado Flutter/Dart compilado, no en el
+  paquete Python instalado que se puede leer): `_contenedor_sugerencias`
+  quedaba siempre montado en `self.control.controls` con `visible=False`
+  en vez de sacarse del árbol — probablemente seguía siendo alcanzable por
+  el recorrido de foco/tab de Flutter aunque no se viera, y Tab desde el
+  TextField caía ahí en vez de saltar al siguiente control del Row del
+  caller. Arreglo aplicado (no depende de adivinar la semántica real de
+  `visible=False`): `_mostrar_sugerencias()`/`_ocultar_sugerencias()`
+  ahora agregan/sacan `_contenedor_sugerencias` de
+  `self.control.controls` directamente, así que cuando está oculto no
+  existe en el árbol, sin ambigüedad. Además, `_on_click_sugerencia()`
+  restaura el foco al TextField explícitamente después de una selección
+  por click (el click deja el foco "parado" sobre el ítem recién sacado
+  del árbol). **Pendiente de confirmar corriendo la app.** Si Tab sigue
+  sin avanzar después de este cambio, el siguiente paso sería interceptar
+  la tecla Tab a mano vía `page.on_keyboard_event()` en el caller y
+  encadenar foco manualmente — no implementado preventivamente para no
+  apilar un tercer mecanismo especulativo sin evidencia de que hiciera
+  falta.
 
 ## Regla para trabajar en este proyecto
 

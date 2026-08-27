@@ -60,11 +60,38 @@ INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUE
     ('EGRESOS VARIABLES', 'Regalos y Mascotas',   'egreso');
 
 -- MOVIMIENTO CAPITAL
+-- 'Ahorro/Inversión' (Tarea 1b de docs/PROXIMOS_PASOS.md, ver
+-- services/categorias_service.py CATEGORIAS_PROTEGIDAS) es categoría
+-- especial protegida: elegirla en la fila de alta del Registro de
+-- transacciones (ui/components/registro_transacciones.py) rutea a un
+-- aporte de ahorro (SavingsService.register_purchase()) en vez de crear
+-- una transacción simple. NUEVA en una base ya existente: INSERT OR
+-- IGNORE acá no alcanza a data/deltabalance.db si ya existía antes de
+-- este cambio — correr migration/agregar_categoria_ahorro_inversion.py a
+-- mano en ese caso.
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
     ('MOVIMIENTO CAPITAL', 'Autotransferencia',  'movimiento'),
     ('MOVIMIENTO CAPITAL', 'Rendimientos',        'ingreso'),
     ('MOVIMIENTO CAPITAL', 'Inversiones',         'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Cambio Moneda',       'movimiento');
+    ('MOVIMIENTO CAPITAL', 'Cambio Moneda',       'movimiento'),
+    ('MOVIMIENTO CAPITAL', 'Ahorro/Inversión',    'movimiento');
+
+-- TARJETA DE CRÉDITO — categorías especiales protegidas (agregadas Tarea 3
+-- de docs/PROXIMOS_PASOS.md, ver services/categorias_service.py
+-- CATEGORIAS_PROTEGIDAS y services/fees_service.py CATEGORIAS_CARGO_EXTRA):
+-- elegir una de estas tres en la fila de alta de Compras en cuotas
+-- (ui/screens/compras_cuotas.py) NO crea una compra en cuotas — rutea a un
+-- cargo extra del resumen de tarjeta (resumen_cargos_extra) del tipo
+-- correspondiente. tipo='egreso' por default aunque el monto de un
+-- ajuste/reintegro puede ser negativo (la clasificación de categoría es
+-- egreso igual, el signo lo define el monto tipeado, no la categoría).
+-- NUEVA en una base ya existente: INSERT OR IGNORE acá NO alcanza a
+-- data/deltabalance.db si ya existía antes de este cambio — correr
+-- migration/agregar_categorias_tarjeta.py a mano en ese caso.
+INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
+    ('TARJETA DE CRÉDITO', 'Impuesto tarjeta',            'egreso'),
+    ('TARJETA DE CRÉDITO', 'Recargo tarjeta',              'egreso'),
+    ('TARJETA DE CRÉDITO', 'Ajuste/Reintegro tarjeta',     'egreso');
 
 -- =============================================================
 -- CUENTA INICIAL: Efectivo ARS
