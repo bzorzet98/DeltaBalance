@@ -196,16 +196,22 @@ La limitación estaba en `AccountsService`, que hasta la Fase 5 solo exponía
   que arma `create_account()`; `crear_saldo_inicial()` es el método nuevo para las
   monedas adicionales de la lista.
 
-**Relación cuentas ↔ activos_financieros — informal a propósito, no pendiente
-técnico.** `activos_financieros`/`movimientos_activo` (sección 4) no tienen ninguna
-columna que los vincule a una `cuentas` puntual — de qué cuenta salió la plata para
-comprar un activo, o a qué cuenta vuelve al venderlo, es una decisión consciente de
-**no formalizar todavía**, no un hueco que falte cerrar. Si en el futuro hace falta
-ese vínculo (ej. para que el saldo de una cuenta de inversión se calcule solo,
-descontando compras y sumando ventas), la forma de agregarlo sería una columna
-opcional `cuenta_origen_id` en `movimientos_activo` (vía `db/schema_migrations.py`,
-como toda columna nueva sobre una tabla existente) — no una tabla puente nueva ni un
-cambio a `cuentas_saldos`.
+**Relación cuentas ↔ activos_financieros — ✅ formalizada en la Tarea 6g (ver sección
+19).** Esta sección documentaba la decisión ORIGINAL de dejarla informal a propósito
+(activos_financieros/movimientos_activo sin ninguna columna que los vincule a una
+cuentas puntual) — superada por la Tarea 6g, que agrega `activos_financieros.
+cuenta_id` y simplifica `register_purchase()`/`register_sale()` en consecuencia. Se
+deja el texto original abajo por contexto histórico de por qué no se había
+formalizado antes.
+
+> Original (Fase 5, antes de la Tarea 6g): de qué cuenta salió la plata para comprar
+> un activo, o a qué cuenta vuelve al venderlo, era una decisión consciente de no
+> formalizar todavía, no un hueco que faltara cerrar. Si en el futuro hacía falta ese
+> vínculo (ej. para que el saldo de una cuenta de inversión se calcule solo,
+> descontando compras y sumando ventas), la forma de agregarlo sería una columna
+> opcional en `movimientos_activo` — no una tabla puente nueva ni un cambio a
+> `cuentas_saldos`. La Tarea 6g terminó agregando la columna a `activos_financieros`
+> en vez de a `movimientos_activo` — ver sección 19 para el razonamiento.
 
 **DELETE físico de cuentas — ✅ implementado en `AccountsService.delete_account()`.**
 Ventana de corrección temprana (CLAUDE.md §4) aplicada a `cuentas`: una cuenta se
@@ -281,18 +287,23 @@ realmente se transfiere afuera — ambos casos usan el mismo mecanismo.
   `activos_financieros.moneda_id` del activo involucrado: es la única moneda
   disponible en el método (no se le pasa moneda/currency_code aparte), bajo el
   supuesto de que la cuenta indicada opera en esa moneda.
-- **`categoria_id` es OBLIGATORIO cuando se pasa `cuenta_id`** (`ValueError` si falta)
-  — no se asume ninguna categoría por default, el caller la elige explícitamente.
-  Mismo criterio exacto que `EmpleosService.create_receipt()` con `cuenta_id`/
-  `categoria_id`, que ya resolvía este mismo cruce hacia `transacciones` antes. Se
-  prefirió este criterio (parámetro explícito) por sobre asumir una categoría
-  "razonable" automáticamente: el catálogo actual no tiene todavía una categoría
-  protegida dedicada a ahorro (la futura "Ahorro/Inversión" de la Tarea 1b de
-  docs/PROXIMOS_PASOS.md, UI, no existe aún en este paso) y elegir una sin que el
-  caller lo sepa hubiera sido inventar una convención no pedida (CLAUDE.md §0.4). El
-  verify de este service usa la categoría ya sembrada "MOVIMIENTO CAPITAL ·
-  Inversiones" como categoría de ejemplo razonable — no es una categoría protegida ni
-  hardcodeada dentro del service.
+- **`categoria_id` era OBLIGATORIO cuando se pasaba `cuenta_id`** (`ValueError` si
+  faltaba) en el diseño original de esta tarea — ver por qué en el bloque citado
+  abajo. **Superado por la Tarea 6g** (sección 19): para entonces la categoría
+  protegida "Ahorro/Inversión" ya existía (Tarea 1b, ver sección 17), así que dejó
+  de tener sentido pedírsela al caller — `cuenta_id`/`categoria_id` dejaron de ser
+  parámetros de `register_purchase()`/`register_sale()` por completo, se resuelven
+  solos.
+
+  > Razonamiento original (Tarea 6b, antes de que existiera la categoría
+  > "Ahorro/Inversión"): se prefirió un parámetro explícito por sobre asumir una
+  > categoría "razonable" automáticamente, mismo criterio que
+  > `EmpleosService.create_receipt()` — el catálogo todavía no tenía una categoría
+  > protegida dedicada a ahorro, y elegir una sin que el caller lo supiera hubiera
+  > sido inventar una convención no pedida (CLAUDE.md §0.4). El verify de este
+  > service usaba la categoría ya sembrada "MOVIMIENTO CAPITAL · Inversiones" como
+  > categoría de ejemplo razonable — no era una categoría protegida ni hardcodeada
+  > dentro del service.
 - `register_return()` (rendimiento) NO gana `cuenta_id` — fuera de alcance de esta
   tarea. Un movimiento tipo='rendimiento' nunca tiene `transaccion_id` todavía.
 - `SavingsService.get_balance_por_cuenta(objetivo_id) -> list[dict]`: agregación de
@@ -339,24 +350,29 @@ mismo mecanismo de routing por categoría ya construido para "Impuesto tarjeta"/
   "retiro" con Ahorro/Inversión desde el Registro, fuera de alcance de esta tarea).
   Mismo criterio que ya usa `ui/screens/compras_cuotas.py` para las categorías
   especiales de tarjeta (el signo no decide el tipo de cargo ahí tampoco).
-- **`SavingsService.get_or_create_reserved_cash_asset(cuenta_nombre, moneda_id)`**
-  (método nuevo): busca por nombre exacto `f"Efectivo reservado en {cuenta_nombre}"`
-  un `activo_financiero` tipo='otro' ya existente (incluyendo inactivos —
-  `solo_activos=False` — para nunca duplicar uno que el usuario haya desactivado a
-  mano) y lo reusa; si no existe, lo crea. Vive en `SavingsService` (motor de
-  datos), no en la UI — así queda testeable con un verify normal
-  (`verify/ahorros/verify_savings_service.py`) y reusable fuera del Registro si
-  algún día hace falta (ej. `migration/`). Coherente con la sección 14
-  ("Relación cuentas ↔ activos_financieros — informal a propósito"): la identidad
-  de "a qué cuenta pertenece" sigue siendo el nombre exacto del activo, no una
-  columna nueva — no se necesitó tocar el schema para esto.
+- **`SavingsService.get_or_create_reserved_cash_asset(cuenta_id, moneda_id)`**
+  (método nuevo en esta tarea): busca un `activo_financiero` tipo='otro' ya
+  existente (incluyendo inactivos — `solo_activos=False` — para nunca duplicar uno
+  que el usuario haya desactivado a mano) y lo reusa; si no existe, lo crea. Vive en
+  `SavingsService` (motor de datos), no en la UI — así queda testeable con un
+  verify normal (`verify/ahorros/verify_savings_service.py`) y reusable fuera del
+  Registro si algún día hace falta (ej. `migration/`). **Identidad de búsqueda
+  ACTUALIZADA por la Tarea 6g** (sección 19): en el diseño original de esta tarea
+  (Tarea 1b) la identidad era el nombre exacto construido
+  `f"Efectivo reservado en {cuenta_nombre}"`, coherente con que la sección 14
+  todavía describía la relación cuentas↔activos_financieros como informal a
+  propósito. Desde que la Tarea 6g agregó `activos_financieros.cuenta_id`, la
+  identidad pasó a ser `(cuenta_id, tipo='otro')` — el nombre generado se sigue
+  guardando igual (sigue siendo útil para mostrarlo) pero ya no es la clave de
+  búsqueda, más robusto ante un rename de la cuenta después de creado el activo.
 - La moneda del activo genérico se fija en el momento de su PRIMERA creación (la
   moneda elegida en esa primera fila del Registro) y no se reescribe después — si
   una carga posterior a la misma cuenta usa una moneda distinta, la transacción
   vinculada de todos modos queda en la moneda original del activo (limitación
   conocida, no resuelta acá: no se pidió un selector de moneda por activo ni
   activos separados por cuenta+moneda, y el caso de una cuenta reservando ahorro en
-  más de una moneda a la vez no es el uso típico descripto por el usuario).
+  más de una moneda a la vez no es el uso típico descripto por el usuario). Esto no
+  cambió con la Tarea 6g.
 
 ## 18. Persistencia de la fórmula del campo Estimado (Presupuestos) — ✅ implementado
 
@@ -392,3 +408,132 @@ como número directo.
   la expresión del usuario) y busca específicamente nodos `ast.Call` con
   `func = ast.Name(id='eval'|'exec')` — 0 matches reales, confirmado por lectura del AST,
   no por ejecutar nada.
+
+## 19. Vínculo formal activos_financieros ↔ cuentas — ✅ implementado (Tarea 6g)
+
+Decisión tomada: formalizar la relación que la sección 14 dejaba deliberadamente
+informal — un `activo_financiero` (FCI, acción, plazo fijo, "efectivo reservado", etc.)
+ahora puede vincularse a la `cuentas` real desde la que se opera, una sola vez al
+crear el activo, en vez de tener que elegir cuenta y categoría en cada movimiento
+posterior.
+
+- `activos_financieros.cuenta_id INTEGER REFERENCES cuentas(id)`, nullable, agregada
+  vía `db/schema_migrations.py` (no `ALTER TABLE` directo en `schema.sql`, mismo
+  motivo que el resto de las columnas de esa lista). La columna se agregó a
+  `activos_financieros`, NO a `movimientos_activo` como sugería el texto original de
+  la sección 14 — la cuenta es una propiedad del ACTIVO (una acción se opera siempre
+  desde el mismo broker), no algo que deba repetirse o pueda variar por movimiento;
+  un activo sin `cuenta_id` sigue siendo válido y genera movimientos puramente
+  informales, igual que el comportamiento previo cuando no se pasaba `cuenta_id`.
+- `SavingsService.create_activo()` gana `cuenta_id: Optional[int] = None`, validado
+  contra `AccountNotFoundError` si se pasa.
+- `SavingsService.register_purchase()`/`register_sale()` PIERDEN los parámetros
+  `cuenta_id`/`categoria_id` que había agregado la Tarea 6b (sección 16) — se
+  resuelven solos: `cuenta_id` sale de `activo["cuenta_id"]` (si el activo no tiene
+  cuenta vinculada, el movimiento queda informal, mismo comportamiento previo a
+  cuando no se pasaba `cuenta_id`), y `categoria_id` siempre es el id de la
+  categoría protegida "MOVIMIENTO CAPITAL · Ahorro/Inversión" (sección 17),
+  resuelto por nombre (`SavingsService._get_categoria_ahorro_inversion_id()`, nunca
+  hardcodeado el id numérico — mismo criterio de "matchear por nombre, no por id
+  fijo" que `CATEGORIAS_PROTEGIDAS` de `services/categorias_service.py`). El
+  mecanismo de "crear la transacción real vinculada dentro de la misma transacción
+  atómica" que armó la Tarea 6b no cambió — solo cambió de dónde salen sus dos
+  parámetros.
+- `SavingsService.get_or_create_reserved_cash_asset()` cambia de firma:
+  `cuenta_nombre: str` → `cuenta_id: int` — ver sección 17 para el detalle completo
+  del cambio de identidad de búsqueda (por nombre → por `cuenta_id`).
+- **UI (Tarea 6g, Parte D):** ningún diálogo de movimiento (Compra en
+  `ui/components/dialogo_compra_ahorro.py`, Rendimiento/Egreso general en
+  `ui/screens/ahorros.py`, el mini-diálogo "Ahorro/Inversión" de
+  `ui/components/registro_transacciones.py`) pide Cuenta ni Categoría — se
+  resuelven solas por el mecanismo de arriba. El único lugar donde se elige una
+  cuenta es al CREAR un activo nuevo (sección "+ Crear nuevo activo"/"+ Nuevo
+  activo"): un `CampoFiltrable` de cuentas, opcional, que se manda como
+  `create_activo(cuenta_id=...)`. Cualquier `CampoFiltrable` que liste activos
+  existentes para elegir uno (Compra "elegir activo específico", Rendimiento,
+  Egreso general) muestra la cuenta asociada en el label de cada opción
+  (`"NVDA — Bull Market"`, solo `"NVDA"` si no tiene cuenta vinculada) para
+  desambiguar activos con el mismo nombre en cuentas distintas.
+- `verify/ahorros/verify_savings_service.py` actualizado: los casos que antes
+  pasaban `cuenta_id`/`categoria_id` a `register_purchase()`/`register_sale()` en
+  cada llamada ahora setean `cuenta_id` una sola vez con `create_activo(cuenta_id=
+  ...)`, y confirman que la transacción vinculada sigue usando la cuenta correcta y
+  SIEMPRE la categoría "Ahorro/Inversión". `get_balance_por_cuenta()` (sección 16)
+  ahora necesita un `activo_financiero` distinto por cada cuenta real involucrada
+  en el escenario de prueba — antes un único activo podía "saltar" de cuenta en
+  cuenta pasando `cuenta_id` en cada movimiento, ya no es posible (la cuenta es fija
+  por activo).
+
+## 20. Pago parcial de gastos_compartidos — ✅ implementado (Tarea 9, Parte A)
+
+Espejo del mecanismo de `deudas` (sección 5 no lo detalla porque ya existía
+antes de este documento — ver `deuda_pagos`/`monto_pendiente_minor` en
+`db/schema.sql`): hasta ahora `gastos_compartidos` solo tenía un estado
+binario `pendiente`/`saldado`, sin forma de trackear pagos parciales ni
+compensaciones sin movimiento bancario real (caso real que motivó la
+tarea: "ella compra tomate y yo lo descuento").
+
+- `gastos_compartidos.monto_pendiente_minor INTEGER NOT NULL`, agregada vía
+  `db/schema_migrations.py` (no `ALTER TABLE` directo en `schema.sql`,
+  mismo motivo que el resto de las columnas de esa lista). A diferencia de
+  las columnas anteriores de esa lista, esta necesitó además un
+  **backfill** (`MigracionColumna.sql_backfill`, campo nuevo agregado en
+  esta tarea): para cualquier gasto compartido que ya existiera en una base
+  real, `monto_pendiente_minor` arranca igual a `monto_adeudado_minor`
+  (nada se había pagado todavía, porque el mecanismo de pago parcial no
+  existía antes). Un `DEFAULT 0` del propio `ALTER TABLE` no alcanzaba acá
+  porque el valor correcto depende de otra columna de la misma fila, no de
+  una constante — por eso el campo `sql_backfill` se ejecuta una sola vez,
+  inmediatamente después del `ALTER TABLE`, solo en la corrida donde la
+  columna se agrega por primera vez.
+- Tabla nueva `gasto_compartido_pagos` — espejo exacto de `deuda_pagos`
+  (mismas columnas: `gasto_compartido_id`, `transaccion_id` nullable,
+  `monto_aplicado_minor`, `tipo_pago` ∈ `transaccion`/`compensacion`/
+  `ajuste`, `notas`, `fecha`). **Decisión de diseño que difiere de
+  `deuda_pagos`**: en vez de vivir como métodos dentro de
+  `GastosCompartidosRepository` (que es como vive `deuda_pagos` dentro de
+  `DeudasRepository` — confirmado por lectura antes de implementar), se
+  creó `repositories/gasto_compartido_pagos_repository.py` con su propia
+  clase `GastoCompartidoPagosRepository`, siguiendo la regla POR DEFECTO de
+  `CLAUDE.md` §3 ("un repositorio = una entidad de la base de datos") en
+  vez de la excepción que ya usa `deuda_pagos`. La atomicidad INSERT (en
+  `gasto_compartido_pagos`) + UPDATE (`monto_pendiente_minor`/`estado` en
+  `gastos_compartidos`) — que en `DeudasRepository.registrar_pago()` vive
+  en un único método de repositorio — se resuelve acá un nivel más arriba,
+  en `SharedExpensesService.aplicar_pago()`, pasando el mismo `conn` a
+  ambos repositorios dentro de una sola `self._db.transaction()`.
+- `SharedExpensesService.aplicar_pago(gasto_id, hogar_id,
+  monto_aplicado_minor, fecha, tipo_pago='transaccion',
+  transaccion_id=None, notas=None)`: valida pertenencia (mismo criterio que
+  `settle_expense()`), rechaza gastos ya `'saldado'` con la excepción nueva
+  `GastoCompartidoYaSaldadoError` (no se reusó `GastoCompartidoDuplicadoError`
+  — esa es semánticamente "ya existe un gasto para ese origen", un caso
+  distinto de "este gasto ya no acepta pagos"). **Sobrepago**:
+  `monto_aplicado_minor` que supera el pendiente se CLAMPEA al pendiente
+  exacto (nunca lo cruza de signo, nunca lanza excepción) — el resultado
+  trae `ajustado=True` y el `monto_aplicado_minor` REAL persistido. Se
+  eligió clamp sobre excepción porque el "pago general" de la Parte C
+  (sesión futura, no implementada en esta tarea) va a repartir un ingreso
+  contra varios gastos pendientes del más viejo al más nuevo hasta agotar
+  el monto — un sobrepago en el ÚLTIMO gasto de esa cadena es el caso
+  normal (sobra plata tras saldarlo justo), no un error del usuario.
+  `monto_pendiente_minor` puede ser NEGATIVO (hereda el signo de
+  `monto_adeudado_minor`, ver sección 2) — el pago siempre reduce la
+  MAGNITUD hacia 0 en la dirección correcta según el signo, nunca lo
+  invierte.
+- `fecha` es un parámetro EXPLÍCITO y obligatorio de `aplicar_pago()` — no
+  estaba en la firma sugerida originalmente en `docs/PROXIMOS_PASOS.md`,
+  pero `gasto_compartido_pagos.fecha` es `NOT NULL` en el schema, y
+  asumir `fecha = hoy` en cada llamada violaría `CLAUDE.md` §6 (todo alta
+  debe poder hacerse con fecha pasada, para no bloquear una futura carga
+  en lote desde `migration/`).
+- `settle_expense(gasto_id, hogar_id)` **no** ganó un parámetro `fecha`
+  nuevo (comportamiento observable sin cambios, según lo pedido) — por
+  dentro llama a `aplicar_pago()` con el pendiente completo,
+  `tipo_pago='ajuste'`, y `fecha=date.today()` como excepción DELIBERADA:
+  "saldar" es siempre una acción manual en el momento, nunca una carga
+  histórica en lote. La lógica de "marcar saldado cuando el pendiente
+  llega a 0" vive ahora ÚNICAMENTE en `aplicar_pago()` —
+  `GastosCompartidosRepository.marcar_saldado()` queda sin caller desde
+  `SharedExpensesService` (se deja en el repositorio por si algún llamador
+  externo lo necesitara, no se borró en esta tarea).

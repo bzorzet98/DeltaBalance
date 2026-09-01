@@ -707,6 +707,60 @@ class TransactionService:
     # DELETE
     # ----------------------------------------------------------
 
+    def get_delete_warnings(self, transaction_id: int) -> dict:
+        """
+        Comprueba si transaction_id está vinculada a una autotransferencia
+        (autotransferencias.transaccion_salida_id/transaccion_entrada_id) o
+        es el origen de un movimiento de ahorro
+        (movimientos_activo.transaccion_id) — para que la UI pueda avisar
+        de qué más se ve afectado ANTES de borrar. No bloquea nada por sí
+        misma (delete() sigue funcionando igual con o sin vínculos) — solo
+        informa, la decisión de mostrar una confirmación es de la UI.
+
+        Sin repositorio propio para `autotransferencias` (no existe ningún
+        bloque de la Fase 2 dedicado a esa tabla, ver
+        docs/DATA_MODEL_DECISIONS.md sección 13) — se consulta directo con
+        self._db.fetchone(), mismo criterio que _get_currency()/_get_account()
+        de este mismo service para tablas sin repositorio propio.
+
+        Args:
+            transaction_id: La transacción a chequear.
+
+        Returns:
+            dict {
+                "es_autotransferencia": bool,
+                "transaccion_par_id": Optional[int] (la otra pata del par,
+                    si es_autotransferencia),
+                "es_origen_ahorro": bool,
+            }
+        """
+        fila_transferencia = self._db.fetchone(
+            """
+            SELECT transaccion_salida_id, transaccion_entrada_id
+            FROM autotransferencias
+            WHERE transaccion_salida_id = ? OR transaccion_entrada_id = ?;
+            """,
+            (transaction_id, transaction_id),
+        )
+        fila_ahorro = self._db.fetchone(
+            "SELECT id FROM movimientos_activo WHERE transaccion_id = ?;",
+            (transaction_id,),
+        )
+
+        transaccion_par_id = None
+        if fila_transferencia is not None:
+            transaccion_par_id = (
+                fila_transferencia["transaccion_entrada_id"]
+                if fila_transferencia["transaccion_salida_id"] == transaction_id
+                else fila_transferencia["transaccion_salida_id"]
+            )
+
+        return {
+            "es_autotransferencia": fila_transferencia is not None,
+            "transaccion_par_id": transaccion_par_id,
+            "es_origen_ahorro": fila_ahorro is not None,
+        }
+
     def delete(self, transaction_id: int) -> TransactionResult:
         """
         Soft-deletes a transaction by setting deleted_at to the current timestamp.

@@ -179,26 +179,33 @@ módulo en vez de importarse de un service.
   (tarea de unificación posterior a la Tarea 1b — antes ui/screens/
   ahorros.py tenía su propio formulario de Compra completo y separado para
   la misma acción, ahora comparten uno):
-  - **Modo simple (default, comportamiento original sin cambios)**: pide
-    el Objetivo de ahorro (CampoFiltrable con los objetivos_ahorro
+  - **Modo simple (default, comportamiento original salvo la Tarea 6g)**:
+    pide el Objetivo de ahorro (CampoFiltrable con los objetivos_ahorro
     existentes + opción "+ Crear nuevo objetivo", que revela un campo de
     nombre y llama a SavingsService.create_objetivo() antes de continuar)
-    y llama a SavingsService.get_or_create_reserved_cash_asset() (Tarea
-    1b, motor de datos — ver services/savings_service.py) para resolver o
-    crear el activo_financiero genérico "Efectivo reservado en <cuenta de
-    la fila>", y por último a SavingsService.register_purchase(
-    cuenta_id=..., categoria_id=..., asignaciones=[{objetivo_id,
-    porcentaje: 100}]) — atómico, ya crea movimiento + asignación +
-    transacción vinculada (mecanismo de la Tarea 6b).
+    y llama a SavingsService.get_or_create_reserved_cash_asset(
+    cuenta_id=..., moneda_id=...) (Tarea 1b, motor de datos — ver
+    services/savings_service.py; desde la Tarea 6g busca/crea por
+    cuenta_id, ya no arma un nombre para buscarlo) con la cuenta_id de la
+    fila, para resolver o crear el activo_financiero genérico "Efectivo
+    reservado en <cuenta de la fila>" YA VINCULADO a esa cuenta, y por
+    último a SavingsService.register_purchase(activo_id=...,
+    asignaciones=[{objetivo_id, porcentaje: 100}]) — atómico, ya crea
+    movimiento + asignación + transacción vinculada (mecanismo de la Tarea
+    6b): cuenta_id/categoria_id de esa transacción los resuelve solo
+    register_purchase() desde el activo (Tarea 6g), no hace falta pasarlos
+    acá.
   - **"Elegir activo específico" (link dentro del mismo modo simple)**:
     REEMPLAZA el contenido del MISMO AlertDialog ya abierto (no cierra y
     abre uno nuevo — ver el docstring de _abrir_dialogo_ahorro_inversion())
     por el formulario completo de ui/components/dialogo_compra_ahorro.py
     (compartido con el botón de Compra por activo de ui/screens/
     ahorros.py): activo CampoFiltrable + "crear nuevo" + cantidad/precio
-    unitario según tipo + asignaciones a objetivos, con cuenta_id/monto/
-    fecha/concepto de la fila ya precargados. Para este modo el usuario
-    eligió explícitamente MÁS control — no pasa por
+    unitario según tipo + asignaciones a objetivos, con monto/fecha/
+    concepto de la fila ya precargados (cuenta_id_inicial de la fila
+    precarga la Cuenta asociada del selector de "crear nuevo activo" —
+    Tarea 6g, ya no hay campo de cuenta a nivel movimiento). Para este
+    modo el usuario eligió explícitamente MÁS control — no pasa por
     get_or_create_reserved_cash_asset() ni fuerza 100% a un solo
     objetivo, llama a SavingsService.register_purchase() directo con lo
     que el formulario resuelva.
@@ -217,6 +224,48 @@ módulo en vez de importarse de un service.
   cancela el diálogo, no se llama a on_cambio() y la fila de alta queda
   intacta con lo tipeado, igual que un guardado fallido en el camino
   normal.
+
+--- Categoría especial "Deuda" (docs/PROXIMOS_PASOS.md — corrección
+posterior a la Tarea 9 Parte B) ---
+
+A DIFERENCIA de Autotransferencia/Ahorro-Inversión (que REEMPLAZAN el
+guardado normal), "Deuda" lo EXTIENDE: revisado antes de implementar
+(services/debts_service.py, firma real de create()) — DebtsService.create()
+YA aceptaba origen_tipo/origen_id opcionales (default 'manual'/None), no
+hizo falta extenderlo.
+
+1. Se crea la transacción real normal PRIMERO, vía TransactionService.
+   create() — exactamente el mismo camino que cualquier categoría sin
+   routing especial (movement_type según el signo tipeado, monto/fecha/
+   concepto/cuenta/moneda de la fila tal cual). Esto es INCONDICIONAL: a
+   diferencia de los otros dos modos, acá SIEMPRE se persiste algo aunque
+   el usuario cancele el paso siguiente.
+2. Con el transaction_id ya en mano, se abre un mini-diálogo pidiendo
+   Persona/entidad (TextField libre — no hay catálogo de personas, a
+   diferencia de Cuenta destino/Objetivo de ahorro de los otros dos modos)
+   y fecha de vencimiento (opcional).
+3. Confirmar llama a DebtsService.create(origen_tipo='transaccion',
+   origen_id=<transaction_id del paso 1>). El `debt_type` se DERIVA del
+   signo ya tipeado en Monto, nunca se pregunta de nuevo: fila EGRESO
+   (le diste plata a alguien) → 'a_favor' (te debe); fila INGRESO (te
+   prestaron plata) → 'en_contra' (le debés). `amount` siempre viaja en
+   valor ABSOLUTO — create() lo exige positivo (`if amount <= 0: raise
+   ValueError`), el signo real de la deuda lo codifica pura y
+   exclusivamente `debt_type`, nunca un monto negativo (a diferencia de
+   gastos_compartidos.monto_adeudado_minor, que sí puede ser negativo —
+   son mecanismos distintos, no hay que confundirlos).
+4. Si el usuario CANCELA el mini-diálogo: la transacción del paso 1 queda
+   igual (ya se guardó, sin deuda vinculada) — se avisa explícitamente con
+   un mensaje distinto ("registrado sin deuda vinculada") y se llama a
+   on_cambio() igual, porque SÍ hubo un cambio real que reflejar (a
+   diferencia de cancelar Autotransferencia/Ahorro-Inversión, donde nada
+   se llegó a persistir).
+5. Mensaje de éxito tras confirmar la deuda: nombra EXPLÍCITAMENTE ambos
+   ids ("Movimiento #X registrado y vinculado a una deuda con 'Persona'
+   (#Y)") — a propósito, para que quede claro que no fue solo una
+   transacción común (encontrado como punto a resolver al diseñar esta
+   categoría: un mensaje genérico de "Movimiento registrado" hubiera sido
+   indistinguible del camino normal).
 """
 
 from datetime import date, datetime
@@ -226,6 +275,7 @@ import flet as ft
 
 from services.accounts_service import AccountsService
 from services.categorias_service import CategoriasService
+from services.debts_service import DebtError, DebtsService
 from services.savings_service import SavingsError, SavingsService
 from services.shared_expenses_service import SharedExpensesService
 from services.transaction_service import TransactionService, TransactionError
@@ -250,6 +300,7 @@ ANCHO_COL_FECHA = 110
 # le dejaban poco lugar al texto). Pedido explícito.
 ANCHO_COL_MONEDA = 100
 ANCHO_COL_COMPARTIR = 48
+ANCHO_COL_ELIMINAR = 40
 ANCHO_BOTON_CONFIRMAR = 48
 ANCHO_TOOLBAR_BUSQUEDA = 200
 ANCHO_TOOLBAR_FILTRO_BANCO = 150
@@ -266,6 +317,7 @@ ANCHO_DIALOGO_ROUTING = 320  # mini-diálogos de Autotransferencia/Ahorro-Invers
 _CATEGORIAS_ROUTING_ESPECIAL: dict[tuple[str, str], str] = {
     ("MOVIMIENTO CAPITAL", "Autotransferencia"): "autotransferencia",
     ("MOVIMIENTO CAPITAL", "Ahorro/Inversión"): "ahorro_inversion",
+    ("MOVIMIENTO CAPITAL", "Deuda"): "deuda",
 }
 # Sentinel de opción "+ Crear nuevo objetivo" en el CampoFiltrable del
 # mini-diálogo de Ahorro/Inversión — nunca puede colisionar con un id real
@@ -285,6 +337,7 @@ def build(
     transaction_service: TransactionService,
     shared_expenses_service: SharedExpensesService,
     savings_service: SavingsService,
+    debts_service: DebtsService,
     estado: dict,
     on_cambio: Callable[[], None],
 ) -> ft.Control:
@@ -476,6 +529,92 @@ def build(
         )
         page.show_dialog(dialogo)
 
+    def _abrir_dialogo_deuda(
+        transaction_id: int, moneda_codigo: str, monto: float, fecha_str: str, concepto: str,
+    ) -> None:
+        """
+        A diferencia de _abrir_dialogo_autotransferencia()/
+        _abrir_dialogo_ahorro_inversion() (que persisten TODO recién al
+        confirmar el diálogo), acá la transacción real ya se creó ANTES de
+        llamar a esta función (ver _procesar_alta()) — transaction_id es
+        el id de esa transacción ya persistida, este diálogo solo decide
+        si además queda vinculada a una deuda informal. Ver docstring del
+        módulo, sección "Categoría especial 'Deuda'", para el detalle
+        completo de la derivación de debt_type y el manejo de cancelación.
+        """
+        campo_persona = ft.TextField(
+            label="Persona / entidad", width=ANCHO_DIALOGO_ROUTING, autofocus=True,
+        )
+        campo_vencimiento = ft.TextField(
+            label="Fecha de vencimiento (opcional, AAAA-MM-DD)", width=ANCHO_DIALOGO_ROUTING,
+        )
+
+        # Derivación de debt_type según el signo ya tipeado en Monto — ver
+        # docstring del módulo. Nunca se le pregunta al usuario, se calcula
+        # una sola vez acá.
+        debt_type = "a_favor" if monto < 0 else "en_contra"
+        texto_direccion = "te debe" if debt_type == "a_favor" else "le debés"
+
+        def _cancelar(e=None) -> None:
+            # La transacción YA está persistida (paso 1) — cancelar el
+            # diálogo NO la deshace, solo decide no vincularle una deuda.
+            _cerrar_dialogo()
+            _mostrar_ok(
+                f"Movimiento #{transaction_id} registrado (sin deuda vinculada — "
+                f"se canceló el diálogo)."
+            )
+            on_cambio()
+
+        def _confirmar(e=None) -> None:
+            if not campo_persona.value or not campo_persona.value.strip():
+                _mostrar_error("Ingresá la persona/entidad.")
+                return
+            due_date = (campo_vencimiento.value or "").strip() or None
+            if due_date is not None:
+                try:
+                    datetime.strptime(due_date, "%Y-%m-%d")
+                except ValueError:
+                    _mostrar_error("La fecha de vencimiento debe tener el formato AAAA-MM-DD.")
+                    return
+            try:
+                resultado_deuda = debts_service.create(
+                    person=campo_persona.value.strip(),
+                    debt_type=debt_type,
+                    amount=abs(monto),
+                    currency_code=moneda_codigo,
+                    date_str=fecha_str,
+                    concept=concepto,
+                    due_date=due_date,
+                    origen_tipo="transaccion",
+                    origen_id=transaction_id,
+                )
+            except (DebtError, ValueError) as err:
+                _mostrar_error(str(err))
+                return
+            _cerrar_dialogo()
+            # Mensaje explícito de AMBOS ids — ver docstring del módulo,
+            # punto 5: evita que se lea como un movimiento común.
+            _mostrar_ok(
+                f"Movimiento #{transaction_id} registrado y vinculado a una deuda con "
+                f"'{campo_persona.value.strip()}' (#{resultado_deuda.debt_id}) — {texto_direccion}."
+            )
+            on_cambio()
+
+        dialogo = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Deuda — Persona / vencimiento"),
+            content=ft.Container(
+                width=ANCHO_DIALOGO_ROUTING,
+                content=ft.Column([campo_persona, campo_vencimiento], tight=True, spacing=10),
+            ),
+            actions=[
+                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cancelar),
+                ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.show_dialog(dialogo)
+
     def _abrir_dialogo_ahorro_inversion(
         cuenta_id: int, moneda_codigo: str, monto: float, fecha_str: str, concepto: str, categoria_id: int,
     ) -> None:
@@ -491,8 +630,13 @@ def build(
         después de mostrado, cuya mutabilidad post-show_dialog() no está
         confirmada corriendo la app (a diferencia de `.content`, que este
         mismo archivo ya muta en vivo en varios lugares, ej. _celda_texto()).
+
+        `categoria_id` (Tarea 6g): se sigue recibiendo por firma compartida
+        con _abrir_dialogo_autotransferencia() (mismo `argumentos_routing`
+        armado en _procesar_alta()), pero ya NO se usa acá — register_purchase()
+        resuelve sola la categoría protegida 'Ahorro/Inversión', sin que el
+        caller la elija.
         """
-        cuenta = cuentas_por_id.get(cuenta_id)
         objetivos = savings_service.list_objetivos()
         opciones_objetivo = [(str(o["id"]), o["nombre"]) for o in objetivos] + [
             (_ID_OBJETIVO_NUEVO, "+ Crear nuevo objetivo")
@@ -533,10 +677,13 @@ def build(
             if moneda is None:
                 _mostrar_error(f"Moneda '{moneda_codigo}' no encontrada.")
                 return
-            nombre_cuenta = cuenta["nombre"] if cuenta else f"cuenta #{cuenta_id}"
             try:
+                # get_or_create_reserved_cash_asset(cuenta_id=...) (Tarea
+                # 6g) ya deja el activo vinculado a la cuenta de la fila —
+                # register_purchase() resuelve solo cuenta_id/categoria_id
+                # desde ese activo, no hace falta pasarlos acá.
                 activo = savings_service.get_or_create_reserved_cash_asset(
-                    cuenta_nombre=nombre_cuenta, moneda_id=moneda["id"],
+                    cuenta_id=cuenta_id, moneda_id=moneda["id"],
                 )
                 resultado = savings_service.register_purchase(
                     activo_id=activo.entity_id,
@@ -545,8 +692,6 @@ def build(
                     # Autotransferencia — ver docstring del módulo.
                     monto_total_minor=amount_to_minor(abs(monto), moneda["decimales"]),
                     asignaciones=[{"objetivo_id": objetivo_id, "porcentaje": 100.0}],
-                    cuenta_id=cuenta_id,
-                    categoria_id=categoria_id,
                     notas=concepto,
                 )
             except (SavingsError, ValueError) as err:
@@ -567,7 +712,7 @@ def build(
             # ui/screens/ahorros.py, acá el usuario todavía no eligió
             # ningún activo específico, para eso es este modo.
             formulario = dialogo_compra_ahorro.construir(
-                page, savings_service, accounts_service, categorias_service,
+                page, savings_service, accounts_service,
                 on_exito=_on_exito,
                 cuenta_id_inicial=cuenta_id, monto_inicial=abs(monto),
                 fecha_inicial=fecha_str, notas_inicial=concepto,
@@ -605,6 +750,22 @@ def build(
         page.show_dialog(dialogo)
 
     def _confirmar_alta(e: Optional[ft.ControlEvent] = None) -> None:
+        # Deshabilita el botón de confirmar ANTES de cualquier otra cosa —
+        # evita que un doble-click/doble-Enter dispare dos guardados antes
+        # de que el primero vuelva (ver docstring del módulo, Parte A). Se
+        # re-habilita en el finally de _procesar(): tanto en un error
+        # (vuelve tal cual, listo para reintentar) como en un éxito/apertura
+        # de diálogo de routing (donde on_cambio() ya reconstruyó todo, así
+        # que tocar este botón "viejo" es inofensivo — quedó huérfano).
+        boton_confirmar_alta.disabled = True
+        page.update()
+        try:
+            _procesar_alta()
+        finally:
+            boton_confirmar_alta.disabled = False
+            page.update()
+
+    def _procesar_alta() -> None:
         if not cuentas_activas:
             _mostrar_error("Primero cargá una cuenta (no tarjeta de crédito) en Configuración → Cuentas.")
             return
@@ -637,13 +798,17 @@ def build(
             _mostrar_error("Completá la moneda.")
             return
 
-        # Routing por categoría (Tarea 1b) — reemplaza el guardado normal
-        # SOLO si la categoría elegida es una de las dos especiales de
-        # _CATEGORIAS_ROUTING_ESPECIAL. Abre el mini-diálogo correspondiente
-        # y sale: el guardado real (y on_cambio()) lo dispara el propio
-        # diálogo al confirmar, no acá.
+        # Routing por categoría (Tarea 1b + "Deuda") — "autotransferencia"/
+        # "ahorro_inversion" REEMPLAZAN el guardado normal (abren su mini-
+        # diálogo y salen: el guardado real y on_cambio() los dispara el
+        # propio diálogo). "deuda" es distinto (ver docstring del módulo,
+        # sección "Categoría especial 'Deuda'"): NO reemplaza nada, cae
+        # directo al mismo transaction_service.create() de siempre más
+        # abajo — el único cambio es qué pasa DESPUÉS de crear la
+        # transacción (abrir el mini-diálogo de deuda en vez de mostrar el
+        # mensaje de éxito genérico y llamar a on_cambio() de una).
         routing = mapa_categoria_a_routing.get(campo_categoria_alta.id_seleccionado)
-        if routing is not None:
+        if routing in ("autotransferencia", "ahorro_inversion"):
             argumentos_routing = (
                 int(campo_cuenta_alta.id_seleccionado),
                 dropdown_moneda_alta.value,
@@ -673,6 +838,19 @@ def build(
             # que la reconstrucción (que es lo único que recrea la fila con
             # valores default) nunca se dispara — lo tipeado queda intacto.
             _mostrar_error(str(err))
+            return
+
+        if routing == "deuda":
+            # La transacción YA está persistida acá — el diálogo de deuda
+            # decide si además se vincula una deuda informal (ver
+            # _abrir_dialogo_deuda()). on_cambio() lo llama el propio
+            # diálogo (confirmar o cancelar), no acá — NO se muestra el
+            # mensaje genérico de abajo para no confundir con un
+            # movimiento común.
+            _abrir_dialogo_deuda(
+                resultado.transaction_id, dropdown_moneda_alta.value, monto_con_signo,
+                campo_fecha_alta.value.strip(), campo_concepto_alta.value.strip(),
+            )
             return
 
         _mostrar_ok(f"Movimiento #{resultado.transaction_id} registrado.")
@@ -804,7 +982,19 @@ def build(
                 autofocus=True,
             )
 
+            boton_confirmar_celda = ft.IconButton(icon=ft.Icons.CHECK, icon_color=ft.Colors.PRIMARY)
+
             def _confirmar(e=None) -> None:
+                # Deshabilita el campo y el botón ANTES de llamar al service
+                # — evita que un doble-click/doble-Enter dispare dos
+                # guardados antes de que el primero vuelva (ver docstring
+                # del módulo, Parte A). Si falla, _mostrar() reconstruye la
+                # celda desde cero (ya habilitada); si tiene éxito,
+                # on_confirmar() dispara on_cambio(), que reconstruye todo
+                # el Registro (también ya habilitado).
+                campo.disabled = True
+                boton_confirmar_celda.disabled = True
+                page.update()
                 try:
                     on_confirmar(campo.value)
                 except (TransactionError, ValueError) as err:
@@ -813,11 +1003,9 @@ def build(
                     return
 
             campo.on_submit = _confirmar
+            boton_confirmar_celda.on_click = _confirmar
             contenedor.content = ft.Row(
-                [
-                    campo,
-                    ft.IconButton(icon=ft.Icons.CHECK, icon_color=ft.Colors.PRIMARY, on_click=_confirmar),
-                ],
+                [campo, boton_confirmar_celda],
                 spacing=0,
                 tight=True,
             )
@@ -856,6 +1044,10 @@ def build(
             )
 
             def _confirmar(e: Optional[ft.ControlEvent] = None) -> None:
+                # Ver comentario equivalente en _celda_texto() — mismo
+                # mecanismo de "deshabilitar antes de llamar al service".
+                dd.disabled = True
+                page.update()
                 try:
                     on_confirmar(dd.value)
                 except (TransactionError, ValueError) as err:
@@ -902,6 +1094,12 @@ def build(
             def _confirmar(id_seleccionado: Optional[str]) -> None:
                 if id_seleccionado is None:
                     return
+                # Ver comentario equivalente en _celda_texto() — mismo
+                # mecanismo de "deshabilitar antes de llamar al service".
+                # CampoFiltrable expone su TextField interno como _campo
+                # (sin setter público de disabled — ver campo_filtrable.py).
+                campo._campo.disabled = True
+                page.update()
                 try:
                     on_confirmar(id_seleccionado)
                 except (TransactionError, ValueError) as err:
@@ -952,6 +1150,16 @@ def build(
 
         def _editar() -> None:
             def _confirmar(monto_minor: int) -> None:
+                # Ver comentario equivalente en _celda_texto() — mismo
+                # mecanismo de "deshabilitar antes de llamar al service".
+                # Se dispara ya sea por Enter (CampoMonto._on_submit) o por
+                # click en boton_confirmar_monto (_on_click_confirmar más
+                # abajo) — ambos caminos pasan por campo.confirmar(), que
+                # termina llamando acá, así que deshabilitar en un solo
+                # lugar cubre los dos.
+                campo.control.disabled = True
+                boton_confirmar_monto.disabled = True
+                page.update()
                 try:
                     on_confirmar(monto_minor)
                 except (TransactionError, ValueError) as err:
@@ -971,11 +1179,11 @@ def build(
             def _on_click_confirmar(e: ft.ControlEvent) -> None:
                 campo.confirmar()
 
+            boton_confirmar_monto = ft.IconButton(
+                icon=ft.Icons.CHECK, icon_color=ft.Colors.PRIMARY, on_click=_on_click_confirmar,
+            )
             contenedor.content = ft.Row(
-                [
-                    campo.control,
-                    ft.IconButton(icon=ft.Icons.CHECK, icon_color=ft.Colors.PRIMARY, on_click=_on_click_confirmar),
-                ],
+                [campo.control, boton_confirmar_monto],
                 spacing=0,
                 tight=True,
             )
@@ -1100,8 +1308,73 @@ def build(
             opacity=1.0 if ya_compartido else 0.0,
         )
 
+        # Ícono eliminar (Parte B, borrado por fila) — mismo criterio visual
+        # que Compartir: solo aparece al hacer hover (sin indicador
+        # persistente, a diferencia de Compartir, borrar no tiene un
+        # "estado" propio que mostrar siempre).
+        def _hacer_eliminar(e=None) -> None:
+            _cerrar_dialogo()
+            boton_eliminar.disabled = True
+            page.update()
+            try:
+                resultado = transaction_service.delete(t["id"])
+            except TransactionError as err:
+                _mostrar_error(str(err))
+                boton_eliminar.disabled = False
+                page.update()
+                return
+            if not resultado.success:
+                _mostrar_error(resultado.message)
+                boton_eliminar.disabled = False
+                page.update()
+                return
+            _mostrar_ok(resultado.message)
+            on_cambio()
+
+        def _eliminar_fila(e=None) -> None:
+            avisos = transaction_service.get_delete_warnings(t["id"])
+            if not (avisos["es_autotransferencia"] or avisos["es_origen_ahorro"]):
+                _hacer_eliminar()
+                return
+
+            partes = []
+            if avisos["es_autotransferencia"]:
+                partes.append(
+                    "forma parte de una autotransferencia (la otra pata, "
+                    f"transacción #{avisos['transaccion_par_id']}, NO se borra automáticamente)"
+                )
+            if avisos["es_origen_ahorro"]:
+                partes.append(
+                    "es el origen de un movimiento de ahorro/inversión "
+                    "(ese movimiento queda con su vínculo a esta transacción roto)"
+                )
+            dialogo = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Eliminar transacción vinculada"),
+                content=ft.Text(
+                    "Esta transacción " + " y ".join(partes) + ". ¿Eliminarla igual?"
+                ),
+                actions=[
+                    ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
+                    ft.ElevatedButton(content=ft.Text("Eliminar igual"), on_click=_hacer_eliminar),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+            page.show_dialog(dialogo)
+
+        boton_eliminar = ft.IconButton(
+            icon=ft.Icons.DELETE_OUTLINE,
+            icon_color=ft.Colors.ERROR,
+            tooltip="Eliminar",
+            on_click=_eliminar_fila,
+        )
+        celda_eliminar = ft.Container(width=ANCHO_COL_ELIMINAR, content=boton_eliminar, opacity=0.0)
+
         fila_contenido = ft.Row(
-            [celda_concepto, celda_banco, celda_categoria, celda_monto, celda_fecha, celda_moneda, celda_compartir],
+            [
+                celda_concepto, celda_banco, celda_categoria, celda_monto, celda_fecha, celda_moneda,
+                celda_compartir, celda_eliminar,
+            ],
             spacing=ESPACIADO_FILA,
         )
 
@@ -1109,6 +1382,7 @@ def build(
             # Normalizado defensivamente — ver docstring del módulo.
             hover_activo = str(e.data).lower() == "true"
             celda_compartir.opacity = 1.0 if (hover_activo or ya_compartido) else 0.0
+            celda_eliminar.opacity = 1.0 if hover_activo else 0.0
             page.update()
 
         return ft.Container(content=fila_contenido, on_hover=_on_hover_fila)
@@ -1159,6 +1433,7 @@ def build(
             _header("Fecha", ANCHO_COL_FECHA),
             _header("Moneda", ANCHO_COL_MONEDA),
             _header("", ANCHO_COL_COMPARTIR),
+            _header("", ANCHO_COL_ELIMINAR),
         ],
         spacing=ESPACIADO_FILA,
     )

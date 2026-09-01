@@ -180,6 +180,7 @@ _ANCHO_FECHA = 110
 # registro_transacciones.py: el código de moneda quedaba cortado.
 _ANCHO_MONEDA = 100
 _ANCHO_COMPARTIR = 48
+_ANCHO_ELIMINAR_COMPRA = 40
 _ESPACIADO_FILA = 8
 _ANCHO_TOOLBAR_FILTRO_BANCO = 150
 _ANCHO_TOOLBAR_FILTRO_CATEGORIA = 160
@@ -675,6 +676,25 @@ def build(
         )
 
         def _confirmar_alta(e: Optional[ft.ControlEvent] = None) -> None:
+            # Deshabilita el botón de confirmar ANTES de cualquier otra
+            # cosa — evita que un doble-click/doble-Enter dispare dos
+            # guardados antes de que el primero vuelva (mismo mecanismo que
+            # ui/components/registro_transacciones.py, Parte A). Se
+            # re-habilita en el finally de _procesar_alta(): en un error
+            # vuelve tal cual, listo para reintentar; en un éxito
+            # _refrescar_datos() no reconstruye esta fila (ver docstring
+            # del módulo, "Refresco liviano a propósito"), así que acá SÍ
+            # hace falta re-habilitar explícitamente el mismo botón (a
+            # diferencia del Registro, donde on_cambio() reconstruye todo).
+            boton_confirmar_alta.disabled = True
+            page.update()
+            try:
+                _procesar_alta()
+            finally:
+                boton_confirmar_alta.disabled = False
+                page.update()
+
+        def _procesar_alta() -> None:
             if not cuentas_activas:
                 _mostrar_error("Primero cargá una tarjeta de crédito en Configuración → Cuentas.")
                 return
@@ -811,6 +831,13 @@ def build(
         # Dropdown no tiene on_submit real en Flet 0.86.5 — on_select en su lugar.
         dropdown_moneda_alta.on_select = _confirmar_alta
 
+        boton_confirmar_alta = ft.IconButton(
+            icon=ft.Icons.CHECK_CIRCLE,
+            icon_color=ft.Colors.PRIMARY,
+            tooltip="Agregar",
+            on_click=_confirmar_alta,
+        )
+
         # Orden alineado con encabezado_columnas (Concepto, Banco, Categoría,
         # Monto, Cuotas, Fecha, Moneda).
         return ft.Row(
@@ -822,12 +849,7 @@ def build(
                 campo_cuotas_alta,
                 campo_fecha_alta,
                 dropdown_moneda_alta,
-                ft.IconButton(
-                    icon=ft.Icons.CHECK_CIRCLE,
-                    icon_color=ft.Colors.PRIMARY,
-                    tooltip="Agregar",
-                    on_click=_confirmar_alta,
-                ),
+                boton_confirmar_alta,
             ],
             spacing=_ESPACIADO_FILA,
         )
@@ -848,6 +870,45 @@ def build(
             tooltip=texto,
         )
 
+    def _confirmar_eliminar_compra(c: dict) -> None:
+        """
+        Cancela la compra vía FeesService.cancel_purchase() (ya existente
+        — no un borrado nuevo, ver docstring del módulo/tarea): marca la
+        compra 'cancelada' y sus cuotas pendientes 'omitido'. Pide
+        confirmación por el mismo motivo que _confirmar_eliminar_cargo() —
+        es una acción fácil de tocar sin querer. Si la compra ya estaba
+        cancelada/completada, cancel_purchase() lanza FeesError con el
+        motivo real, que se muestra tal cual.
+        """
+        def _cerrar_dialogo(e=None) -> None:
+            page.pop_dialog()
+
+        def _eliminar(e=None) -> None:
+            try:
+                resultado = fees_service.cancel_purchase(c["id"])
+            except FeesError as err:
+                _cerrar_dialogo()
+                _mostrar_error(str(err))
+                return
+            _cerrar_dialogo()
+            _mostrar_ok(resultado.message)
+            _refrescar_datos()
+
+        dialogo = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Cancelar compra"),
+            content=ft.Text(
+                f"¿Cancelar la compra '{c['concepto']}'? Las cuotas todavía pendientes "
+                "se marcan como omitidas; las ya confirmadas/pagadas en un resumen no se tocan."
+            ),
+            actions=[
+                ft.TextButton(content=ft.Text("Volver"), on_click=_cerrar_dialogo),
+                ft.ElevatedButton(content=ft.Text("Cancelar compra"), on_click=_eliminar),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        page.show_dialog(dialogo)
+
     def _fila_compra(c: dict) -> ft.Control:
         cuenta = cuentas_por_id.get(c["cuenta_id"])
 
@@ -858,6 +919,18 @@ def build(
             width=_ANCHO_COMPARTIR,
             content=icono_compartir,
             opacity=1.0 if ya_compartido else 0.0,
+        )
+
+        celda_eliminar = ft.Container(
+            width=_ANCHO_ELIMINAR_COMPRA,
+            content=ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE,
+                icon_color=ft.Colors.ERROR,
+                icon_size=18,
+                tooltip="Cancelar compra",
+                on_click=lambda e, c=c: _confirmar_eliminar_compra(c),
+            ),
+            opacity=0.0,
         )
 
         fila_contenido = ft.Row(
@@ -887,6 +960,7 @@ def build(
                 ft.Container(width=_ANCHO_FECHA, padding=4, content=_texto_celda(c["fecha_compra"])),
                 ft.Container(width=_ANCHO_MONEDA, padding=4, content=_texto_celda(c["currency_code"])),
                 celda_compartir,
+                celda_eliminar,
             ],
             spacing=_ESPACIADO_FILA,
         )
@@ -896,6 +970,7 @@ def build(
             # ui/components/registro_transacciones.py (ver su docstring).
             hover_activo = str(e.data).lower() == "true"
             celda_compartir.opacity = 1.0 if (hover_activo or ya_compartido) else 0.0
+            celda_eliminar.opacity = 1.0 if hover_activo else 0.0
             page.update()
 
         return ft.Container(
@@ -952,6 +1027,7 @@ def build(
             _header("Fecha", _ANCHO_FECHA),
             _header("Moneda", _ANCHO_MONEDA),
             _header("", _ANCHO_COMPARTIR),
+            _header("", _ANCHO_ELIMINAR_COMPRA),
         ],
         spacing=_ESPACIADO_FILA,
     )

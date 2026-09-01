@@ -3,8 +3,15 @@ DeltaBalance — ui/screens/cuentas.py
 
 Pantalla de gestión de cuentas: listado (nombre, tipo, saldo por moneda,
 badge si está archivada) con acciones editar/archivar/eliminar, y
-formulario "Agregar cuenta" (con selección múltiple de moneda — una cuenta
-puede operar en más de una, ver docs/DATA_MODEL_DECISIONS.md sección 14).
+formulario "Agregar cuenta" (nombre, tipo y color únicamente — sin ningún
+campo de moneda, ni obligatorio ni opcional: desde la Tarea 6f cada
+combinación cuenta+moneda se resuelve sola la primera vez que una
+transacción real la usa, no hace falta declararla al crear). El diálogo de
+"Editar cuenta" sí tiene una sección "Monedas" (una cuenta puede operar en
+más de una, ver docs/DATA_MODEL_DECISIONS.md sección 14): lista las que la
+cuenta ya tiene y permite agregar una nueva a mano vía
+AccountsService.add_currency_to_account() — útil para declarar de antemano
+una moneda que todavía no disparó ninguna transacción real.
 
 Accesible desde dos lugares (armados por ui/app.py, no acá): un botón en el
 dashboard y la sección "Configuración" de la sidebar. También se usa como
@@ -26,6 +33,7 @@ from typing import Callable, Optional
 import flet as ft
 
 from services.accounts_service import AccountsService, AccountsError
+from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.color_chip import color_chip
 
 # Swatches fijos (no color picker libre) — evita depender de una API de
@@ -99,7 +107,9 @@ def build(
     def _abrir_formulario(cuenta: Optional[dict] = None) -> None:
         es_edicion = cuenta is not None
 
-        monedas_disponibles = accounts_service.list_currencies()
+        # list_currencies() solo hace falta para la sección "Monedas" del
+        # diálogo de edición (ver más abajo) — el alta ya no pide moneda.
+        monedas_disponibles = accounts_service.list_currencies() if es_edicion else []
         cuentas_existentes = [
             c for c in accounts_service.list_accounts(solo_activas=True)
             if not es_edicion or c["id"] != cuenta["id"]
@@ -144,28 +154,98 @@ def build(
             on_select=_on_change_tipo,
         )
 
-        # Selector de moneda: en alta, checkboxes de selección múltiple (una
-        # cuenta puede operar en más de una moneda, sección 14 de
-        # DATA_MODEL_DECISIONS.md). En edición NO se puede tocar acá —
-        # update_account() no cambia monedas, para eso existe
-        # add_currency_to_account() — se muestra solo como texto informativo.
-        checkboxes_moneda: dict[int, ft.Checkbox] = {}
+        # Sección "Monedas": solo existe en el diálogo de EDICIÓN. El alta ya
+        # no pide moneda en ningún momento (Tarea 6f: se resuelve sola con la
+        # primera transacción real; y de todos modos no hay cuenta_id
+        # todavía en el alta para poder llamar a add_currency_to_account()).
+        # Muestra las monedas que la cuenta ya tiene (chips, vía
+        # cuenta["saldos"]) y un "+ Agregar moneda" que abre inline (no un
+        # segundo AlertDialog superpuesto — sin precedente confirmado de
+        # diálogos anidados en este proyecto, ver docs/FLET_API_NOTES.md) un
+        # CampoFiltrable con las monedas que todavía no tiene.
+        seccion_moneda: Optional[ft.Control] = None
         if es_edicion:
-            codigos_actuales = ", ".join(s["moneda_codigo"] for s in cuenta["saldos"])
-            selector_moneda: ft.Control = ft.Column(
+            cuenta_actual = {"datos": cuenta}
+            lista_chips_moneda = ft.Row(spacing=6, wrap=True)
+            fila_agregar_moneda = ft.Row(spacing=8, visible=False)
+
+            def _moneda_ids_actuales() -> set:
+                return {s["moneda_id"] for s in cuenta_actual["datos"]["saldos"]}
+
+            def _refrescar_chips_moneda() -> None:
+                saldos = cuenta_actual["datos"]["saldos"]
+                if saldos:
+                    lista_chips_moneda.controls = [
+                        ft.Container(
+                            content=ft.Text(s["moneda_codigo"], size=12),
+                            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
+                            bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST,
+                            border_radius=12,
+                        )
+                        for s in saldos
+                    ]
+                else:
+                    lista_chips_moneda.controls = [ft.Text("—", color=ft.Colors.OUTLINE)]
+
+            def _ocultar_fila_agregar_moneda() -> None:
+                fila_agregar_moneda.visible = False
+                fila_agregar_moneda.controls = []
+                dialogo.update()
+
+            def _mostrar_fila_agregar_moneda(e: ft.ControlEvent) -> None:
+                disponibles = [m for m in monedas_disponibles if m["id"] not in _moneda_ids_actuales()]
+                if not disponibles:
+                    _mostrar_error("La cuenta ya opera en todas las monedas disponibles.")
+                    return
+
+                campo_moneda_nueva = CampoFiltrable(
+                    page,
+                    [(str(m["id"]), m["codigo"]) for m in disponibles],
+                    on_seleccionar=lambda id_: None,
+                    placeholder="Moneda",
+                    width=180,
+                    autofocus=True,
+                )
+
+                def _confirmar_moneda(e2: ft.ControlEvent) -> None:
+                    if not campo_moneda_nueva.id_seleccionado:
+                        _mostrar_error("Elegí una moneda de la lista de sugerencias.")
+                        return
+                    try:
+                        resultado = accounts_service.add_currency_to_account(
+                            cuenta["id"], int(campo_moneda_nueva.id_seleccionado)
+                        )
+                    except AccountsError as err:
+                        _mostrar_error(str(err))
+                        return
+                    cuenta_actual["datos"] = resultado.data
+                    _refrescar_chips_moneda()
+                    _ocultar_fila_agregar_moneda()
+                    _refrescar()  # el listado de atrás también muestra saldo por moneda
+                    _mostrar_ok(f"Moneda agregada a '{cuenta['nombre']}'.")
+
+                fila_agregar_moneda.controls = [
+                    campo_moneda_nueva.control,
+                    ft.IconButton(icon=ft.Icons.CHECK, tooltip="Agregar", on_click=_confirmar_moneda),
+                    ft.IconButton(
+                        icon=ft.Icons.CLOSE, tooltip="Cancelar",
+                        on_click=lambda e2: _ocultar_fila_agregar_moneda(),
+                    ),
+                ]
+                fila_agregar_moneda.visible = True
+                dialogo.update()
+                campo_moneda_nueva.focus()
+
+            _refrescar_chips_moneda()
+
+            seccion_moneda = ft.Column(
                 [
                     ft.Text("Monedas", size=12, color=ft.Colors.OUTLINE),
-                    ft.Text(codigos_actuales or "—"),
+                    lista_chips_moneda,
+                    fila_agregar_moneda,
+                    ft.TextButton(content=ft.Text("+ Agregar moneda"), on_click=_mostrar_fila_agregar_moneda),
                 ],
-                spacing=2,
-            )
-        else:
-            for m in monedas_disponibles:
-                checkboxes_moneda[m["id"]] = ft.Checkbox(label=m["codigo"], value=(m["codigo"] == "ARS"))
-            selector_moneda = ft.Column(
-                [ft.Text("Monedas", size=12, color=ft.Colors.OUTLINE)]
-                + list(checkboxes_moneda.values()),
-                spacing=0,
+                spacing=6,
             )
 
         # Selector de color: grilla fija de swatches (no color picker libre,
@@ -226,13 +306,9 @@ def build(
                 else:
                     if not dropdown_tipo.value:
                         raise AccountsError("Elegí un tipo de cuenta.")
-                    monedas_elegidas = [mid for mid, cb in checkboxes_moneda.items() if cb.value]
-                    if not monedas_elegidas:
-                        raise AccountsError("Elegí al menos una moneda.")
                     resultado = accounts_service.create_account(
                         nombre=campo_nombre.value,
                         tipo=dropdown_tipo.value,
-                        monedas=monedas_elegidas,
                         cuenta_pago_id=(
                             int(dropdown_padre.value)
                             if dropdown_tipo.value == "credito" and dropdown_padre.value
@@ -253,13 +329,18 @@ def build(
             if era_onboarding and on_primera_cuenta_creada is not None:
                 on_primera_cuenta_creada()
 
+        controles_dialogo = [campo_nombre, dropdown_tipo]
+        if seccion_moneda is not None:
+            controles_dialogo.append(seccion_moneda)
+        controles_dialogo += [selector_color, dropdown_padre, campo_notas]
+
         dialogo = ft.AlertDialog(
             modal=True,
             title=ft.Text("Editar cuenta" if es_edicion else "Agregar cuenta"),
             content=ft.Container(
                 width=380,
                 content=ft.Column(
-                    [campo_nombre, dropdown_tipo, selector_moneda, selector_color, dropdown_padre, campo_notas],
+                    controles_dialogo,
                     tight=True,
                     spacing=12,
                     scroll=ft.ScrollMode.AUTO,

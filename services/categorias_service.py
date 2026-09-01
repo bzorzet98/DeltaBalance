@@ -50,6 +50,14 @@ cosas en silencio:
    Objetivo de ahorro y llama a SavingsService.register_purchase() con
    cuenta_id (mecanismo de la Tarea 6b) en vez de crear una transacción
    simple. Ver docs/DATA_MODEL_DECISIONS.md sección 17.
+5. MOVIMIENTO CAPITAL · Deuda (nueva, docs/PROXIMOS_PASOS.md — corrección
+   posterior a la Tarea 9 Parte B) — a diferencia de los puntos 2 y 4, NO
+   reemplaza la transacción normal: ui/components/registro_transacciones.py
+   primero crea la transacción real de siempre (TransactionService.
+   create()) y DESPUÉS abre un mini-diálogo (Persona/entidad + fecha de
+   vencimiento opcional) que llama a DebtsService.create(origen_tipo=
+   'transaccion', origen_id=<esa transacción>) para vincular una deuda
+   informal a ese movimiento.
 
 Otras categorías aparecen hardcodeadas en tests/conftest.py y en
 verify/dashboard/verify_dashboard_service.py (Supermercado, Salud,
@@ -123,6 +131,23 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
         "SavingsService.register_purchase() con cuenta_id, en vez de crear "
         "una transacción simple vía TransactionService.create() — ver "
         "docs/DATA_MODEL_DECISIONS.md sección 17."
+    ),
+    # Nueva (docs/PROXIMOS_PASOS.md — corrección posterior a la Tarea 9
+    # Parte B). A diferencia de Autotransferencia/Ahorro-Inversión, esta
+    # categoría NO reemplaza la transacción normal: ui/components/
+    # registro_transacciones.py primero crea la transacción de siempre
+    # (TransactionService.create(), respetando el signo tipeado) y RECIÉN
+    # DESPUÉS abre un mini-diálogo (Persona/entidad + fecha de vencimiento
+    # opcional) que llama a DebtsService.create(origen_tipo='transaccion',
+    # origen_id=<esa transacción>) para vincular una deuda informal a ese
+    # movimiento real.
+    ("MOVIMIENTO CAPITAL", "Deuda"): (
+        "ui/components/registro_transacciones.py rutea esta categoría a un "
+        "mini-diálogo (Persona/entidad + fecha de vencimiento opcional) que "
+        "llama a DebtsService.create(origen_tipo='transaccion', "
+        "origen_id=<transacción recién creada>) DESPUÉS de crear la "
+        "transacción normal — no reemplaza el guardado normal como las "
+        "otras dos categorías especiales de este bloque."
     ),
 }
 

@@ -38,11 +38,18 @@ class ActivosFinancierosRepository:
     # CREATE
     # ----------------------------------------------------------
 
-    def crear(self, nombre: str, tipo: str, moneda_id: int) -> int:
-        """Inserta un activo financiero. activa arranca en 1 (default de columna)."""
+    def crear(self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[int] = None) -> int:
+        """
+        Inserta un activo financiero. activa arranca en 1 (default de
+        columna). cuenta_id (Tarea 6g, docs/PROXIMOS_PASOS.md) vincula el
+        activo a una cuenta real — opcional, nullable en schema — usado
+        por SavingsService.register_purchase()/register_sale() para
+        resolver sola la cuenta a descontar/acreditar sin que el caller
+        tenga que pasarla en cada movimiento.
+        """
         return self._db.execute(
-            "INSERT INTO activos_financieros (nombre, tipo, moneda_id) VALUES (?, ?, ?);",
-            (nombre, tipo, moneda_id),
+            "INSERT INTO activos_financieros (nombre, tipo, moneda_id, cuenta_id) VALUES (?, ?, ?, ?);",
+            (nombre, tipo, moneda_id, cuenta_id),
         )
 
     # ----------------------------------------------------------

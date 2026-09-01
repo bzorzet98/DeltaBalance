@@ -37,23 +37,34 @@ Cubre:
     nombre de objetivo (no solo el id).
   - get_objetivo_balance(): compra + rendimiento + venta parcial del mismo
     objetivo, confirmando el saldo neto.
-  - Tarea 6b (docs/PROXIMOS_PASOS.md): register_purchase()/register_sale()
-    con cuenta_id — crean la transacción real vinculada (egreso/ingreso),
-    confirman el transaccion_id concreto persistido en el movimiento, y que
-    el saldo real de la cuenta (CuentasRepository.obtener_saldo(), vista
-    vw_balance_cuentas) baja/sube en consecuencia. Validaciones (cuenta_id
-    sin categoria_id, cuenta_id/categoria_id inexistentes). Atomicidad REAL
-    probada con rollback simulado vía monkeypatch de
+  - Tarea 6g (docs/PROXIMOS_PASOS.md): activos_financieros gana cuenta_id
+    (opcional) y register_purchase()/register_sale() dejan de recibir
+    cuenta_id/categoria_id como parámetros explícitos — se resuelven solos
+    desde activo["cuenta_id"] y desde la categoría protegida 'MOVIMIENTO
+    CAPITAL · Ahorro/Inversión' (por nombre, nunca hardcodeada). Reemplaza
+    la cobertura vieja de la Tarea 6b (que pasaba cuenta_id/categoria_id en
+    cada llamada): create_activo(cuenta_id=...) crea la transacción real
+    vinculada (egreso/ingreso) en cada register_purchase()/register_sale()
+    posterior sobre ESE activo, confirma el transaccion_id concreto
+    persistido en el movimiento, que la transacción usa siempre la
+    categoría 'Ahorro/Inversión', y que el saldo real de la cuenta
+    (CuentasRepository.obtener_saldo(), vista vw_balance_cuentas) baja/sube
+    en consecuencia. Validación de create_activo(cuenta_id=inexistente).
+    Atomicidad REAL probada con rollback simulado vía monkeypatch de
     AsignacionesRepository.crear() — mismo patrón que
     verify_empleos_service.py::create_receipt() con cuenta_id — confirmando
     que ni la transacción ni el movimiento quedan huérfanos si la
-    asignación falla a mitad de camino. get_balance_por_cuenta() con
-    aportes desde dos cuentas distintas al mismo objetivo, confirmando que
-    se agrupan por separado.
-  - Tarea 1b: get_or_create_reserved_cash_asset() — primera vez crea el
-    activo genérico "Efectivo reservado en <cuenta>", llamadas siguientes
-    con el mismo nombre de cuenta lo REUSAN (no duplican), y un nombre de
-    cuenta distinto crea un activo separado.
+    asignación falla a mitad de camino. get_balance_por_cuenta() con dos
+    activos vinculados a cuentas distintas aportando al mismo objetivo,
+    confirmando que se agrupan por separado (Tarea 6g: la cuenta es
+    propiedad del activo, no del movimiento — cada cuenta real necesita su
+    propio activo).
+  - Tarea 1b (identidad de búsqueda actualizada en la Tarea 6g):
+    get_or_create_reserved_cash_asset() — primera vez crea el activo
+    genérico "Efectivo reservado en <cuenta>" vinculado por cuenta_id,
+    llamadas siguientes con el mismo cuenta_id lo REUSAN (no duplican), una
+    cuenta_id distinta crea un activo separado, y cuenta_id inexistente
+    lanza AccountNotFoundError.
 
 Correlo con:
     python verify/ahorros/verify_savings_service.py
@@ -75,7 +86,6 @@ from services.savings_service import (
     ObjetivoNotFoundError,
     AsignacionInvalidaError,
     AccountNotFoundError,
-    CategoryNotFoundError,
 )
 
 
@@ -382,78 +392,79 @@ def main() -> None:
     )
 
     # ============================================================
-    # REGISTER_PURCHASE()/REGISTER_SALE() CON cuenta_id — Tarea 6b
+    # REGISTER_PURCHASE()/REGISTER_SALE() — CUENTA VINCULADA AL ACTIVO (Tarea 6g)
     # ============================================================
     cuentas_repo = CuentasRepository(manager)
-    categoria_inversiones = manager.fetchone(
+    categoria_ahorro_inversion = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
-        "AND subcategoria = 'Inversiones';"
+        "AND subcategoria = 'Ahorro/Inversión';"
     )["id"]
 
     cuenta_mp = cuentas_repo.crear(
         nombre="Mercado Pago (verify)", tipo="debito", moneda_codigo="ARS", saldo_inicial=1000.0,
     )
-    activo_link = svc.create_activo(nombre="FCI vinculado", tipo="fci", moneda_id=moneda_ars).entity_id
+    activo_link = svc.create_activo(nombre="FCI sin cuenta vinculada", tipo="fci", moneda_id=moneda_ars).entity_id
     objetivo_link = svc.create_objetivo(nombre="Vinculo cuenta").entity_id
 
-    print("\n--- register_purchase() SIN cuenta_id — no crea transacción, transaccion_id queda NULL ---")
+    print("\n--- register_purchase() con activo SIN cuenta_id vinculada — no crea transacción, transaccion_id queda NULL ---")
     transacciones_antes_libre = manager.fetchone("SELECT COUNT(*) AS n FROM transacciones;")["n"]
     compra_sin_cuenta = svc.register_purchase(
         activo_id=activo_link, fecha="2026-05-01", monto_total_minor=10000,
         asignaciones=[{"objetivo_id": objetivo_link, "porcentaje": 100.0}],
     )
-    caso("register_purchase() sin cuenta_id: data['transaccion_id'] = None", None, compra_sin_cuenta.data["transaccion_id"])
+    caso("register_purchase() con activo sin cuenta: data['transaccion_id'] = None", None, compra_sin_cuenta.data["transaccion_id"])
     transacciones_despues_libre = manager.fetchone("SELECT COUNT(*) AS n FROM transacciones;")["n"]
-    caso("register_purchase() sin cuenta_id: no crea ninguna transacción", transacciones_antes_libre, transacciones_despues_libre)
+    caso("register_purchase() con activo sin cuenta: no crea ninguna transacción", transacciones_antes_libre, transacciones_despues_libre)
     fila_movimiento_libre = manager.fetchone(
         "SELECT transaccion_id FROM movimientos_activo WHERE id = ?;", (compra_sin_cuenta.entity_id,)
     )
-    caso("register_purchase() sin cuenta_id: movimiento persiste transaccion_id NULL", None, fila_movimiento_libre["transaccion_id"])
+    caso("register_purchase() con activo sin cuenta: movimiento persiste transaccion_id NULL", None, fila_movimiento_libre["transaccion_id"])
 
-    print("\n--- register_purchase() con cuenta_id — validaciones ---")
+    print("\n--- create_activo() con cuenta_id — validación ---")
     caso_excepcion(
-        "register_purchase() con cuenta_id pero SIN categoria_id lanza ValueError",
-        ValueError,
-        lambda: svc.register_purchase(
-            activo_id=activo_link, fecha="2026-05-02", monto_total_minor=1000, cuenta_id=cuenta_mp,
-        ),
-    )
-    caso_excepcion(
-        "register_purchase() con cuenta_id inexistente lanza AccountNotFoundError",
+        "create_activo() con cuenta_id inexistente lanza AccountNotFoundError",
         AccountNotFoundError,
-        lambda: svc.register_purchase(
-            activo_id=activo_link, fecha="2026-05-02", monto_total_minor=1000,
-            cuenta_id=999999, categoria_id=categoria_inversiones,
-        ),
-    )
-    caso_excepcion(
-        "register_purchase() con categoria_id inexistente lanza CategoryNotFoundError",
-        CategoryNotFoundError,
-        lambda: svc.register_purchase(
-            activo_id=activo_link, fecha="2026-05-02", monto_total_minor=1000,
-            cuenta_id=cuenta_mp, categoria_id=999999,
-        ),
+        lambda: svc.create_activo(nombre="X con cuenta mala", tipo="fci", moneda_id=moneda_ars, cuenta_id=999999),
     )
 
-    print("\n--- register_purchase() con cuenta_id — camino exitoso: transacción real + saldo baja ---")
+    resultado_activo_con_cuenta = svc.create_activo(
+        nombre="FCI con cuenta MP", tipo="fci", moneda_id=moneda_ars, cuenta_id=cuenta_mp,
+    )
+    caso("create_activo(cuenta_id=...): success=True", True, resultado_activo_con_cuenta.success)
+    caso("create_activo(cuenta_id=...): persiste cuenta_id en data", cuenta_mp, resultado_activo_con_cuenta.data["cuenta_id"])
+    activo_con_cuenta = resultado_activo_con_cuenta.entity_id
+
+    fila_activo_con_cuenta = manager.fetchone(
+        "SELECT cuenta_id FROM activos_financieros WHERE id = ?;", (activo_con_cuenta,)
+    )
+    caso("create_activo(cuenta_id=...): persiste cuenta_id en la fila real", cuenta_mp, fila_activo_con_cuenta["cuenta_id"])
+
+    objetivo_link_2 = svc.create_objetivo(nombre="Vinculo cuenta 2").entity_id
+
+    print("\n--- register_purchase() con activo vinculado a cuenta — camino exitoso: transacción real + saldo baja ---")
     saldo_mp_antes = cuentas_repo.obtener_saldo(cuenta_mp, "ARS")
     caso("saldo inicial de Mercado Pago (verify) = 1000.0", 1000.0, saldo_mp_antes)
 
     compra_con_cuenta = svc.register_purchase(
-        activo_id=activo_link, fecha="2026-05-03", monto_total_minor=50000,  # 500.00 ARS
-        asignaciones=[{"objetivo_id": objetivo_link, "porcentaje": 100.0}],
-        cuenta_id=cuenta_mp, categoria_id=categoria_inversiones,
+        activo_id=activo_con_cuenta, fecha="2026-05-03", monto_total_minor=50000,  # 500.00 ARS
+        asignaciones=[{"objetivo_id": objetivo_link_2, "porcentaje": 100.0}],
     )
-    caso("register_purchase() con cuenta_id: success=True", True, compra_con_cuenta.success)
-    caso("register_purchase() con cuenta_id: data['transaccion_id'] es numérico", True, isinstance(compra_con_cuenta.data["transaccion_id"], int))
+    caso("register_purchase() con activo vinculado a cuenta: success=True", True, compra_con_cuenta.success)
+    caso(
+        "register_purchase() con activo vinculado a cuenta: data['transaccion_id'] es numérico",
+        True, isinstance(compra_con_cuenta.data["transaccion_id"], int),
+    )
 
     fila_transaccion_compra = manager.fetchone(
         "SELECT * FROM transacciones WHERE id = ?;", (compra_con_cuenta.data["transaccion_id"],)
     )
     caso("la transacción creada por register_purchase() es tipo_movimiento='egreso'", "egreso", fila_transaccion_compra["tipo_movimiento"])
     caso("la transacción creada tiene el monto_minor del aporte", 50000, fila_transaccion_compra["monto_minor"])
-    caso("la transacción creada usa cuenta_id=cuenta_mp", cuenta_mp, fila_transaccion_compra["cuenta_id"])
-    caso("la transacción creada usa la categoria_id pasada", categoria_inversiones, fila_transaccion_compra["categoria_id"])
+    caso("la transacción creada usa la cuenta vinculada al activo (activo['cuenta_id'])", cuenta_mp, fila_transaccion_compra["cuenta_id"])
+    caso(
+        "la transacción creada usa SIEMPRE la categoría protegida 'Ahorro/Inversión' (resuelta por nombre, nunca elegida por el caller)",
+        categoria_ahorro_inversion, fila_transaccion_compra["categoria_id"],
+    )
 
     fila_movimiento_compra = manager.fetchone(
         "SELECT transaccion_id FROM movimientos_activo WHERE id = ?;", (compra_con_cuenta.entity_id,)
@@ -467,20 +478,26 @@ def main() -> None:
     saldo_mp_tras_compra = cuentas_repo.obtener_saldo(cuenta_mp, "ARS")
     caso("el saldo de Mercado Pago (verify) baja 500.00 tras el aporte (egreso)", 500.0, saldo_mp_tras_compra)
 
-    print("\n--- register_sale() con cuenta_id — camino exitoso: transacción real (ingreso) + saldo sube ---")
+    print("\n--- register_sale() con activo vinculado a cuenta — camino exitoso: transacción real (ingreso) + saldo sube ---")
     venta_con_cuenta = svc.register_sale(
-        activo_id=activo_link, fecha="2026-05-10", monto_total_minor=20000,  # 200.00 ARS
-        asignaciones=[{"objetivo_id": objetivo_link, "porcentaje": 100.0}],
-        cuenta_id=cuenta_mp, categoria_id=categoria_inversiones,
+        activo_id=activo_con_cuenta, fecha="2026-05-10", monto_total_minor=20000,  # 200.00 ARS
+        asignaciones=[{"objetivo_id": objetivo_link_2, "porcentaje": 100.0}],
     )
-    caso("register_sale() con cuenta_id: success=True", True, venta_con_cuenta.success)
-    caso("register_sale() con cuenta_id: data['transaccion_id'] es numérico", True, isinstance(venta_con_cuenta.data["transaccion_id"], int))
+    caso("register_sale() con activo vinculado a cuenta: success=True", True, venta_con_cuenta.success)
+    caso(
+        "register_sale() con activo vinculado a cuenta: data['transaccion_id'] es numérico",
+        True, isinstance(venta_con_cuenta.data["transaccion_id"], int),
+    )
 
     fila_transaccion_venta = manager.fetchone(
         "SELECT * FROM transacciones WHERE id = ?;", (venta_con_cuenta.data["transaccion_id"],)
     )
     caso("la transacción creada por register_sale() es tipo_movimiento='ingreso'", "ingreso", fila_transaccion_venta["tipo_movimiento"])
     caso("la transacción creada tiene el monto_minor del retiro", 20000, fila_transaccion_venta["monto_minor"])
+    caso(
+        "la transacción de venta también usa SIEMPRE la categoría protegida 'Ahorro/Inversión'",
+        categoria_ahorro_inversion, fila_transaccion_venta["categoria_id"],
+    )
 
     fila_movimiento_venta = manager.fetchone(
         "SELECT transaccion_id FROM movimientos_activo WHERE id = ?;", (venta_con_cuenta.entity_id,)
@@ -494,16 +511,7 @@ def main() -> None:
     saldo_mp_tras_venta = cuentas_repo.obtener_saldo(cuenta_mp, "ARS")
     caso("el saldo de Mercado Pago (verify) sube 200.00 tras el retiro (ingreso): 500.00 + 200.00 = 700.00", 700.0, saldo_mp_tras_venta)
 
-    caso_excepcion(
-        "register_sale() con cuenta_id pero SIN categoria_id lanza ValueError",
-        ValueError,
-        lambda: svc.register_sale(
-            activo_id=activo_link, fecha="2026-05-11", monto_total_minor=1000,
-            asignaciones=[{"objetivo_id": objetivo_link, "porcentaje": 100.0}], cuenta_id=cuenta_mp,
-        ),
-    )
-
-    print("\n--- register_purchase() con cuenta_id — atomicidad REAL con rollback simulado ---")
+    print("\n--- register_purchase() con activo vinculado a cuenta — atomicidad REAL con rollback simulado ---")
     transacciones_antes_rollback = manager.fetchone("SELECT COUNT(*) AS n FROM transacciones;")["n"]
     movimientos_antes_rollback = manager.fetchone("SELECT COUNT(*) AS n FROM movimientos_activo;")["n"]
     asignaciones_antes_rollback = manager.fetchone("SELECT COUNT(*) AS n FROM asignaciones;")["n"]
@@ -517,12 +525,11 @@ def main() -> None:
     AsignacionesRepository.crear = crear_asignacion_que_falla
     try:
         caso_excepcion(
-            "register_purchase() con cuenta_id propaga el fallo simulado de AsignacionesRepository.crear()",
+            "register_purchase() con activo vinculado a cuenta propaga el fallo simulado de AsignacionesRepository.crear()",
             RuntimeError,
             lambda: svc.register_purchase(
-                activo_id=activo_link, fecha="2026-05-12", monto_total_minor=30000,
-                asignaciones=[{"objetivo_id": objetivo_link, "porcentaje": 100.0}],
-                cuenta_id=cuenta_mp, categoria_id=categoria_inversiones,
+                activo_id=activo_con_cuenta, fecha="2026-05-12", monto_total_minor=30000,
+                asignaciones=[{"objetivo_id": objetivo_link_2, "porcentaje": 100.0}],
             ),
         )
     finally:
@@ -538,7 +545,7 @@ def main() -> None:
     caso("rollback revierte también la asignación (nunca llegó a crearse)", asignaciones_antes_rollback, asignaciones_despues_rollback)
     caso("rollback: el saldo de Mercado Pago (verify) no cambió", saldo_mp_antes_rollback, saldo_mp_despues_rollback)
 
-    print("\n--- register_sale() con cuenta_id — atomicidad REAL con rollback simulado ---")
+    print("\n--- register_sale() con activo vinculado a cuenta — atomicidad REAL con rollback simulado ---")
     transacciones_antes_rollback_venta = manager.fetchone("SELECT COUNT(*) AS n FROM transacciones;")["n"]
     movimientos_antes_rollback_venta = manager.fetchone("SELECT COUNT(*) AS n FROM movimientos_activo;")["n"]
     saldo_mp_antes_rollback_venta = cuentas_repo.obtener_saldo(cuenta_mp, "ARS")
@@ -546,12 +553,11 @@ def main() -> None:
     AsignacionesRepository.crear = crear_asignacion_que_falla
     try:
         caso_excepcion(
-            "register_sale() con cuenta_id propaga el fallo simulado de AsignacionesRepository.crear()",
+            "register_sale() con activo vinculado a cuenta propaga el fallo simulado de AsignacionesRepository.crear()",
             RuntimeError,
             lambda: svc.register_sale(
-                activo_id=activo_link, fecha="2026-05-13", monto_total_minor=5000,
-                asignaciones=[{"objetivo_id": objetivo_link, "porcentaje": 100.0}],
-                cuenta_id=cuenta_mp, categoria_id=categoria_inversiones,
+                activo_id=activo_con_cuenta, fecha="2026-05-13", monto_total_minor=5000,
+                asignaciones=[{"objetivo_id": objetivo_link_2, "porcentaje": 100.0}],
             ),
         )
     finally:
@@ -572,30 +578,38 @@ def main() -> None:
     caso("rollback (venta): el saldo de Mercado Pago (verify) no cambió", saldo_mp_antes_rollback_venta, saldo_mp_despues_rollback_venta)
 
     # ============================================================
-    # GET_BALANCE_POR_CUENTA() — Tarea 6b
+    # GET_BALANCE_POR_CUENTA() — Tarea 6b (activo↔cuenta desde Tarea 6g)
     # ============================================================
     print("\n--- get_balance_por_cuenta() — aportes desde dos cuentas distintas al mismo objetivo ---")
     cuenta_a = cuentas_repo.crear(nombre="Cuenta A (verify balance)", tipo="debito", moneda_codigo="ARS", saldo_inicial=0.0)
     cuenta_b = cuentas_repo.crear(nombre="Cuenta B (verify balance)", tipo="inversion", moneda_codigo="ARS", saldo_inicial=0.0)
     objetivo_balance_cuentas = svc.create_objetivo(nombre="Balance multi-cuenta").entity_id
 
+    # Cada cuenta real queda vinculada a SU PROPIO activo (Tarea 6g: la
+    # cuenta es una propiedad del activo, no del movimiento — un mismo
+    # activo ya no puede "saltar" de cuenta en cuenta movimiento a
+    # movimiento como antes).
+    activo_cuenta_a = svc.create_activo(
+        nombre="Activo en cuenta A (verify balance)", tipo="otro", moneda_id=moneda_ars, cuenta_id=cuenta_a,
+    ).entity_id
+    activo_cuenta_b = svc.create_activo(
+        nombre="Activo en cuenta B (verify balance)", tipo="otro", moneda_id=moneda_ars, cuenta_id=cuenta_b,
+    ).entity_id
+
     svc.register_purchase(
-        activo_id=activo_link, fecha="2026-06-01", monto_total_minor=40000,
+        activo_id=activo_cuenta_a, fecha="2026-06-01", monto_total_minor=40000,
         asignaciones=[{"objetivo_id": objetivo_balance_cuentas, "porcentaje": 100.0}],
-        cuenta_id=cuenta_a, categoria_id=categoria_inversiones,
     )
     svc.register_purchase(
-        activo_id=activo_link, fecha="2026-06-02", monto_total_minor=15000,
+        activo_id=activo_cuenta_b, fecha="2026-06-02", monto_total_minor=15000,
         asignaciones=[{"objetivo_id": objetivo_balance_cuentas, "porcentaje": 100.0}],
-        cuenta_id=cuenta_b, categoria_id=categoria_inversiones,
     )
     # Un retiro parcial desde cuenta_a: debe descontarse del saldo de esa cuenta puntual, no de cuenta_b.
     svc.register_sale(
-        activo_id=activo_link, fecha="2026-06-05", monto_total_minor=10000,
+        activo_id=activo_cuenta_a, fecha="2026-06-05", monto_total_minor=10000,
         asignaciones=[{"objetivo_id": objetivo_balance_cuentas, "porcentaje": 100.0}],
-        cuenta_id=cuenta_a, categoria_id=categoria_inversiones,
     )
-    # Un aporte informal (sin cuenta_id) no debe aparecer en el desglose por cuenta.
+    # Un aporte desde un activo sin cuenta_id (informal) no debe aparecer en el desglose por cuenta.
     svc.register_purchase(
         activo_id=activo_link, fecha="2026-06-06", monto_total_minor=999999,
         asignaciones=[{"objetivo_id": objetivo_balance_cuentas, "porcentaje": 100.0}],
@@ -659,9 +673,23 @@ def main() -> None:
         125000,
         balance_tipo_por_clave[("accion", moneda_ars)]["saldo_neto_minor"],
     )
+    # get_balance_por_tipo() agrupa por (tipo, moneda_id) de TODOS los
+    # activos, no solo los "nuevos" de esta sección (ver su docstring en
+    # savings_service.py) — a diferencia de 'accion' arriba, 'cripto'/ARS
+    # NO está aislado: activo_2 ("Cripto Wallet", tipo='cripto',
+    # moneda_id=moneda_ars, creado en la sección ACTIVOS/OBJETIVOS al
+    # principio del script) ya venía acumulando saldo real en esta misma
+    # dummy_db compartida — compra_parcial (1000) + compra_libre (500) =
+    # 1500 (ver esas dos secciones más arriba; la asignación de 110% y el
+    # objetivo_id inexistente fallaron ANTES de escribir nada, no suman).
+    # El valor esperado es 20000 (activo_cripto_1) + 1500 (activo_2) =
+    # 21500, no 20000 — el comentario "activos nuevos y aislados" de más
+    # arriba es correcto para poder calcular a mano el aporte de ESTA
+    # sección, pero no aísla la agregación en sí de la actividad previa.
     caso(
-        "get_balance_por_tipo(): 'cripto'/ARS = 20000, sin mezclarse con 'accion'",
-        20000,
+        "get_balance_por_tipo(): 'cripto'/ARS = 20000 (activo_cripto_1) + 1500 (activo_2, sección anterior) "
+        "= 21500, sin mezclarse con 'accion'",
+        21500,
         balance_tipo_por_clave[("cripto", moneda_ars)]["saldo_neto_minor"],
     )
 
@@ -746,16 +774,20 @@ def main() -> None:
     caso("list_movimientos() sin actividad en el rango devuelve []", [], svc.list_movimientos(fecha_desde="2020-01-01", fecha_hasta="2020-01-02"))
 
     # ============================================================
-    # GET_OR_CREATE_RESERVED_CASH_ASSET() — Tarea 1b
+    # GET_OR_CREATE_RESERVED_CASH_ASSET() — Tarea 1b (identidad de
+    # búsqueda por cuenta_id desde la Tarea 6g, en vez de por nombre)
     # ============================================================
     print("\n--- get_or_create_reserved_cash_asset() — primera vez crea, segunda vez reusa ---")
+    cuenta_reservada_1 = cuentas_repo.crear(
+        nombre="Mercado Pago Reservado (verify)", tipo="debito", moneda_codigo="ARS",
+    )
     activos_antes = manager.fetchone("SELECT COUNT(*) AS n FROM activos_financieros;")["n"]
-    primera_vez = svc.get_or_create_reserved_cash_asset(cuenta_nombre="Mercado Pago (verify)", moneda_id=moneda_ars)
+    primera_vez = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_1, moneda_id=moneda_ars)
     caso("get_or_create_reserved_cash_asset() primera vez: success=True", True, primera_vez.success)
     caso("get_or_create_reserved_cash_asset() primera vez: data['creado'] = True", True, primera_vez.data["creado"])
     caso(
         "get_or_create_reserved_cash_asset() arma el nombre exacto 'Efectivo reservado en <cuenta>'",
-        "Efectivo reservado en Mercado Pago (verify)",
+        "Efectivo reservado en Mercado Pago Reservado (verify)",
         primera_vez.data["nombre"],
     )
     activos_tras_primera = manager.fetchone("SELECT COUNT(*) AS n FROM activos_financieros;")["n"]
@@ -764,8 +796,12 @@ def main() -> None:
     fila_activo = manager.fetchone("SELECT * FROM activos_financieros WHERE id = ?;", (primera_vez.entity_id,))
     caso("el activo creado tiene tipo='otro'", "otro", fila_activo["tipo"])
     caso("el activo creado usa el moneda_id pasado", moneda_ars, fila_activo["moneda_id"])
+    caso(
+        "el activo creado persiste cuenta_id (Tarea 6g: es la clave de búsqueda, ya no el nombre)",
+        cuenta_reservada_1, fila_activo["cuenta_id"],
+    )
 
-    segunda_vez = svc.get_or_create_reserved_cash_asset(cuenta_nombre="Mercado Pago (verify)", moneda_id=moneda_ars)
+    segunda_vez = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_1, moneda_id=moneda_ars)
     caso("get_or_create_reserved_cash_asset() segunda vez: success=True", True, segunda_vez.success)
     caso("get_or_create_reserved_cash_asset() segunda vez: data['creado'] = False (reusa)", False, segunda_vez.data["creado"])
     caso(
@@ -781,18 +817,30 @@ def main() -> None:
     )
 
     print("\n--- get_or_create_reserved_cash_asset() — cuenta distinta crea un activo separado ---")
-    otra_cuenta = svc.get_or_create_reserved_cash_asset(cuenta_nombre="Cocos FCI (verify)", moneda_id=moneda_ars)
-    caso("get_or_create_reserved_cash_asset() con otro nombre de cuenta: crea uno nuevo", True, otra_cuenta.data["creado"])
+    cuenta_reservada_2 = cuentas_repo.crear(
+        nombre="Cocos FCI Reservado (verify)", tipo="inversion", moneda_codigo="ARS",
+    )
+    otra_cuenta = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_2, moneda_id=moneda_ars)
+    caso("get_or_create_reserved_cash_asset() con otra cuenta_id: crea uno nuevo", True, otra_cuenta.data["creado"])
     caso(
-        "get_or_create_reserved_cash_asset() con otro nombre de cuenta: entity_id distinto al de Mercado Pago",
+        "get_or_create_reserved_cash_asset() con otra cuenta_id: entity_id distinto al de la primera",
         True,
         otra_cuenta.entity_id != primera_vez.entity_id,
     )
 
     caso_excepcion(
+        "get_or_create_reserved_cash_asset() con cuenta_id inexistente lanza AccountNotFoundError",
+        AccountNotFoundError,
+        lambda: svc.get_or_create_reserved_cash_asset(cuenta_id=999999, moneda_id=moneda_ars),
+    )
+
+    cuenta_reservada_moneda_invalida = cuentas_repo.crear(
+        nombre="Cuenta reservada sin moneda válida (verify)", tipo="debito", moneda_codigo="ARS",
+    )
+    caso_excepcion(
         "get_or_create_reserved_cash_asset() con moneda_id inexistente (y activo todavía no creado) lanza SavingsError",
         SavingsError,
-        lambda: svc.get_or_create_reserved_cash_asset(cuenta_nombre="Cuenta nueva sin moneda válida (verify)", moneda_id=999999),
+        lambda: svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_moneda_invalida, moneda_id=999999),
     )
 
     manager.desconectar()

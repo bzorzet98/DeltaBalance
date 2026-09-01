@@ -69,12 +69,22 @@ INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUE
 -- IGNORE acá no alcanza a data/deltabalance.db si ya existía antes de
 -- este cambio — correr migration/agregar_categoria_ahorro_inversion.py a
 -- mano en ese caso.
+-- 'Deuda' (nueva, docs/PROXIMOS_PASOS.md — corrección posterior a la
+-- Tarea 9 Parte B): elegirla en la fila de alta del Registro NO reemplaza
+-- la transacción normal (a diferencia de las otras dos especiales de
+-- este bloque) — primero crea la transacción real de siempre, y DESPUÉS
+-- abre un mini-diálogo que vincula una deuda informal
+-- (DebtsService.create(origen_tipo='transaccion', origen_id=<esa
+-- transacción>)) a esa misma transacción. Misma advertencia de INSERT OR
+-- IGNORE: correr migration/agregar_categoria_deuda.py a mano contra una
+-- base ya existente.
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
     ('MOVIMIENTO CAPITAL', 'Autotransferencia',  'movimiento'),
     ('MOVIMIENTO CAPITAL', 'Rendimientos',        'ingreso'),
     ('MOVIMIENTO CAPITAL', 'Inversiones',         'movimiento'),
     ('MOVIMIENTO CAPITAL', 'Cambio Moneda',       'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Ahorro/Inversión',    'movimiento');
+    ('MOVIMIENTO CAPITAL', 'Ahorro/Inversión',    'movimiento'),
+    ('MOVIMIENTO CAPITAL', 'Deuda',               'movimiento');
 
 -- TARJETA DE CRÉDITO — categorías especiales protegidas (agregadas Tarea 3
 -- de docs/PROXIMOS_PASOS.md, ver services/categorias_service.py

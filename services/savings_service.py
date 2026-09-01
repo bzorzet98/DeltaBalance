@@ -23,16 +23,15 @@ Purpose:
     métodos de esta fase lo usa todavía.
 
     Tarea 6b (docs/PROXIMOS_PASOS.md): register_purchase()/register_sale()
-    ganan un parámetro opcional cuenta_id. Cuando se pasa, crean además —
-    dentro de la MISMA transacción atómica que ya arma el movimiento (+
-    asignaciones) — una transacción real vía TransaccionesRepository que
-    descuenta/acredita esa cuenta, y vinculan su id en
-    movimientos_activo.transaccion_id. Mismo patrón exacto que
-    EmpleosService.create_receipt() con cuenta_id: cuando se pasa cuenta_id,
-    categoria_id pasa a ser OBLIGATORIO (ValueError si falta) — no se asume
-    ninguna categoría por default, el caller la elige explícitamente. Si no
-    se pasa cuenta_id, comportamiento previo sin cambios (movimiento
-    puramente informal, transaccion_id queda NULL).
+    ganaron un parámetro opcional cuenta_id: cuando se pasaba, creaban
+    además — dentro de la MISMA transacción atómica que ya arma el
+    movimiento (+ asignaciones) — una transacción real vía
+    TransaccionesRepository que descuenta/acredita esa cuenta, y vinculaban
+    su id en movimientos_activo.transaccion_id. La Tarea 6g (ver más abajo)
+    reemplaza ese parámetro explícito por resolución automática desde
+    activo["cuenta_id"] — el mecanismo de "crear la transacción real
+    vinculada dentro de la misma transacción atómica" sigue exactamente
+    igual, solo cambia de dónde sale cuenta_id.
 
     Tarea 1b (docs/PROXIMOS_PASOS.md): get_or_create_reserved_cash_asset()
     resuelve (o crea si no existía) el activo_financiero genérico tipo='otro'
@@ -40,7 +39,23 @@ Purpose:
     reutilizado en cargas futuras. Vive acá (no en la UI) para que sea
     testeable como motor de datos puro (ver docs/DATA_MODEL_DECISIONS.md
     sección 17) y reusable fuera de ui/components/registro_transacciones.py
-    si algún día hace falta (ej. un script de migration/).
+    si algún día hace falta (ej. un script de migration/). Desde la Tarea
+    6g busca/crea por (cuenta_id, tipo='otro') en vez de por el nombre
+    construido — ver su docstring para el detalle.
+
+    Tarea 6g (docs/PROXIMOS_PASOS.md): activos_financieros gana columna
+    cuenta_id (migración en db/schema_migrations.py), opcional — vincula un
+    activo a la cuenta real desde la que se lo opera. create_activo() la
+    recibe opcionalmente. register_purchase()/register_sale() YA NO reciben
+    cuenta_id/categoria_id como parámetros explícitos: cuenta_id se resuelve
+    solo desde activo["cuenta_id"] (si el activo no tiene cuenta vinculada,
+    el movimiento queda informal, igual que cuando antes no se pasaba
+    cuenta_id) y categoria_id siempre es el id de la categoría protegida
+    'MOVIMIENTO CAPITAL · Ahorro/Inversión' (resuelto por nombre vía
+    _get_categoria_ahorro_inversion_id(), nunca hardcodeado ni elegido por
+    el caller). Objetivo: simplificar la carga — la cuenta y la categoría
+    de un ahorro/inversión son propiedades del activo, no algo para repetir
+    en cada movimiento.
 
     Tarea 6d (docs/PROXIMOS_PASOS.md, rediseño de la pantalla de Ahorros a
     formato Registro):
@@ -77,7 +92,6 @@ from repositories.movimientos_activo_repository import MovimientosActivoReposito
 from repositories.asignaciones_repository import AsignacionesRepository
 from repositories.transacciones_repository import TransaccionesRepository
 from repositories.cuentas_repository import CuentasRepository
-from repositories.categorias_repository import CategoriasRepository
 
 # =============================================================
 # EXCEPTIONS
@@ -112,16 +126,23 @@ class AsignacionInvalidaError(SavingsError):
 class AccountNotFoundError(SavingsError):
     """
     Raised when a referenced account does not exist. Propia de este módulo
-    (mismo motivo que EmpleosService.AccountNotFoundError): aunque
-    register_purchase()/register_sale() SÍ cruzan hacia transacciones a
-    propósito cuando se les pasa cuenta_id, reportar "cuenta no encontrada"
-    no necesita depender de la jerarquía de excepciones de
-    TransactionService.
+    (mismo motivo que EmpleosService.AccountNotFoundError). Desde la Tarea
+    6g (docs/PROXIMOS_PASOS.md) se lanza en create_activo()/
+    get_or_create_reserved_cash_asset() al validar cuenta_id — antes se
+    lanzaba en register_purchase()/register_sale(), que ya no reciben ese
+    parámetro (lo resuelven internamente desde activo.cuenta_id, ya
+    validado al crear el activo).
     """
 
 
 class CategoryNotFoundError(SavingsError):
-    """Raised when a referenced category does not exist. Propia de este módulo, mismo motivo."""
+    """
+    Raised (defensivamente) cuando la categoría protegida 'MOVIMIENTO
+    CAPITAL · Ahorro/Inversión' no se encuentra por nombre (Tarea 6g,
+    docs/PROXIMOS_PASOS.md) — no debería pasar nunca contra una DB
+    inicializada normalmente (la categoría viene del seed, ver
+    db/seed.sql), pero se reporta como error de negocio en vez de dejar
+    un TypeError crudo si algún día falta."""
 
 
 # =============================================================
@@ -164,7 +185,6 @@ class SavingsService:
         self._asignaciones_repo = AsignacionesRepository(db)
         self._transacciones_repo = TransaccionesRepository(db)
         self._cuentas_repo = CuentasRepository(db)
-        self._categorias_repo = CategoriasRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -196,73 +216,115 @@ class SavingsService:
             raise AccountNotFoundError(f"Account id={account_id} not found.")
         return row
 
-    def _get_category(self, category_id: int) -> sqlite3.Row:
-        row = self._categorias_repo.obtener_por_id(category_id)
+    # Categoría protegida usada por register_purchase()/register_sale()
+    # cuando el activo tiene cuenta_id (Tarea 6g) — clave (categoria_
+    # principal, subcategoria) tal como está en la fila, mismo criterio de
+    # "matchear por nombre, no por id fijo" que
+    # services/categorias_service.py CATEGORIAS_PROTEGIDAS (el id varía
+    # entre bases, el par de nombres es la identidad estable).
+    _CATEGORIA_AHORRO_PRINCIPAL = "MOVIMIENTO CAPITAL"
+    _CATEGORIA_AHORRO_SUBCATEGORIA = "Ahorro/Inversión"
+
+    def _get_categoria_ahorro_inversion_id(self) -> int:
+        """
+        Resuelve el id de la categoría protegida 'MOVIMIENTO CAPITAL ·
+        Ahorro/Inversión' por nombre — nunca hardcodeado el id numérico,
+        que varía entre bases (dummy DB de verify/, DB real del usuario,
+        etc.). Viene del seed (ver db/seed.sql), así que se espera activa.
+        """
+        row = self._db.fetchone(
+            "SELECT id FROM categorias WHERE categoria_principal = ? AND subcategoria = ? AND activa = 1;",
+            (self._CATEGORIA_AHORRO_PRINCIPAL, self._CATEGORIA_AHORRO_SUBCATEGORIA),
+        )
         if row is None:
-            raise CategoryNotFoundError(f"Category id={category_id} not found.")
-        return row
+            raise CategoryNotFoundError(
+                f"No se encontró la categoría protegida '{self._CATEGORIA_AHORRO_PRINCIPAL} · "
+                f"{self._CATEGORIA_AHORRO_SUBCATEGORIA}' (activa) — se esperaba que existiera "
+                "desde el seed (ver db/seed.sql)."
+            )
+        return row["id"]
 
     # ----------------------------------------------------------
     # ACTIVOS FINANCIEROS
     # ----------------------------------------------------------
 
-    def create_activo(self, nombre: str, tipo: str, moneda_id: int) -> SavingsResult:
-        """Raises: SavingsError si moneda_id no existe."""
+    def create_activo(
+        self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[int] = None,
+    ) -> SavingsResult:
+        """
+        cuenta_id (Tarea 6g, docs/PROXIMOS_PASOS.md): vincula el activo a
+        una cuenta real, opcional. register_purchase()/register_sale() la
+        usan después para resolver sola qué cuenta descontar/acreditar,
+        sin que el caller tenga que pasarla en cada movimiento — un activo
+        sin cuenta_id sigue generando movimientos puramente informales
+        (transaccion_id NULL), igual que antes de esta tarea.
+
+        Raises:
+            SavingsError si moneda_id no existe.
+            AccountNotFoundError si cuenta_id se pasa y no existe.
+        """
         self._get_currency(moneda_id)  # validate existence
-        activo_id = self._activos_repo.crear(nombre=nombre, tipo=tipo, moneda_id=moneda_id)
+        if cuenta_id is not None:
+            self._get_account(cuenta_id)  # validate existence
+        activo_id = self._activos_repo.crear(nombre=nombre, tipo=tipo, moneda_id=moneda_id, cuenta_id=cuenta_id)
         return SavingsResult(
             success=True,
             entity_id=activo_id,
-            data={"nombre": nombre, "tipo": tipo, "moneda_id": moneda_id},
+            data={"nombre": nombre, "tipo": tipo, "moneda_id": moneda_id, "cuenta_id": cuenta_id},
             message=f"Activo financiero '{nombre}' created.",
         )
 
     def list_activos(self, tipo: Optional[str] = None) -> list[sqlite3.Row]:
         return self._activos_repo.listar(tipo=tipo)
 
-    def get_or_create_reserved_cash_asset(self, cuenta_nombre: str, moneda_id: int) -> SavingsResult:
+    def get_or_create_reserved_cash_asset(self, cuenta_id: int, moneda_id: int) -> SavingsResult:
         """
-        Busca (por nombre exacto) el activo_financiero tipo='otro' llamado
-        "Efectivo reservado en <cuenta_nombre>". Si ya existe, lo reusa tal
-        cual (result.data["creado"] = False) — sin importar su estado
-        activa (busca contra listar(solo_activos=False), no reactiva nada
-        si estuviera desactivado, eso queda fuera de alcance). Si no
-        existe, lo crea con moneda_id (result.data["creado"] = True).
+        Busca el activo_financiero tipo='otro' vinculado a cuenta_id. Si
+        ya existe, lo reusa tal cual (result.data["creado"] = False) — sin
+        importar su estado activa (busca contra listar(solo_activos=False),
+        no reactiva nada si estuviera desactivado, eso queda fuera de
+        alcance). Si no existe, lo crea con moneda_id y cuenta_id
+        (result.data["creado"] = True).
 
-        No hay columna que vincule activos_financieros a una cuenta puntual
-        (decisión de diseño existente, ver docs/DATA_MODEL_DECISIONS.md
-        sección 14) — la identidad de "a qué cuenta pertenece" es el
-        nombre exacto, convención de la Tarea 1b (ver
-        docs/DATA_MODEL_DECISIONS.md sección 17).
+        Identidad = (cuenta_id, tipo='otro') desde la Tarea 6g
+        (docs/PROXIMOS_PASOS.md) — antes (Tarea 1b) la identidad era el
+        nombre exacto "Efectivo reservado en <cuenta_nombre>" construido a
+        mano, frágil ante un rename de la cuenta después de creado el
+        activo (activos_financieros no tenía columna cuenta_id todavía,
+        ver docs/DATA_MODEL_DECISIONS.md sección 17 para el estado
+        anterior). El nombre generado se sigue guardando igual, sigue
+        siendo útil para mostrarlo — pero ya no es la clave de búsqueda.
 
         Args:
-            cuenta_nombre: cuentas.nombre de la cuenta para la que se
-                           reserva efectivo — el nombre final del activo
-                           es f"Efectivo reservado en {cuenta_nombre}".
-            moneda_id:     Moneda del activo SI hay que crearlo (se ignora
-                           si ya existía uno con ese nombre — moneda_id no
-                           se reescribe en el camino de reuso, mismo
-                           criterio que PresupuestosRepository.upsert() no
-                           reescribe moneda_id en su UPDATE).
+            cuenta_id: cuenta real para la que se reserva efectivo — el
+                       nombre del activo (si hay que crearlo) es
+                       f"Efectivo reservado en {cuenta.nombre}".
+            moneda_id: Moneda del activo SI hay que crearlo (se ignora si
+                       ya existía uno para esta cuenta — moneda_id no se
+                       reescribe en el camino de reuso, mismo criterio que
+                       PresupuestosRepository.upsert() no reescribe
+                       moneda_id en su UPDATE).
 
         Raises:
+            AccountNotFoundError si cuenta_id no existe.
             SavingsError si moneda_id no existe Y hace falta crear el activo.
         """
-        nombre = f"Efectivo reservado en {cuenta_nombre}"
+        cuenta = self._get_account(cuenta_id)  # validate existence
         existente = next(
-            (a for a in self._activos_repo.listar(tipo="otro", solo_activos=False) if a["nombre"] == nombre),
+            (a for a in self._activos_repo.listar(tipo="otro", solo_activos=False) if a["cuenta_id"] == cuenta_id),
             None,
         )
         if existente is not None:
             return SavingsResult(
                 success=True,
                 entity_id=existente["id"],
-                data={"nombre": nombre, "creado": False},
-                message=f"Activo '{nombre}' ya existía (id={existente['id']}) — reusado.",
+                data={"nombre": existente["nombre"], "creado": False},
+                message=f"Activo '{existente['nombre']}' ya existía (id={existente['id']}) — reusado.",
             )
 
         self._get_currency(moneda_id)  # validate existence
-        activo_id = self._activos_repo.crear(nombre=nombre, tipo="otro", moneda_id=moneda_id)
+        nombre = f"Efectivo reservado en {cuenta['nombre']}"
+        activo_id = self._activos_repo.crear(nombre=nombre, tipo="otro", moneda_id=moneda_id, cuenta_id=cuenta_id)
         return SavingsResult(
             success=True,
             entity_id=activo_id,
@@ -307,8 +369,6 @@ class SavingsService:
         precio_unitario_minor: Optional[int] = None,
         asignaciones: Optional[list[dict]] = None,
         notas: Optional[str] = None,
-        cuenta_id: Optional[int] = None,
-        categoria_id: Optional[int] = None,
     ) -> SavingsResult:
         """
         Registra una compra (movimiento tipo='compra') de activo_id, con
@@ -326,28 +386,28 @@ class SavingsService:
         self._db.transaction() — monto_asignado_minor de cada asignación
         se calcula como round(monto_total_minor * porcentaje / 100).
 
-        Si se pasa `cuenta_id` (Tarea 6b): además del movimiento (+
-        asignaciones), crea dentro de la MISMA transacción atómica una
+        cuenta_id/categoria_id (Tarea 6g, docs/PROXIMOS_PASOS.md): ya NO
+        son parámetros de este método — se resuelven solos. cuenta_id sale
+        de activo["cuenta_id"] (ver SavingsService.create_activo()): si el
+        activo tiene cuenta vinculada, además del movimiento (+
+        asignaciones) se crea dentro de la MISMA transacción atómica una
         transacción real tipo='egreso' (vía TransaccionesRepository) que
         descuenta esa cuenta por monto_total_minor, en la moneda del
         activo (activos_financieros.moneda_id — el monto de un movimiento
         de ahorro está denominado en la moneda del activo, no hay otra
         moneda disponible en este método), y vincula su id en
-        movimientos_activo.transaccion_id. `categoria_id` pasa a ser
-        OBLIGATORIO en ese caso (ValueError si falta) — no se asume ninguna
-        categoría por default, mismo criterio que
-        EmpleosService.create_receipt(). Si no se pasa cuenta_id,
-        comportamiento previo sin cambios: movimiento informal,
-        transaccion_id queda NULL.
+        movimientos_activo.transaccion_id. categoria_id siempre es el id
+        de la categoría protegida 'MOVIMIENTO CAPITAL · Ahorro/Inversión'
+        (resuelta por nombre, nunca hardcodeada — ver
+        _get_categoria_ahorro_inversion_id()), nunca elegida por el
+        caller. Si el activo NO tiene cuenta_id, comportamiento previo sin
+        cambios: movimiento informal, transaccion_id queda NULL.
 
         Raises:
             ActivoNotFoundError si activo_id no existe.
-            ValueError si monto_total_minor <= 0, o si se pasa cuenta_id
-                       sin categoria_id.
+            ValueError si monto_total_minor <= 0.
             ObjetivoNotFoundError si algún objetivo_id de `asignaciones` no existe.
             AsignacionInvalidaError si la suma de porcentaje supera 100.
-            AccountNotFoundError si cuenta_id se pasa y no existe.
-            CategoryNotFoundError si categoria_id se pasa y no existe.
         """
         activo = self._get_activo(activo_id)
         if monto_total_minor <= 0:
@@ -363,14 +423,8 @@ class SavingsService:
                 f"La suma de porcentaje de las asignaciones ({suma_porcentaje}) supera 100."
             )
 
-        if cuenta_id is not None:
-            self._get_account(cuenta_id)
-            if categoria_id is None:
-                raise ValueError(
-                    "categoria_id is required when cuenta_id is provided — "
-                    "no default category is assumed (see docstring)."
-                )
-            self._get_category(categoria_id)
+        cuenta_id = activo["cuenta_id"]
+        categoria_id = self._get_categoria_ahorro_inversion_id() if cuenta_id is not None else None
 
         conn = self._db.conn
         with self._db.transaction():
@@ -551,8 +605,6 @@ class SavingsService:
         precio_unitario_minor: Optional[int] = None,
         dolar_oficial_momento_minor: Optional[int] = None,
         notas: Optional[str] = None,
-        cuenta_id: Optional[int] = None,
-        categoria_id: Optional[int] = None,
     ) -> SavingsResult:
         """
         Registra una venta/retiro (movimiento tipo='venta') de activo_id,
@@ -576,23 +628,23 @@ class SavingsService:
         la UI (ver ui/screens/ahorros.py) sea repartir el 100% del
         retiro.
 
-        Si se pasa `cuenta_id` (Tarea 6b): mismo mecanismo que
-        register_purchase(), pero crea una transacción real tipo='ingreso'
-        (el retiro de ahorro es plata que vuelve a estar disponible en esa
-        cuenta) dentro de la MISMA transacción atómica que el movimiento +
-        asignaciones, y vincula su id en movimientos_activo.transaccion_id.
-        `categoria_id` OBLIGATORIO en ese caso (ValueError si falta), mismo
-        criterio que register_purchase(). Si no se pasa cuenta_id,
-        comportamiento previo sin cambios.
+        cuenta_id/categoria_id (Tarea 6g, docs/PROXIMOS_PASOS.md): ya NO
+        son parámetros de este método — mismo mecanismo de resolución
+        automática que register_purchase() (ver su docstring): cuenta_id
+        sale de activo["cuenta_id"]; si hay cuenta, se crea una
+        transacción real tipo='ingreso' (el retiro de ahorro es plata que
+        vuelve a estar disponible en esa cuenta) dentro de la MISMA
+        transacción atómica que el movimiento + asignaciones, vinculada en
+        movimientos_activo.transaccion_id, con categoria_id siempre el id
+        de la categoría protegida 'MOVIMIENTO CAPITAL · Ahorro/Inversión'.
+        Si el activo no tiene cuenta_id, comportamiento previo sin
+        cambios.
 
         Raises:
             ActivoNotFoundError si activo_id no existe.
-            ValueError si monto_total_minor <= 0, si `asignaciones` está
-                       vacío, o si se pasa cuenta_id sin categoria_id.
+            ValueError si monto_total_minor <= 0 o si `asignaciones` está vacío.
             ObjetivoNotFoundError si algún objetivo_id de `asignaciones` no existe.
             AsignacionInvalidaError si la suma de porcentaje supera 100.
-            AccountNotFoundError si cuenta_id se pasa y no existe.
-            CategoryNotFoundError si categoria_id se pasa y no existe.
         """
         activo = self._get_activo(activo_id)
         if monto_total_minor <= 0:
@@ -611,14 +663,8 @@ class SavingsService:
                 f"La suma de porcentaje de las asignaciones ({suma_porcentaje}) supera 100."
             )
 
-        if cuenta_id is not None:
-            self._get_account(cuenta_id)
-            if categoria_id is None:
-                raise ValueError(
-                    "categoria_id is required when cuenta_id is provided — "
-                    "no default category is assumed (see docstring)."
-                )
-            self._get_category(categoria_id)
+        cuenta_id = activo["cuenta_id"]
+        categoria_id = self._get_categoria_ahorro_inversion_id() if cuenta_id is not None else None
 
         conn = self._db.conn
         with self._db.transaction():
@@ -953,6 +999,8 @@ class SavingsService:
         Returns:
             Lista de dicts {id, activo_id, activo_nombre, activo_tipo,
             moneda_id, tipo, fecha, cantidad, monto_total_minor,
+            transaccion_id (None si el movimiento es puramente informal,
+            ver Tarea 6b),
             asignaciones: [{objetivo_id, objetivo_nombre, porcentaje}]},
             ordenada por fecha descendente (más reciente primero).
         """
@@ -986,7 +1034,8 @@ class SavingsService:
                 ma.tipo                                                       AS tipo,
                 ma.fecha                                                      AS fecha,
                 ma.cantidad                                                   AS cantidad,
-                ma.monto_total_minor                                         AS monto_total_minor
+                ma.monto_total_minor                                         AS monto_total_minor,
+                ma.transaccion_id                                            AS transaccion_id
             FROM movimientos_activo ma
             JOIN activos_financieros af ON af.id = ma.activo_id
             {where_sql}
@@ -1025,3 +1074,73 @@ class SavingsService:
         for movimiento in movimientos:
             movimiento["asignaciones"] = asignaciones_por_movimiento.get(movimiento["id"], [])
         return movimientos
+
+    # ----------------------------------------------------------
+    # DELETE MOVIMIENTO (borrado por fila, Registro de Ahorros)
+    # ----------------------------------------------------------
+
+    def delete_movement(
+        self,
+        movimiento_id: int,
+        eliminar_transaccion_vinculada: bool = False,
+    ) -> SavingsResult:
+        """
+        Borra un movimiento_activo y sus asignaciones asociadas, atómico:
+        primero las asignaciones (AsignacionesRepository.
+        eliminar_por_movimiento(), evita violar la FK
+        asignaciones.movimiento_id), después el movimiento
+        (MovimientosActivoRepository.eliminar()) — DELETE físico en ambos
+        casos, mismo criterio que un movimiento de ahorro es append-only sin
+        historial de edición propio (ver docstring de
+        MovimientosActivoRepository).
+
+        Si el movimiento tiene transaccion_id vinculado (Tarea 6b), NO se
+        borra automáticamente esa transacción — la decisión es del caller
+        (la UI de Ahorros le pregunta explícitamente al usuario). Solo si
+        eliminar_transaccion_vinculada=True se soft-elimina también esa
+        transacción real (vía TransaccionesRepository.eliminar(), mismo
+        soft-delete que usa TransactionService.delete()), dentro de la
+        MISMA transacción atómica.
+
+        Args:
+            movimiento_id: El movimiento_activo a borrar.
+            eliminar_transaccion_vinculada: Si True Y el movimiento tenía
+                transaccion_id, también soft-elimina esa transacción real.
+                Si el movimiento no tenía transaccion_id, este flag no tiene
+                efecto (no hay nada que borrar).
+
+        Returns:
+            SavingsResult con data={"transaccion_id_eliminada": <id o None>}.
+
+        Raises:
+            MovimientoNotFoundError si movimiento_id no existe.
+        """
+        movimiento = self._movimientos_repo.obtener_por_id(movimiento_id)
+        if movimiento is None:
+            raise MovimientoNotFoundError(f"Movimiento id={movimiento_id} not found.")
+
+        transaccion_id = movimiento["transaccion_id"]
+        transaccion_eliminada = None
+
+        conn = self._db.conn
+        with self._db.transaction():
+            self._asignaciones_repo.eliminar_por_movimiento(movimiento_id, conn=conn)
+            self._movimientos_repo.eliminar(movimiento_id, conn=conn)
+
+            if eliminar_transaccion_vinculada and transaccion_id is not None:
+                self._transacciones_repo.eliminar(transaccion_id, conn=conn)
+                transaccion_eliminada = transaccion_id
+
+        return SavingsResult(
+            success=True,
+            entity_id=movimiento_id,
+            data={"transaccion_id_eliminada": transaccion_eliminada},
+            message=(
+                f"Movimiento #{movimiento_id} eliminado."
+                + (
+                    f" Transacción vinculada #{transaccion_eliminada} también eliminada (soft-delete)."
+                    if transaccion_eliminada is not None
+                    else ""
+                )
+            ),
+        )

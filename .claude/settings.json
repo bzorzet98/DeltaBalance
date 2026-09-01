@@ -4,7 +4,23 @@
       "Bash(git -C . rev-parse --is-inside-work-tree)",
       "Bash(awk -F: '{print $1\":\"$2}')",
       "Bash(grep -rn \"SAVINGS\" /home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/ 2>/dev/null | head -5)",
-      "Read(//home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/**)"
+      "Read(//home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/**)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('services/shared_expenses_service.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('repositories/gasto_compartido_pagos_repository.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('repositories/gastos_compartidos_repository.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('db/schema_migrations.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('verify/hogares_gastos_compartidos/verify_aplicar_pago.py'\\).read\\(\\)\\)\")",
+      "Bash(grep -n \"client_storage\\\\|ClientStorage\\\\|class Storage\" /home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/controls/page.py)",
+      "Read(//home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/controls/**)",
+      "Bash(grep -ni \"storage\" /home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/controls/page.py | head -30)",
+      "Bash(python3 -c ' *)",
+      "Bash(pip show *)",
+      "Read(//home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/**)",
+      "Bash(grep -rn \"__getattr__\\\\|class BasePage\" /home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/controls/*.py 2>/dev/null | head -10)",
+      "Read(//home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/controls/services/**)",
+      "Bash(cat /home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/controls/services/service.py *)",
+      "Bash(grep -n \"SharedPreferences\" /home/bzorset/miniconda3/envs/deltabalance/lib/python3.11/site-packages/flet/__init__.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('ui/components/compartir_compra.py'\\).read\\(\\)\\)\")"
     ]
   }
 }

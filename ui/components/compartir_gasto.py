@@ -197,19 +197,24 @@ def build_icon(
     # ------------------------------------------------------------
     # ENTRY POINT
     # ------------------------------------------------------------
-    def _abrir_flujo() -> None:
-        usuario_local = obtener_usuario_local(page)
+    # async: obtener_usuario_local() ahora usa ft.SharedPreferences (async
+    # de verdad) en vez de la inexistente page.client_storage — ver
+    # docstring de ui/components/usuario_local.py para el detalle completo
+    # del bug corregido. _abrir_sin_hogar() le pasa este mismo _abrir_flujo
+    # como on_listo, que abrir_dialogo_sin_hogar() ahora espera async.
+    async def _abrir_flujo() -> None:
+        usuario_local = await obtener_usuario_local(page)
         mis_hogares = shared_expenses_service.list_my_hogares(usuario_local) if usuario_local else []
         if not mis_hogares:
             _abrir_sin_hogar(nombre_prellenado=usuario_local or "")
             return
         _abrir_cargar_gasto(usuario_local, mis_hogares)
 
-    def _on_click(e: ft.ControlEvent) -> None:
+    async def _on_click(e: ft.ControlEvent) -> None:
         if ya_compartido:
             _abrir_detalle(gasto_existente)
         else:
-            _abrir_flujo()
+            await _abrir_flujo()
 
     icono = ft.IconButton(
         icon=ft.Icons.PEOPLE if ya_compartido else ft.Icons.PEOPLE_OUTLINE,

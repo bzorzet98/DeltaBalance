@@ -1,0 +1,116 @@
+"""
+verify/transacciones/verify_duplicado_transacciones.py
+
+Verifica el chequeo de duplicados de TransaccionesRepository.crear()
+(repositories/transacciones_repository.py, Parte A de la tarea de
+seguridad "bloqueo de duplicados"): crear() dos veces seguidas con los
+mismos cuenta_id/categoria_id/monto_minor/fecha/concepto en menos de
+VENTANA_DUPLICADO_SEGUNDOS lanza TransaccionDuplicadaError la segunda vez;
+después de esa ventana (simulada ajustando creada_en a mano, no esperando
+tiempo real) sí permite crear una fila idéntica.
+
+Correlo con:
+    python verify/transacciones/verify_duplicado_transacciones.py
+"""
+
+from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+
+from verify._dummy_db import crear_dummy_db
+from db.database import DatabaseManager
+from repositories.cuentas_repository import CuentasRepository
+from repositories.transacciones_repository import (
+    TransaccionesRepository,
+    TransaccionDuplicadaError,
+    VENTANA_DUPLICADO_SEGUNDOS,
+)
+
+
+def main() -> None:
+    casos_ok = 0
+    casos_total = 0
+
+    def caso(descripcion: str, esperado, obtenido) -> None:
+        nonlocal casos_ok, casos_total
+        casos_total += 1
+        if esperado == obtenido:
+            casos_ok += 1
+            print(f"✅ {descripcion} — esperado: {esperado!r}, obtenido: {obtenido!r}")
+        else:
+            print(f"❌ {descripcion} — esperado: {esperado!r}, obtenido: {obtenido!r}")
+
+    def caso_excepcion(descripcion: str, tipo_esperado, callable_) -> None:
+        nonlocal casos_ok, casos_total
+        casos_total += 1
+        try:
+            callable_()
+            print(f"❌ {descripcion} — esperaba {tipo_esperado.__name__}, no se lanzó ninguna excepción")
+        except tipo_esperado:
+            casos_ok += 1
+            print(f"✅ {descripcion} — lanzó {tipo_esperado.__name__} como se esperaba")
+        except Exception as e:
+            print(f"❌ {descripcion} — esperaba {tipo_esperado.__name__}, se lanzó {type(e).__name__}: {e!r}")
+
+    db_path = crear_dummy_db()
+    print(f"Dummy DB creada en: {db_path}\n")
+
+    manager = DatabaseManager(db_path=db_path)
+    manager.inicializar()
+    cuentas_repo = CuentasRepository(manager)
+    repo = TransaccionesRepository(manager)
+
+    cuenta_a = cuentas_repo.crear(nombre="Cuenta A Dup TX", tipo="efectivo", moneda_codigo="ARS")
+    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
+
+    campos_comunes = dict(
+        fecha="2026-01-10",
+        concepto="Supermercado duplicado",
+        cuenta_id=cuenta_a,
+        categoria_id=cat_egreso,
+        moneda_id=moneda_ars,
+        tipo_movimiento="egreso",
+        monto_minor=150000,
+    )
+
+    print("--- crear() — primera vez, sin duplicado previo ---")
+    tx_1 = repo.crear(**campos_comunes)
+    caso("primera creación devuelve un id numérico", True, isinstance(tx_1, int))
+
+    print("\n--- crear() — segunda vez idéntica, dentro de la ventana de 5s ---")
+    caso_excepcion(
+        f"crear() idéntico a menos de {VENTANA_DUPLICADO_SEGUNDOS}s lanza TransaccionDuplicadaError",
+        TransaccionDuplicadaError,
+        lambda: repo.crear(**campos_comunes),
+    )
+    total_filas_tras_intento = manager.fetchone(
+        "SELECT COUNT(*) AS n FROM transacciones WHERE concepto = ?;", (campos_comunes["concepto"],)
+    )["n"]
+    caso("el intento duplicado rechazado NO insertó una segunda fila", 1, total_filas_tras_intento)
+
+    print("\n--- crear() — con un campo distinto (monto) no cuenta como duplicado ---")
+    campos_monto_distinto = dict(campos_comunes, monto_minor=999999)
+    tx_2 = repo.crear(**campos_monto_distinto)
+    caso("crear() con monto distinto no dispara el chequeo de duplicado", True, isinstance(tx_2, int))
+
+    print(f"\n--- crear() — tras simular que pasaron {VENTANA_DUPLICADO_SEGUNDOS + 1}s (ajustando creada_en a mano) ---")
+    manager.execute(
+        "UPDATE transacciones SET creada_en = datetime('now', ?) WHERE id = ?;",
+        (f"-{VENTANA_DUPLICADO_SEGUNDOS + 1} seconds", tx_1),
+    )
+    tx_3 = repo.crear(**campos_comunes)
+    caso("tras la ventana de duplicado, crear() idéntico sí se permite", True, isinstance(tx_3, int))
+    total_filas_final = manager.fetchone(
+        "SELECT COUNT(*) AS n FROM transacciones WHERE concepto = ?;", (campos_comunes["concepto"],)
+    )["n"]
+    caso("ahora sí existen dos filas idénticas (tx_1 y tx_3)", 2, total_filas_final)
+
+    manager.desconectar()
+
+    print(f"\n--- Resumen: {casos_ok}/{casos_total} casos OK ---")
+
+
+if __name__ == "__main__":
+    main()

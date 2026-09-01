@@ -60,10 +60,44 @@ from db.database import DatabaseManager
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
+# Ver mismo mecanismo/motivo en repositories/transacciones_repository.py
+# (VENTANA_DUPLICADO_SEGUNDOS / TransaccionDuplicadaError) — chequeo de
+# seguridad contra doble-click/doble-Enter, no una regla de negocio.
+VENTANA_DUPLICADO_SEGUNDOS = 5
+
+
+class CompraDuplicadaError(Exception):
+    """
+    Se lanza cuando crear() detecta una compra en cuotas con los mismos
+    campos relevantes (cuenta, concepto/comercio, monto, fecha) insertada
+    hace menos de VENTANA_DUPLICADO_SEGUNDOS. Ver
+    TransaccionDuplicadaError en transacciones_repository.py — mismo
+    criterio exacto.
+    """
+
 
 class ComprasCuotasRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
+
+    def _existe_duplicado_reciente(
+        self,
+        fecha_compra: str,
+        concepto: str,
+        cuenta_id: int,
+        monto_total_minor: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
+        sql = """
+            SELECT 1 FROM compras_cuotas
+            WHERE cuenta_id = ? AND monto_total_minor = ?
+              AND fecha_compra = ? AND concepto = ?
+              AND (strftime('%s', 'now') - strftime('%s', creada_en)) < ?
+            LIMIT 1;
+        """
+        params = (cuenta_id, monto_total_minor, fecha_compra, concepto, VENTANA_DUPLICADO_SEGUNDOS)
+        ejecutor = conn if conn is not None else self._db.conn
+        return ejecutor.execute(sql, params).fetchone() is not None
 
     # ----------------------------------------------------------
     # CREATE
@@ -86,10 +120,24 @@ class ComprasCuotasRepository:
         Inserta una compra en cuotas. estado arranca en 'activa' (default de
         columna, no se setea acá explícitamente — igual que hoy).
 
+        Antes del INSERT, rechaza la operación con CompraDuplicadaError si
+        ya existe una compra con la misma cuenta_id/monto_total_minor/
+        fecha_compra/concepto creada hace menos de
+        VENTANA_DUPLICADO_SEGUNDOS.
+
         Si se pasa `conn`, el INSERT se ejecuta ahí directamente sin
         comitear, para participar de la transacción externa que también
         inserta el lote de cuotas_credito (ver docstring del módulo).
         """
+        if self._existe_duplicado_reciente(
+            fecha_compra, concepto, cuenta_id, monto_total_minor, conn=conn,
+        ):
+            raise CompraDuplicadaError(
+                f"Ya existe una compra idéntica (cuenta_id={cuenta_id}, "
+                f"monto_total_minor={monto_total_minor}, fecha_compra={fecha_compra}) "
+                f"creada hace menos de {VENTANA_DUPLICADO_SEGUNDOS} segundos."
+            )
+
         sql = """
             INSERT INTO compras_cuotas
                 (fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,

@@ -708,6 +708,37 @@ CREATE TABLE IF NOT EXISTS gastos_compartidos (
 );
 
 -- =============================================================
+-- GASTO COMPARTIDO PAGOS
+-- =============================================================
+-- Espejo exacto de DEUDA PAGOS (ver arriba), pero para pago parcial de
+-- gastos_compartidos (Tarea 9, Parte A — docs/PROXIMOS_PASOS.md). La
+-- columna gastos_compartidos.monto_pendiente_minor que este pago reduce se
+-- agrega vía db/schema_migrations.py, no acá (mismo motivo que el resto de
+-- las columnas de esa lista: gastos_compartidos ya es una tabla existente).
+CREATE TABLE IF NOT EXISTS gasto_compartido_pagos (
+    id                               INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    gasto_compartido_id              INTEGER NOT NULL REFERENCES gastos_compartidos(id),
+    transaccion_id                   INTEGER REFERENCES transacciones(id),
+
+    monto_aplicado_minor             INTEGER NOT NULL,
+
+    tipo_pago                        TEXT NOT NULL
+                                     CHECK(tipo_pago IN (
+                                         'transaccion',
+                                         'compensacion',
+                                         'ajuste'
+                                     )),
+
+    notas                            TEXT,
+
+    fecha                            TEXT NOT NULL
+                                     CHECK(fecha GLOB '????-??-??'),
+
+    creada_en                        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
 -- PRESTAMOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS prestamos (
@@ -885,6 +916,9 @@ ON gastos_compartidos(origen_tipo, origen_id);
 CREATE INDEX IF NOT EXISTS idx_gastos_compartidos_estado
 ON gastos_compartidos(estado);
 
+CREATE INDEX IF NOT EXISTS idx_gasto_compartido_pagos_gasto
+ON gasto_compartido_pagos(gasto_compartido_id);
+
 CREATE INDEX IF NOT EXISTS idx_hogar_miembros_hogar
 ON hogar_miembros(hogar_id);
 
@@ -1038,14 +1072,41 @@ JOIN compras_cuotas cc
     ON cc.id = qc.compra_id
 WHERE qc.estado != 'pagado';
 
--- Saldo neto por hogar: un único número (ver DATA_MODEL_DECISIONS.md #2).
--- Positivo = al pagador (SUM de sus gastos_compartidos pendientes) le deben
--- plata en conjunto; negativo = el pagador termina debiendo en conjunto.
--- Solo considera gastos_compartidos.estado = 'pendiente'.
+-- Saldo neto por hogar: un único número (ver DATA_MODEL_DECISIONS.md #2 y
+-- #20). Positivo = al pagador le deben plata en conjunto (SUM de
+-- monto_pendiente_minor de sus gastos_compartidos pendientes); negativo =
+-- el pagador termina debiendo en conjunto. Solo considera
+-- gastos_compartidos.estado = 'pendiente'.
+--
+-- Suma monto_pendiente_minor, NO monto_adeudado_minor (cambiado en Tarea 9
+-- Parte A, corrección posterior): un pago parcial vía
+-- SharedExpensesService.aplicar_pago() reduce monto_pendiente_minor pero
+-- deja monto_adeudado_minor sin tocar (es el monto ORIGINAL de la deuda,
+-- inmutable — ver docstring de gastos_compartidos_repository.py) — sumar
+-- monto_adeudado_minor acá ignoraba los pagos parciales ya aplicados hasta
+-- que el gasto llegaba a 'saldado'. Sin pagos parciales,
+-- monto_pendiente_minor arranca igual a monto_adeudado_minor (ver
+-- GastosCompartidosRepository.crear()), así que este cambio no altera el
+-- resultado en ningún escenario que no use aplicar_pago() todavía.
+--
+-- DROP VIEW IF EXISTS + CREATE VIEW IF NOT EXISTS (en vez de solo el
+-- segundo, como el resto de las vistas de este archivo): CREATE VIEW IF
+-- NOT EXISTS NO reemplaza una vista que ya existe con una definición
+-- vieja (a diferencia de CREATE TABLE, donde el problema es al revés —
+-- una tabla existente nunca pierde columnas por reaplicar el CREATE, por
+-- eso las columnas nuevas van por db/schema_migrations.py). Como
+-- db/schema.sql se reaplica completo en cada DatabaseManager.inicializar()
+-- (no solo la primera vez), una base ya inicializada con la definición
+-- vieja (SUM(monto_adeudado_minor)) se hubiera quedado con esa definición
+-- para siempre sin el DROP. Las demás vistas de este archivo no lo
+-- necesitan HOY porque ninguna cambió de definición todavía — si en el
+-- futuro alguna otra vista necesita una definición nueva, va a necesitar
+-- el mismo patrón DROP+CREATE, no alcanza con editar el SELECT acá.
+DROP VIEW IF EXISTS vw_saldo_neto_hogar;
 CREATE VIEW IF NOT EXISTS vw_saldo_neto_hogar AS
 SELECT
     gc.hogar_id,
-    SUM(gc.monto_adeudado_minor) AS saldo_neto_minor
+    SUM(gc.monto_pendiente_minor) AS saldo_neto_minor
 FROM gastos_compartidos gc
 WHERE gc.estado = 'pendiente'
 GROUP BY gc.hogar_id;
