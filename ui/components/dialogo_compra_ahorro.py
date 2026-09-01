@@ -36,7 +36,24 @@ se agrega un CampoFiltrable de activos existentes + una opción sentinel
 "+ Crear nuevo activo" (_ID_ACTIVO_NUEVO) que revela nombre/tipo/moneda —
 MISMO patrón ya usado en este mismo diálogo del Registro para "+ Crear
 nuevo objetivo" (_ID_OBJETIVO_NUEVO en registro_transacciones.py), reusado
-acá por consistencia en vez de inventar un mecanismo distinto.
+acá por consistencia en vez de inventar un mecanismo distinto. Cada opción
+de activo existente en ese CampoFiltrable muestra su cuenta asociada en el
+label ("NVDA — Bull Market"; solo "NVDA" si el activo no tiene cuenta_id)
+para desambiguar activos con el mismo nombre en cuentas distintas — ver
+_label_activo() (Tarea 6g, docs/PROXIMOS_PASOS.md).
+
+--- Cuenta/categoría — Tarea 6g ---
+
+Ya NO son campos de este formulario a nivel movimiento: SavingsService.
+register_purchase() los resuelve solos (cuenta_id desde
+activo["cuenta_id"], categoria_id siempre la categoría protegida
+'Ahorro/Inversión' — ver services/savings_service.py). El único lugar
+donde una cuenta se elige acá es al CREAR un activo nuevo (sección
+"+ Crear nuevo activo"): un CampoFiltrable de cuentas, opcional, que se
+manda como create_activo(cuenta_id=...) — la cuenta queda vinculada al
+activo, no al movimiento puntual. `cuenta_id_inicial` (ver más abajo) pasó
+a precargar ESE selector en vez del removido "Cuenta de origen" a nivel
+movimiento.
 
 PUNTO DELICADO (pregunta (c) de la tarea): decimales/tipo del activo
 determinan tanto la conversión a minor units de Monto/Precio unitario COMO
@@ -60,19 +77,14 @@ necesita este mecanismo: siempre está en ARS sin importar la moneda del
 activo (ver docstring de ui/screens/ahorros.py, mismo criterio), así que
 se construye una sola vez.
 
---- Resto del formulario (sin cambios de comportamiento respecto al
-original de ahorros.py) ---
+--- Resto del formulario ---
 
-Cuenta de origen/categoría: mismo criterio ya establecido (cuenta siempre
-opcional, categoría obligatoria SOLO si se eligió cuenta, validado en
-_confirmar() en vez de togglear visibilidad reactiva — ver docstring de
-ui/screens/ahorros.py para por qué). Asignaciones a objetivos:
-construir_editor_asignaciones() (más abajo en este módulo) — extraído a
-su propia función para que ui/screens/ahorros.py pueda reusarlo
-LITERALMENTE (no una copia adaptada) en el diálogo "Egreso general"
-(register_sale() con lista de asignaciones, Tarea 6d) — ver su docstring
-para el detalle completo (mecanismo de filas dinámicas, validaciones,
-contrato de resolver()). Errores de _confirmar() (incluida
+Asignaciones a objetivos: construir_editor_asignaciones() (más abajo en
+este módulo) — extraído a su propia función para que ui/screens/ahorros.py
+pueda reusarlo LITERALMENTE (no una copia adaptada) en el diálogo "Egreso
+general" (register_sale() con lista de asignaciones, Tarea 6d) — ver su
+docstring para el detalle completo (mecanismo de filas dinámicas,
+validaciones, contrato de resolver()). Errores de _confirmar() (incluida
 AsignacionInvalidaError) se escriben en texto_error, un ft.Text que ya
 forma parte de `contenido` — nunca SnackBar, el caller decide cómo mostrar
 éxito (on_exito) pero NUNCA ve los errores de validación, ese texto ya está
@@ -84,19 +96,12 @@ concepto tipeado en la fila (comportamiento ya existente, ver docstring de
 registro_transacciones.py), ui/screens/ahorros.py simplemente no lo pasa
 (None, no tiene un campo de concepto en su fila de activos).
 
-`categoria_id` NO se precarga desde el caller (a diferencia de cuenta_id/
-monto/fecha) aunque el Registro ya tenga una resuelta (la propia categoría
-"Ahorro/Inversión" que disparó el routing) — al pasar a "Elegir activo
-específico" el usuario pidió más control, precargar una categoría que ya
-no necesariamente tiene sentido para el activo elegido habría sido más
-confuso que útil; queda vacía, se elige de nuevo si hace falta (ver
-resumen de la tarea).
-
-Reglas de arquitectura: solo SavingsService/AccountsService/
-CategoriasService — nunca repositories/ ni db/ directo (CLAUDE.md §2/§3).
-CampoMonto en todos los campos de monto (CLAUDE.md §9); `cantidad`/
-`porcentaje` quedan TextField comunes (no son plata), mismo criterio que
-ui/screens/ahorros.py.
+Reglas de arquitectura: solo SavingsService/AccountsService — nunca
+repositories/ ni db/ directo (CLAUDE.md §2/§3); CategoriasService dejó de
+hacer falta acá (Tarea 6g: la categoría del movimiento ya no se elige en
+este formulario). CampoMonto en todos los campos de monto (CLAUDE.md §9);
+`cantidad`/`porcentaje` quedan TextField comunes (no son plata), mismo
+criterio que ui/screens/ahorros.py.
 """
 
 from dataclasses import dataclass
@@ -106,7 +111,6 @@ from typing import Callable, Optional
 import flet as ft
 
 from services.accounts_service import AccountsService
-from services.categorias_service import CategoriasService
 from services.savings_service import SavingsError, SavingsResult, SavingsService
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
@@ -146,6 +150,17 @@ def _tipo_activo_display(tipo: str) -> str:
 def _cuentas_no_credito(cuentas: list[dict]) -> list[dict]:
     """Mismo filtro que ui/components/registro_transacciones.py — un ahorro no se origina desde una tarjeta de crédito."""
     return [c for c in cuentas if c["tipo"] != "credito"]
+
+
+def _label_activo(activo: dict, cuentas_por_id: dict) -> str:
+    """
+    Label de una opción de activo existente en un CampoFiltrable: "nombre —
+    cuenta" si el activo tiene cuenta_id vinculada, solo "nombre" si no
+    (Tarea 6g, docs/PROXIMOS_PASOS.md) — desambigua activos con el mismo
+    nombre en cuentas distintas (ej. "NVDA — Bull Market").
+    """
+    cuenta = cuentas_por_id.get(activo["cuenta_id"]) if activo["cuenta_id"] is not None else None
+    return f"{activo['nombre']} — {cuenta['nombre']}" if cuenta else activo["nombre"]
 
 
 def _texto_a_minor(texto: Optional[str], decimales: int) -> Optional[int]:
@@ -261,7 +276,6 @@ def construir(
     page: ft.Page,
     savings_service: SavingsService,
     accounts_service: AccountsService,
-    categorias_service: CategoriasService,
     on_exito: Callable[[SavingsResult], None],
     activo_fijo: Optional[dict] = None,
     cuenta_id_inicial: Optional[int] = None,
@@ -280,7 +294,11 @@ def construir(
         activo_fijo:        Row de activos_financieros ya elegido — sin
                             selector, ver docstring del módulo. None =
                             selector de activo + "crear nuevo".
-        cuenta_id_inicial:  Precarga la Cuenta de origen (CampoFiltrable).
+        cuenta_id_inicial:  Precarga la Cuenta asociada del selector de
+                            "+ Crear nuevo activo" (Tarea 6g — ya no hay
+                            campo de cuenta a nivel movimiento, ver
+                            docstring del módulo). Sin efecto si el
+                            usuario termina eligiendo un activo existente.
         monto_inicial:      Precarga el Monto total (valor, no texto).
         fecha_inicial:      Precarga la Fecha (default: hoy si no se pasa).
         notas_inicial:      Va directo a register_purchase(notas=...), sin
@@ -292,23 +310,26 @@ def construir(
     decimales_dolar_oficial = moneda_ars["decimales"] if moneda_ars else DECIMALES_DEFAULT
 
     cuentas_activas = _cuentas_no_credito(accounts_service.list_accounts(solo_activas=True))
-    categorias = categorias_service.list_categories()
+    cuentas_por_id = {c["id"]: c for c in accounts_service.list_accounts(solo_activas=False)}
     objetivos_disponibles = savings_service.list_objetivos()
     activos_existentes = savings_service.list_activos()
 
     campo_fecha = ft.TextField(label="Fecha", value=fecha_inicial or date.today().isoformat())
 
     # ------------------------------------------------------------
-    # SELECCIÓN DE ACTIVO — solo si NO viene fijo (ver docstring)
+    # SELECCIÓN DE ACTIVO — solo si NO viene fijo (ver docstring). La
+    # cuenta asociada se elige acá, en "+ Crear nuevo activo" — no hay
+    # campo de cuenta a nivel movimiento (Tarea 6g).
     # ------------------------------------------------------------
     campo_activo: Optional[CampoFiltrable] = None
     campo_nombre_activo_nuevo: Optional[ft.TextField] = None
     dropdown_tipo_activo_nuevo: Optional[ft.Dropdown] = None
     campo_moneda_activo_nuevo: Optional[CampoFiltrable] = None
+    campo_cuenta_activo_nuevo: Optional[CampoFiltrable] = None
     seccion_activo_nuevo: Optional[ft.Column] = None
 
     if activo_fijo is None:
-        opciones_activo = [(str(a["id"]), a["nombre"]) for a in activos_existentes] + [
+        opciones_activo = [(str(a["id"]), _label_activo(a, cuentas_por_id)) for a in activos_existentes] + [
             (_ID_ACTIVO_NUEVO, "+ Crear nuevo activo")
         ]
         campo_nombre_activo_nuevo = ft.TextField(label="Nombre del activo nuevo")
@@ -322,8 +343,22 @@ def construir(
             page, [(str(m["id"]), m["codigo"]) for m in monedas],
             on_seleccionar=lambda id_: _on_cambio_activo(), placeholder="Moneda del activo nuevo", dense=False,
         )
+        # Cuenta asociada al activo nuevo (Tarea 6g) — opcional, mismo
+        # criterio que AccountsService.create_activo(cuenta_id=None):
+        # queda sin vincular si no se elige ninguna, y los movimientos de
+        # ese activo no generan transacción real hasta que se le agregue
+        # una cuenta.
+        campo_cuenta_activo_nuevo = CampoFiltrable(
+            page, [(str(c["id"]), c["nombre"]) for c in cuentas_activas],
+            on_seleccionar=lambda id_: None, placeholder="Cuenta asociada (opcional)",
+            valor_inicial_id=str(cuenta_id_inicial) if cuenta_id_inicial is not None else None,
+            dense=False,
+        )
         seccion_activo_nuevo = ft.Column(
-            [campo_nombre_activo_nuevo, dropdown_tipo_activo_nuevo, campo_moneda_activo_nuevo.control],
+            [
+                campo_nombre_activo_nuevo, dropdown_tipo_activo_nuevo,
+                campo_moneda_activo_nuevo.control, campo_cuenta_activo_nuevo.control,
+            ],
             visible=False, spacing=ESPACIADO_DIALOGO,
         )
 
@@ -411,17 +446,6 @@ def construir(
         label="Dólar oficial al momento (ARS, opcional)",
     )
 
-    campo_cuenta = CampoFiltrable(
-        page, [(str(c["id"]), c["nombre"]) for c in cuentas_activas],
-        on_seleccionar=lambda id_: None, placeholder="Cuenta de origen (opcional)",
-        valor_inicial_id=str(cuenta_id_inicial) if cuenta_id_inicial is not None else None,
-        dense=False,
-    )
-    campo_categoria = CampoFiltrable(
-        page, [(str(c["id"]), c["subcategoria"]) for c in categorias],
-        on_seleccionar=lambda id_: None, placeholder="Categoría (solo si elegís cuenta)", dense=False,
-    )
-
     # ------------------------------------------------------------
     # ASIGNACIONES DINÁMICAS — extraído a construir_editor_asignaciones(),
     # ver su docstring (mismo editor reusado por "Egreso general" en
@@ -454,6 +478,10 @@ def construir(
             resultado_activo = savings_service.create_activo(
                 nombre=nombre_nuevo, tipo=dropdown_tipo_activo_nuevo.value,
                 moneda_id=int(campo_moneda_activo_nuevo.id_seleccionado),
+                cuenta_id=(
+                    int(campo_cuenta_activo_nuevo.id_seleccionado)
+                    if campo_cuenta_activo_nuevo.id_seleccionado else None
+                ),
             )
         except SavingsError as err:
             texto_error.value = str(err)
@@ -520,15 +548,6 @@ def construir(
                 return
             dolar_oficial_minor = amount_to_minor(dolar_oficial, decimales_dolar_oficial)
 
-        cuenta_id = int(campo_cuenta.id_seleccionado) if campo_cuenta.id_seleccionado else None
-        categoria_id = None
-        if cuenta_id is not None:
-            if not campo_categoria.id_seleccionado:
-                texto_error.value = "Elegiste una cuenta de origen — seleccioná también una categoría."
-                page.update()
-                return
-            categoria_id = int(campo_categoria.id_seleccionado)
-
         asignaciones, error_asignaciones = editor_asignaciones.resolver()
         if error_asignaciones is not None:
             texto_error.value = error_asignaciones
@@ -549,8 +568,6 @@ def construir(
                 cantidad=cantidad,
                 precio_unitario_minor=precio_unitario_minor,
                 asignaciones=asignaciones,
-                cuenta_id=cuenta_id,
-                categoria_id=categoria_id,
                 notas=notas_inicial,
             )
         except (SavingsError, ValueError) as err:
@@ -570,8 +587,6 @@ def construir(
     partes.append(contenedor_campos_monto)
     partes += [
         campo_dolar_oficial.control,
-        campo_cuenta.control,
-        campo_categoria.control,
         ft.Divider(height=1),
         ft.Text("Asignación a objetivos (opcional)", size=TypographyTokens.LABEL_SIZE, weight=ft.FontWeight.BOLD),
         editor_asignaciones.contenido,

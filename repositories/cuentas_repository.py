@@ -25,7 +25,7 @@ class CuentasRepository:
         self,
         nombre: str,
         tipo: str,
-        moneda_codigo: str = "ARS",
+        moneda_codigo: Optional[str] = "ARS",
         saldo_inicial: float = 0.0,
         cuenta_pago_id: Optional[int] = None,
         notas: Optional[str] = None,
@@ -33,14 +33,21 @@ class CuentasRepository:
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
-        Crea una cuenta y su fila en cuentas_saldos para la moneda indicada.
-        Devuelve el id de la cuenta creada.
+        Crea una cuenta y, si se pasa moneda_codigo, su fila en
+        cuentas_saldos para esa moneda. Devuelve el id de la cuenta creada.
+
+        moneda_codigo=None crea la cuenta sin ninguna fila en
+        cuentas_saldos (Tarea 6f, docs/PROXIMOS_PASOS.md: declarar moneda
+        al crear una cuenta ya no es obligatorio — se resuelve sola la
+        primera vez que una transacción real la usa, vía
+        get_or_create_saldo_inicial()). El default sigue siendo "ARS" para
+        no romper a los callers existentes que no pasan este argumento.
 
         color_hex es opcional: si no se pasa (None), la columna directamente
         no entra en el INSERT y toma su default de schema ('#5F5E5A', ver
         db/schema_migrations.py) — no se hardcodea ese valor acá también.
 
-        Si se pasa `conn`, los dos INSERT se ejecutan ahí directamente sin
+        Si se pasa `conn`, los INSERT se ejecutan ahí directamente sin
         comitear, para participar de una transacción externa (ej.
         AccountsService.create_account() con más de una moneda, que además
         llama a crear_saldo_inicial() para las monedas restantes dentro del
@@ -62,6 +69,9 @@ class CuentasRepository:
             cuenta_id = conn.execute(sql_cuenta, params_cuenta).lastrowid
         else:
             cuenta_id = self._db.execute(sql_cuenta, params_cuenta)
+
+        if moneda_codigo is None:
+            return cuenta_id
 
         moneda = self._db.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (moneda_codigo,))
         if moneda is None:
@@ -106,6 +116,31 @@ class CuentasRepository:
             conn.execute(sql, params)
         else:
             self._db.execute(sql, params)
+
+    def get_or_create_saldo_inicial(
+        self,
+        cuenta_id: int,
+        moneda_id: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> None:
+        """
+        Resolución perezosa de moneda (Tarea 6f, docs/PROXIMOS_PASOS.md):
+        si la combinación (cuenta_id, moneda_id) ya tiene fila en
+        cuentas_saldos no hace nada; si no, la crea con saldo_inicial_minor
+        = 0. Es el punto que llama TransaccionesRepository.crear() antes de
+        insertar una transacción real, para que una cuenta creada sin
+        moneda declarada (AccountsService.create_account() con monedas=[])
+        quede resuelta sola la primera vez que se la usa.
+
+        Mismo INSERT OR IGNORE que crear_saldo_inicial() — nombre separado
+        a propósito porque la semántica de quien llama es distinta: acá es
+        "resolvela si hace falta", no "el usuario decidió agregar esta
+        moneda" (AccountsService.add_currency_to_account()).
+
+        Si se pasa `conn`, participa de una transacción externa — mismo
+        motivo que en crear()/crear_saldo_inicial().
+        """
+        self.crear_saldo_inicial(cuenta_id, moneda_id, monto_minor=0, conn=conn)
 
     def obtener_por_id(self, cuenta_id: int) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM cuentas WHERE id = ?;", (cuenta_id,))

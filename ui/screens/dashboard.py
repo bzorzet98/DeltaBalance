@@ -43,6 +43,7 @@ import flet as ft
 from services.accounts_service import AccountsService
 from services.categorias_service import CategoriasService
 from services.dashboard_service import DashboardService
+from services.debts_service import DebtsService
 from services.savings_service import SavingsService
 from services.shared_expenses_service import SharedExpensesService
 from services.transaction_service import TransactionService
@@ -59,6 +60,7 @@ def build(
     categorias_service: CategoriasService,
     shared_expenses_service: SharedExpensesService,
     savings_service: SavingsService,
+    debts_service: DebtsService,
     on_ir_a_cuentas: Callable[[], None],
 ) -> ft.Control:
     hoy = date.today()
@@ -216,6 +218,7 @@ def build(
                 transaction_service,
                 shared_expenses_service,
                 savings_service,
+                debts_service,
                 estado,
                 on_cambio=_refrescar_datos,
             ),

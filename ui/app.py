@@ -38,13 +38,13 @@ qué pantalla mostrar (acá al armar el shell, y de nuevo dentro de
 cuentas.py al guardar la primera cuenta), así nunca puede quedar desincronizada
 de la base real.
 """
-
 import flet as ft
 
 from db.database import DatabaseManager
 from services.accounts_service import AccountsService
 from services.categorias_service import CategoriasService
 from services.dashboard_service import DashboardService
+from services.debts_service import DebtsService
 from services.fees_service import FeesService
 from services.presupuestos_service import PresupuestosService
 from services.savings_service import SavingsService
@@ -55,6 +55,7 @@ from ui.screens import categorias as categorias_screen
 from ui.screens import compras_cuotas as compras_cuotas_screen
 from ui.screens import dashboard as dashboard_screen
 from ui.screens import cuentas as cuentas_screen
+from ui.screens import deudas_y_compartidos as deudas_y_compartidos_screen
 from ui.screens import estadisticas as estadisticas_screen
 from ui.screens import presupuestos as presupuestos_screen
 
@@ -77,6 +78,7 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     shared_expenses_service = SharedExpensesService(db)
     presupuestos_service = PresupuestosService(db)
     savings_service = SavingsService(db)
+    debts_service = DebtsService(db)
 
     content_area = ft.Container(expand=True, padding=24)
 
@@ -89,6 +91,7 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             categorias_service,
             shared_expenses_service,
             savings_service,
+            debts_service,
             on_ir_a_cuentas=mostrar_cuentas,
         )
         page.update()
@@ -100,6 +103,16 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             categorias_service,
             fees_service,
             shared_expenses_service,
+            on_volver=mostrar_dashboard,
+        )
+        page.update()
+
+    def mostrar_deudas_y_compartidos(e=None) -> None:
+        content_area.content = deudas_y_compartidos_screen.build(
+            page,
+            debts_service,
+            shared_expenses_service,
+            accounts_service,
             on_volver=mostrar_dashboard,
         )
         page.update()
@@ -129,7 +142,6 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             page,
             savings_service,
             accounts_service,
-            categorias_service,
             on_volver=mostrar_dashboard,
         )
         page.update()
@@ -222,6 +234,9 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             encabezado,
             _item_nav("Dashboard", ft.Icons.DASHBOARD, mostrar_dashboard, expandido),
             _item_nav("Compras en cuotas", ft.Icons.CREDIT_CARD, mostrar_compras_cuotas, expandido),
+            # HANDSHAKE (no PEOPLE — ya usado por el ícono "Compartir" de
+            # filas del Registro/Compras en cuotas, evita confundirlos).
+            _item_nav("Deudas y compartidos", ft.Icons.HANDSHAKE, mostrar_deudas_y_compartidos, expandido),
             _item_nav("Presupuestos", ft.Icons.SAVINGS, mostrar_presupuestos, expandido),
             _item_nav("Estadísticas", ft.Icons.BAR_CHART, mostrar_estadisticas, expandido),
             # ACCOUNT_BALANCE_WALLET (no SAVINGS — ya usado por "Presupuestos"

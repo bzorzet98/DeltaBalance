@@ -16,6 +16,15 @@ todavía no está.
 Las tablas NUEVAS siguen yendo en db/schema.sql como siempre, con
 `CREATE TABLE IF NOT EXISTS` — eso ya es idempotente de por sí y no necesita
 pasar por acá.
+
+`MigracionColumna.sql_backfill` (opcional, agregado para la columna
+`gastos_compartidos.monto_pendiente_minor`): un UPDATE que se ejecuta una
+sola vez, inmediatamente después del ALTER TABLE que agrega la columna —
+nunca en corridas donde la columna ya existía. Sirve para columnas nuevas
+que no pueden arrancar con un valor por defecto constante (ej. "igual al
+valor de otra columna ya existente en cada fila"), a diferencia de las
+columnas anteriores de esta lista, que sí se conforman con el DEFAULT del
+propio ALTER TABLE.
 """
 
 from __future__ import annotations
@@ -29,6 +38,7 @@ class MigracionColumna:
     tabla: str
     columna: str
     ddl_columna: str
+    sql_backfill: str | None = None
 
 
 MIGRACIONES_COLUMNA: list[MigracionColumna] = [
@@ -70,6 +80,25 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         columna="formula_estimado",
         ddl_columna="formula_estimado TEXT",
     ),
+    MigracionColumna(
+        tabla="activos_financieros",
+        columna="cuenta_id",
+        ddl_columna="cuenta_id INTEGER REFERENCES cuentas(id)",
+    ),
+    MigracionColumna(
+        tabla="gastos_compartidos",
+        columna="monto_pendiente_minor",
+        # DEFAULT 0 solo para que el ALTER TABLE sea válido con NOT NULL
+        # (SQLite lo exige) — el valor real para cada fila lo pone
+        # sql_backfill inmediatamente después, así que el default nunca
+        # queda "pegado" en una fila existente.
+        ddl_columna="monto_pendiente_minor INTEGER NOT NULL DEFAULT 0",
+        # Al recién agregarse la columna, todo gasto compartido ya
+        # existente arranca con su pendiente igual al adeudado completo
+        # (mismo signo) — nada se había pagado todavía, porque el
+        # mecanismo de pago parcial no existía antes de esta migración.
+        sql_backfill="UPDATE gastos_compartidos SET monto_pendiente_minor = monto_adeudado_minor;",
+    ),
 ]
 
 
@@ -88,3 +117,5 @@ def aplicar_migraciones_columna(conn: sqlite3.Connection) -> None:
         conn.execute(
             f"ALTER TABLE {migracion.tabla} ADD COLUMN {migracion.ddl_columna};"
         )
+        if migracion.sql_backfill:
+            conn.execute(migracion.sql_backfill)

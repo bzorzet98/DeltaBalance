@@ -672,3 +672,54 @@ class DebtsService:
             message=f"Debt #{debt_id} written off.",
         )
 
+    # ----------------------------------------------------------
+    # DELETE
+    # ----------------------------------------------------------
+
+    def delete_debt(self, debt_id: int) -> DebtResult:
+        """
+        Physically deletes a debt (Tarea 9, Parte B — ventana de corrección
+        temprana, CLAUDE.md §4, mismo criterio ya usado en
+        AccountsService.delete_account()).
+
+        Solo permitido si la deuda no tiene NINGÚN pago registrado en
+        deuda_pagos todavía — un pago es "dependencia con estado propio
+        generado" (ya movió plata real o quedó una compensación
+        documentada), así que borrar la deuda entera lo dejaría huérfano.
+        Si tiene pagos, se rechaza con DebtError sugiriendo write_off() (o
+        dejarla como está) en vez de reescribir en silencio.
+
+        A diferencia de write_off(), delete_debt() NO exige que la deuda
+        esté 'activa' — una deuda ya 'saldada' o 'incobrable' sin ningún
+        pago real registrado (poco común, pero posible: p.ej. se escribió
+        incobrable por error y nunca se le cargó un pago) también puede
+        borrarse de una, la misma ventana de corrección temprana aplica
+        independientemente del estado, lo que importa es si generó
+        dependencias con estado propio.
+
+        Args:
+            debt_id: The debt to delete.
+
+        Returns:
+            DebtResult with success=True.
+
+        Raises:
+            DebtNotFoundError if the debt does not exist.
+            DebtError if the debt has any payment registered in deuda_pagos.
+        """
+        pagos = self.get_payments(debt_id)  # también valida existencia (DebtNotFoundError)
+        if pagos:
+            raise DebtError(
+                f"Debt #{debt_id} has {len(pagos)} payment(s) registered — cannot be "
+                f"deleted. Use write_off() to mark it uncollectable instead, or leave "
+                f"it as is."
+            )
+
+        self._repo.eliminar(debt_id)
+
+        return DebtResult(
+            success=True,
+            debt_id=debt_id,
+            message=f"Debt #{debt_id} deleted.",
+        )
+

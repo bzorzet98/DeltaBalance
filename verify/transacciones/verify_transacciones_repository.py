@@ -13,6 +13,12 @@ de una transacción externa (incluyendo que un rollback a mitad de camino
 revierte ambas altas), y el sentinel NO_CAMBIAR de actualizar() distinguiendo
 "no tocar" de "escribir NULL a propósito".
 
+Y la resolución perezosa de moneda agregada en la Tarea 6f
+(docs/PROXIMOS_PASOS.md): crear() en una cuenta+moneda sin fila en
+cuentas_saldos la genera sola en 0 antes de aplicar la transacción (tanto
+sin conn como con conn externo), y una segunda transacción en la misma
+combinación no duplica esa fila (reusa la existente).
+
 Correlo con:
     python verify/transacciones/verify_transacciones_repository.py
 """
@@ -235,6 +241,54 @@ def main() -> None:
     caso("deleted_at vuelve a NULL tras restaurar()", None, fila_restaurada["deleted_at"] if fila_restaurada else "no encontrada")
     listado_tras_restaurar = repo.listar()
     caso("listar() default vuelve a incluir A tras restaurar()", True, tx_a in [r["id"] for r in listado_tras_restaurar])
+
+    print("\n--- crear() — resolución perezosa de moneda (Tarea 6f) ---")
+    # Cuenta creada SIN ninguna moneda declarada (moneda_codigo=None) —
+    # mismo mecanismo que usa AccountsService.create_account(monedas=[]).
+    cuenta_sin_moneda = cuentas_repo.crear(nombre="Cuenta Sin Moneda TX", tipo="debito", moneda_codigo=None)
+    fila_saldo_previa = manager.fetchone(
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        (cuenta_sin_moneda, moneda_ars),
+    )
+    caso("la cuenta recién creada sin moneda no tiene fila en cuentas_saldos todavía", None, fila_saldo_previa)
+
+    tx_lazy_1 = repo.crear(
+        fecha="2026-05-01", concepto="Primera vez en esta moneda", cuenta_id=cuenta_sin_moneda,
+        categoria_id=cat_ingreso, moneda_id=moneda_ars, tipo_movimiento="ingreso", monto_minor=30000,
+    )
+    fila_saldo_creada = manager.fetchone(
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        (cuenta_sin_moneda, moneda_ars),
+    )
+    caso("crear() en una combinación cuenta+moneda sin saldo_inicial previo lo genera solo", True, fila_saldo_creada is not None)
+    caso("el saldo_inicial generado solo arranca en 0", 0, fila_saldo_creada["saldo_inicial_minor"] if fila_saldo_creada else None)
+    caso("la transacción se insertó igual", True, repo.obtener_por_id(tx_lazy_1) is not None)
+
+    tx_lazy_2 = repo.crear(
+        fecha="2026-05-02", concepto="Segunda vez en la misma moneda", cuenta_id=cuenta_sin_moneda,
+        categoria_id=cat_ingreso, moneda_id=moneda_ars, tipo_movimiento="ingreso", monto_minor=5000,
+    )
+    filas_saldo_tras_segunda = manager.fetchall(
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        (cuenta_sin_moneda, moneda_ars),
+    )
+    caso("una segunda transacción en la misma combinación NO duplica la fila de saldo (reusa la existente)", 1, len(filas_saldo_tras_segunda))
+    caso("la segunda transacción también se insertó", True, repo.obtener_por_id(tx_lazy_2) is not None)
+
+    print("\n--- crear(conn=...) — resolución perezosa de moneda dentro de una transacción externa ---")
+    cuenta_sin_moneda_atomica = cuentas_repo.crear(nombre="Cuenta Sin Moneda TX Atomica", tipo="debito", moneda_codigo=None)
+    with manager.transaction():
+        tx_lazy_atomico = repo.crear(
+            fecha="2026-05-03", concepto="Perezosa con conn externo", cuenta_id=cuenta_sin_moneda_atomica,
+            categoria_id=cat_ingreso, moneda_id=moneda_ars, tipo_movimiento="ingreso", monto_minor=7000,
+            conn=conn_externo,
+        )
+    fila_saldo_atomica = manager.fetchone(
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        (cuenta_sin_moneda_atomica, moneda_ars),
+    )
+    caso("crear(conn=...) también resuelve la moneda de forma perezosa, dentro de la misma transacción externa", True, fila_saldo_atomica is not None)
+    caso("crear(conn=...) perezoso: la transacción se insertó", True, repo.obtener_por_id(tx_lazy_atomico) is not None)
 
     manager.desconectar()
 

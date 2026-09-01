@@ -110,3 +110,21 @@ class AsignacionesRepository:
     def eliminar(self, id: int) -> None:
         """DELETE físico — una asignación es un dato de apoyo al reparto, sin historial propio."""
         self._db.execute("DELETE FROM asignaciones WHERE id = ?;", (id,))
+
+    def eliminar_por_movimiento(
+        self, movimiento_id: int, conn: Optional[sqlite3.Connection] = None,
+    ) -> None:
+        """
+        DELETE físico de TODAS las asignaciones de un movimiento_id de una
+        sola vez — para cuando se borra el movimiento entero (ver
+        MovimientosActivoRepository.eliminar()), no un borrado selectivo de
+        una asignación puntual (eso sigue siendo eliminar(id)).
+
+        Si se pasa `conn`, participa de la transacción externa que también
+        borra el movimiento_activo dueño de estas asignaciones.
+        """
+        sql = "DELETE FROM asignaciones WHERE movimiento_id = ?;"
+        if conn is not None:
+            conn.execute(sql, (movimiento_id,))
+            return
+        self._db.execute(sql, (movimiento_id,))

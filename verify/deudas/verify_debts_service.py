@@ -131,6 +131,43 @@ def main() -> None:
     caso("get() sigue trayendo notas", "Cena del viernes", fila["notas"] if fila else None)
     caso("get() de un id inexistente devuelve None", None, svc.get(999999))
 
+    print("\n--- create() — origen_tipo/origen_id explícitos (categoría 'Deuda' del Registro) ---")
+    # docs/PROXIMOS_PASOS.md — corrección posterior a la Tarea 9 Parte B:
+    # ui/components/registro_transacciones.py vincula una deuda a la
+    # transacción real que la originó pasando origen_tipo='transaccion' +
+    # origen_id=<transaction_id>. create() ya soportaba estos dos
+    # parámetros desde antes (default 'manual'/None) — este caso confirma
+    # que, pasados explícitos, se persisten y se leen de vuelta tal cual.
+    resultado_con_origen = svc.create(
+        person="Vinculada a transacción", debt_type="a_favor", amount=2500.0, currency_code="ARS",
+        date_str="2026-01-12", concept="Le presté para el taxi",
+        origen_tipo="transaccion", origen_id=4242,
+    )
+    caso("create(origen_tipo=..., origen_id=...) devuelve success=True", True, resultado_con_origen.success)
+    caso(
+        "create(origen_tipo=..., origen_id=...) refleja origen_tipo en el resultado",
+        "transaccion",
+        resultado_con_origen.data["origen_tipo"],
+    )
+    caso(
+        "create(origen_tipo=..., origen_id=...) refleja origen_id en el resultado",
+        4242,
+        resultado_con_origen.data["origen_id"],
+    )
+
+    fila_con_origen = svc.get(resultado_con_origen.debt_id)
+    caso("get() tras crear con origen explícito: origen_tipo persistido = 'transaccion'", "transaccion", fila_con_origen["origen_tipo"])
+    caso("get() tras crear con origen explícito: origen_id persistido = 4242", 4242, fila_con_origen["origen_id"])
+
+    print("\n--- create() — sin origen_tipo/origen_id: sigue con el default 'manual'/None de siempre ---")
+    resultado_sin_origen = svc.create(
+        person="Deuda manual de siempre", debt_type="en_contra", amount=800.0, currency_code="ARS",
+        date_str="2026-01-13", concept="Préstamo cargado a mano",
+    )
+    fila_sin_origen = svc.get(resultado_sin_origen.debt_id)
+    caso("create() sin origen explícito: origen_tipo por default sigue siendo 'manual'", "manual", fila_sin_origen["origen_tipo"])
+    caso("create() sin origen explícito: origen_id por default sigue siendo None", None, fila_sin_origen["origen_id"])
+
     print("\n--- list_debts() — filtros + shape enriquecido intactos ---")
     listado = svc.list_debts(person="Noe")
     ids_listado = [r["id"] for r in listado]

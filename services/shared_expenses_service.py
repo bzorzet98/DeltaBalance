@@ -3,8 +3,10 @@ DeltaBalance — services/shared_expenses_service.py
 
 Purpose:
     Domain service for households (hogares), their members (hogar_miembros)
-    and shared expenses (gastos_compartidos). Data access lives entirely in
-    HogaresRepository, HogarMiembrosRepository y GastosCompartidosRepository.
+    and shared expenses (gastos_compartidos), including their partial-payment
+    history (gasto_compartido_pagos, Tarea 9 Parte A). Data access lives
+    entirely in HogaresRepository, HogarMiembrosRepository,
+    GastosCompartidosRepository y GastoCompartidoPagosRepository.
 
     Fase 2, bloque HOGARES / GASTOS COMPARTIDOS, paso 2: este service se
     crea DESDE CERO. No existe ningún SharedExpensesService previo — el
@@ -45,6 +47,7 @@ import secrets
 import sqlite3
 import string
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Optional
 
 from db.database import DatabaseManager
@@ -52,6 +55,7 @@ from utils.money import amount_display
 from repositories.hogares_repository import HogaresRepository
 from repositories.hogar_miembros_repository import HogarMiembrosRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
+from repositories.gasto_compartido_pagos_repository import GastoCompartidoPagosRepository
 from repositories.categorias_repository import CategoriasRepository
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
 from repositories.cuotas_credito_repository import CuotasCreditoRepository
@@ -98,6 +102,19 @@ class CompraNotFoundError(SharedExpensesError):
     """Raised when a referenced compras_cuotas (installment purchase) does not exist."""
 
 
+class GastoCompartidoYaSaldadoError(SharedExpensesError):
+    """
+    Raised by aplicar_pago() when the target gasto_compartido is already
+    'saldado'. Excepción propia en vez de reusar GastoCompartidoDuplicadoError
+    (Tarea 9, Parte A — decisión de diseño): esa excepción existente es
+    específica de "ya existe un gasto compartido para ese origen_tipo/
+    origen_id" (bloqueo de duplicados en add_shared_expense()/
+    add_shared_purchase()), un caso semánticamente distinto de "este gasto
+    puntual ya no acepta más pagos" — mezclar ambos bajo el mismo nombre
+    hubiera sido confuso para quien lea el traceback.
+    """
+
+
 # =============================================================
 # RESULT TYPE
 # =============================================================
@@ -136,6 +153,7 @@ class SharedExpensesService:
         self._hogares_repo = HogaresRepository(db)
         self._miembros_repo = HogarMiembrosRepository(db)
         self._gastos_repo = GastosCompartidosRepository(db)
+        self._pagos_repo = GastoCompartidoPagosRepository(db)
         self._categorias_repo = CategoriasRepository(db)
         # Solo LECTURA: add_shared_purchase() necesita leer compras_cuotas/
         # cuotas_credito para armar el/los gasto(s) compartido(s), pero
@@ -614,12 +632,235 @@ class SharedExpensesService:
         filas = self._gastos_repo.listar_por_origen(origen_tipo, origen_id)
         return filas[0] if filas else None
 
+    def aplicar_pago(
+        self,
+        gasto_id: int,
+        hogar_id: int,
+        monto_aplicado_minor: int,
+        fecha: str,
+        tipo_pago: str = "transaccion",
+        transaccion_id: Optional[int] = None,
+        notas: Optional[str] = None,
+    ) -> SharedExpensesResult:
+        """
+        Registra un pago (parcial o total) contra un gasto compartido —
+        espejo de DebtsService.register_payment() para gastos_compartidos
+        (Tarea 9, Parte A — docs/PROXIMOS_PASOS.md).
+
+        `fecha` es un parámetro EXPLÍCITO y obligatorio (no está en la firma
+        original pedida en PROXIMOS_PASOS.md, pero gasto_compartido_pagos.fecha
+        es NOT NULL en el schema — agregarlo acá es la única forma de no
+        asumir fecha=hoy en cada llamada, siguiendo CLAUDE.md §6: todo alta
+        debe poder hacerse con fecha pasada, para no bloquear una futura
+        carga en lote desde migration/). settle_expense() (abajo) sigue sin
+        pedirle fecha a SU caller — para ESA acción puntual, "hoy" es una
+        excepción documentada y deliberada, no la regla general.
+
+        monto_pendiente_minor puede ser NEGATIVO (hereda el signo de
+        monto_adeudado_minor, ver docstring del módulo/repositorio) — el
+        pago siempre reduce la MAGNITUD de la deuda hacia 0, nunca la cruza
+        de signo. monto_aplicado_minor que recibe este método es siempre
+        POSITIVO (cuánto se está aplicando), independientemente del signo
+        del pendiente.
+
+        Decisión de sobrepago (monto_aplicado_minor > |pendiente|): se
+        CLAMPEA al pendiente exacto en vez de fallar o dejar un pendiente
+        con signo invertido — el resultado.data trae `ajustado=True` y
+        `monto_aplicado_minor` (el importe REAL persistido, no el
+        solicitado) para que el caller pueda avisar en la UI que se ajustó.
+        Elegido sobre lanzar una excepción tipo PaymentExceedsBalanceError
+        (lo que hace DebtsService.register_payment()) porque el caso de uso
+        real que motivó esta tarea es "pago general" (Parte C, sesión
+        futura): un ingreso que se reparte automáticamente contra varios
+        gastos pendientes del más viejo al más nuevo hasta agotar el monto
+        — ahí un sobrepago en el ÚLTIMO gasto de la lista es el caso normal
+        (sobra plata del ingreso tras saldar exactamente ese), no un error
+        del usuario que deba abortar la operación.
+
+        Orden de validaciones (deliberado, corregido tras un bug real
+        encontrado por verify): primero identidad/estado del gasto
+        (¿existe?, ¿pertenece a hogar_id?, ¿ya está 'saldado'?), RECIÉN
+        DESPUÉS la forma de los parámetros sueltos (tipo_pago, monto_aplicado_minor
+        > 0). Antes era al revés — y eso rompía settle_expense(): al saldar
+        un gasto ya 'saldado', el monto que se le pasa acá es el pendiente
+        ACTUAL (0, porque ya está saldado), así que con la validación de
+        "monto > 0" corriendo primero salía ValueError en vez de
+        GastoCompartidoYaSaldadoError — la excepción técnicamente correcta
+        quedaba tapada por un efecto colateral del cálculo del caller, no
+        por un dato realmente inválido. Reordenar acá es una defensa
+        adicional (settle_expense() además valida el estado ANTES de
+        calcular el monto a pasar, ver su docstring) para que cualquier
+        otro caller futuro que cometa el mismo error de cálculo — pasar un
+        monto derivado de un gasto que podría estar ya saldado, sin
+        chequear antes — reciba igual la excepción correcta.
+
+        Raises:
+            GastoCompartidoNotFoundError si gasto_id no existe o no
+                                         pertenece a hogar_id.
+            GastoCompartidoYaSaldadoError si el gasto ya está 'saldado'.
+            ValueError si monto_aplicado_minor <= 0 o tipo_pago inválido.
+        """
+        gasto = self._gastos_repo.obtener_por_id(gasto_id)
+        if gasto is None or gasto["hogar_id"] != hogar_id:
+            raise GastoCompartidoNotFoundError(
+                f"Gasto compartido id={gasto_id} not found on hogar id={hogar_id}."
+            )
+        if gasto["estado"] == "saldado":
+            raise GastoCompartidoYaSaldadoError(
+                f"Gasto compartido id={gasto_id} is already 'saldado' and cannot receive more payments."
+            )
+
+        valid_tipos = {"transaccion", "compensacion", "ajuste"}
+        if tipo_pago not in valid_tipos:
+            raise ValueError(
+                f"Invalid tipo_pago '{tipo_pago}'. Must be one of: {', '.join(sorted(valid_tipos))}."
+            )
+        if monto_aplicado_minor <= 0:
+            raise ValueError(f"monto_aplicado_minor must be positive. Received: {monto_aplicado_minor}.")
+
+        pendiente = gasto["monto_pendiente_minor"]
+        if pendiente >= 0:
+            aplicado_real = min(monto_aplicado_minor, pendiente)
+            nuevo_pendiente = pendiente - aplicado_real
+        else:
+            aplicado_real = min(monto_aplicado_minor, -pendiente)
+            nuevo_pendiente = pendiente + aplicado_real
+
+        ajustado = aplicado_real < monto_aplicado_minor
+        nuevo_estado = "saldado" if nuevo_pendiente == 0 else "pendiente"
+
+        with self._db.transaction() as conn:
+            pago_id = self._pagos_repo.crear(
+                gasto_compartido_id=gasto_id,
+                monto_aplicado_minor=aplicado_real,
+                tipo_pago=tipo_pago,
+                fecha=fecha,
+                transaccion_id=transaccion_id,
+                notas=notas,
+                conn=conn,
+            )
+            self._gastos_repo.actualizar_monto_pendiente(
+                gasto_id, nuevo_pendiente, nuevo_estado, conn=conn,
+            )
+
+        saldado = nuevo_estado == "saldado"
+        mensaje = f"Pago de {amount_display(aplicado_real)} aplicado al gasto compartido id={gasto_id}. "
+        if ajustado:
+            mensaje += (
+                f"Se ajustó el monto solicitado ({amount_display(monto_aplicado_minor)}) "
+                f"al pendiente exacto. "
+            )
+        mensaje += "Gasto saldado." if saldado else f"Pendiente: {amount_display(nuevo_pendiente)}."
+
+        return SharedExpensesResult(
+            success=True,
+            entity_id=gasto_id,
+            data={
+                "gasto_id": gasto_id,
+                "pago_id": pago_id,
+                "monto_solicitado_minor": monto_aplicado_minor,
+                "monto_aplicado_minor": aplicado_real,
+                "pendiente_minor": nuevo_pendiente,
+                "saldado": saldado,
+                "ajustado": ajustado,
+                "tipo_pago": tipo_pago,
+                "transaccion_id": transaccion_id,
+            },
+            message=mensaje,
+        )
+
     def settle_expense(self, gasto_id: int, hogar_id: int) -> SharedExpensesResult:
         """
         Requiere ambos ids para validar pertenencia — mismo criterio que
         FeesService.remove_extra_charge(): un gasto_id que existe pero
         pertenece a otro hogar_id se rechaza, en vez de saldar el gasto
         equivocado en silencio.
+
+        Atajo de aplicar_pago() (Tarea 9, Parte A): saldar de un solo golpe
+        es "aplicar un pago por el pendiente completo, tipo_pago='ajuste'".
+        La lógica de "marcar saldado cuando el pendiente llega a 0" vive
+        ÚNICA Y EXCLUSIVAMENTE en aplicar_pago() desde ahora — este método
+        ya no llama a GastosCompartidosRepository.marcar_saldado()
+        directamente, para no duplicarla en dos lugares.
+
+        fecha: a diferencia de aplicar_pago(), este método NO le pide fecha
+        a su caller (mismo comportamiento observable que antes de esta
+        tarea — no se le agregó un parámetro nuevo). Usa la fecha de HOY
+        como excepción deliberada: "saldar" es siempre una acción manual en
+        el momento, nunca una carga histórica en lote (a diferencia de
+        aplicar_pago(), que sí puede necesitar una fecha pasada real desde
+        migration/ o desde el "pago general" de la Parte C) — ver docstring
+        de aplicar_pago() para el contraste completo.
+
+        Valida el estado del gasto ACÁ, explícitamente, ANTES de calcular
+        el monto que se le pasa a aplicar_pago() — bug real encontrado por
+        verify (corregido en esta revisión): si se dejaba que
+        aplicar_pago() detectara "ya saldado" solo indirectamente (a través
+        de que monto_pendiente_minor de un gasto ya saldado es 0, y
+        aplicar_pago() valida "monto > 0" en algún punto de su cuerpo),
+        cualquier reordenamiento futuro de las validaciones internas de
+        aplicar_pago() podía volver a tapar la excepción correcta con un
+        ValueError de "monto debe ser positivo" — un efecto colateral del
+        cálculo, no un dato realmente inválido. Chequear el estado acá
+        antes de calcular nada es la fuente de verdad, independiente de
+        cómo esté ordenado el cuerpo de aplicar_pago().
+
+        Raises:
+            GastoCompartidoNotFoundError si gasto_id no existe o no
+                                         pertenece a hogar_id.
+            GastoCompartidoYaSaldadoError si el gasto ya está 'saldado'.
+        """
+        gasto = self._gastos_repo.obtener_por_id(gasto_id)
+        if gasto is None or gasto["hogar_id"] != hogar_id:
+            raise GastoCompartidoNotFoundError(
+                f"Gasto compartido id={gasto_id} not found on hogar id={hogar_id}."
+            )
+        if gasto["estado"] == "saldado":
+            raise GastoCompartidoYaSaldadoError(
+                f"Gasto compartido id={gasto_id} is already 'saldado' and cannot receive more payments."
+            )
+
+        pendiente_abs = abs(gasto["monto_pendiente_minor"])
+        resultado = self.aplicar_pago(
+            gasto_id=gasto_id,
+            hogar_id=hogar_id,
+            monto_aplicado_minor=pendiente_abs,
+            fecha=date.today().strftime("%Y-%m-%d"),
+            tipo_pago="ajuste",
+        )
+
+        return SharedExpensesResult(
+            success=True,
+            entity_id=gasto_id,
+            data={"gasto_id": gasto_id, "hogar_id": hogar_id, **resultado.data},
+            message=f"Gasto compartido id={gasto_id} marcado como saldado.",
+        )
+
+    # ----------------------------------------------------------
+    # UPDATE
+    # ----------------------------------------------------------
+
+    def update_shared_expense(
+        self, gasto_id: int, hogar_id: int, descripcion: Optional[str],
+    ) -> SharedExpensesResult:
+        """
+        Actualiza la descripción de un gasto compartido (Tarea 9, Parte B
+        — UI). Único campo editable hoy: GastosCompartidosRepository.
+        actualizar() no expone ningún otro (origen/monto/coeficiente son
+        el resultado de un cálculo, no datos sueltos que tenga sentido
+        reescribir a mano — ver docstring de ese repositorio). No existía
+        ningún método de service que expusiera esto todavía — se agrega
+        acá porque la pantalla combinada de esta tarea necesita una acción
+        "editar" por fila, y el repositorio ya lo soportaba sin caller.
+
+        Args:
+            gasto_id:    El gasto a editar.
+            hogar_id:    Hogar al que debe pertenecer (misma validación de
+                         pertenencia que el resto de los métodos de este
+                         service).
+            descripcion: Nuevo valor. None limpia la descripción (igual
+                         que el resto de los `actualizar()` de este
+                         proyecto que reciben None explícito).
 
         Raises:
             GastoCompartidoNotFoundError si gasto_id no existe o no
@@ -631,13 +872,80 @@ class SharedExpensesService:
                 f"Gasto compartido id={gasto_id} not found on hogar id={hogar_id}."
             )
 
-        self._gastos_repo.marcar_saldado(gasto_id)
+        self._gastos_repo.actualizar(gasto_id, descripcion=descripcion)
+
+        return SharedExpensesResult(
+            success=True,
+            entity_id=gasto_id,
+            data={"gasto_id": gasto_id, "hogar_id": hogar_id, "descripcion": descripcion},
+            message=f"Gasto compartido id={gasto_id} actualizado.",
+        )
+
+    # ----------------------------------------------------------
+    # DELETE
+    # ----------------------------------------------------------
+
+    def delete_shared_expense(self, gasto_id: int, hogar_id: int) -> SharedExpensesResult:
+        """
+        Physically deletes a shared expense (Tarea 9, Parte B — ventana de
+        corrección temprana, CLAUDE.md §4, mismo criterio ya usado en
+        DebtsService.delete_debt() / AccountsService.delete_account()).
+
+        Requiere ambos ids para validar pertenencia — mismo criterio que
+        settle_expense()/aplicar_pago(): un gasto_id que existe pero
+        pertenece a otro hogar_id se rechaza.
+
+        Solo permitido si el gasto no tiene NINGÚN pago registrado en
+        gasto_compartido_pagos todavía (ni parcial ni el que lo saldó de
+        una) — un pago es "dependencia con estado propio generado" (ya
+        movió plata real o quedó una compensación documentada), así que
+        borrar el gasto entero lo dejaría huérfano. Si tiene pagos, se
+        rechaza con SharedExpensesError sugiriendo dejarlo como está (o,
+        si ya está saldado y se lo quiere sacar de la vista activa, no hay
+        equivalente a write_off() para gastos_compartidos hoy — settle_
+        expense() ya cumple ese rol de "cerrar sin más fricción").
+
+        A diferencia de aplicar_pago(), NO exige que el gasto esté
+        'pendiente' — un gasto 'saldado' sin ningún pago real en
+        gasto_compartido_pagos no puede darse hoy en la práctica (saldar
+        siempre pasa por aplicar_pago(), que siempre inserta una fila), pero
+        si algún día existiera un camino que lo dejara así, igual sería
+        borrable: lo que bloquea el borrado es la dependencia con estado
+        propio (los pagos), no el estado en sí.
+
+        Args:
+            gasto_id: El gasto compartido a eliminar.
+            hogar_id: Hogar al que debe pertenecer.
+
+        Returns:
+            SharedExpensesResult con success=True.
+
+        Raises:
+            GastoCompartidoNotFoundError si gasto_id no existe o no
+                                         pertenece a hogar_id.
+            SharedExpensesError si el gasto tiene algún pago registrado en
+                                gasto_compartido_pagos.
+        """
+        gasto = self._gastos_repo.obtener_por_id(gasto_id)
+        if gasto is None or gasto["hogar_id"] != hogar_id:
+            raise GastoCompartidoNotFoundError(
+                f"Gasto compartido id={gasto_id} not found on hogar id={hogar_id}."
+            )
+
+        pagos = self._pagos_repo.listar_por_gasto(gasto_id)
+        if pagos:
+            raise SharedExpensesError(
+                f"Gasto compartido id={gasto_id} has {len(pagos)} payment(s) registered "
+                f"in gasto_compartido_pagos — cannot be deleted. Leave it as is instead."
+            )
+
+        self._gastos_repo.eliminar(gasto_id)
 
         return SharedExpensesResult(
             success=True,
             entity_id=gasto_id,
             data={"gasto_id": gasto_id, "hogar_id": hogar_id},
-            message=f"Gasto compartido id={gasto_id} marcado como saldado.",
+            message=f"Gasto compartido id={gasto_id} eliminado.",
         )
 
     # ----------------------------------------------------------

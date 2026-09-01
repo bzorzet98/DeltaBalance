@@ -37,10 +37,42 @@ from typing import Optional
 from db.database import DatabaseManager
 from db.query_builder import QueryBuilder
 
+# Ver mismo mecanismo/motivo en repositories/transacciones_repository.py
+# (VENTANA_DUPLICADO_SEGUNDOS / TransaccionDuplicadaError) — chequeo de
+# seguridad contra doble-click/doble-Enter, no una regla de negocio.
+VENTANA_DUPLICADO_SEGUNDOS = 5
+
+
+class MovimientoDuplicadoError(Exception):
+    """
+    Se lanza cuando crear() detecta un movimiento de activo con los mismos
+    campos relevantes (activo_id, tipo, monto, fecha) insertado hace menos
+    de VENTANA_DUPLICADO_SEGUNDOS. Ver TransaccionDuplicadaError en
+    transacciones_repository.py — mismo criterio exacto.
+    """
+
 
 class MovimientosActivoRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
+
+    def _existe_duplicado_reciente(
+        self,
+        activo_id: int,
+        tipo: str,
+        fecha: str,
+        monto_total_minor: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
+        sql = """
+            SELECT 1 FROM movimientos_activo
+            WHERE activo_id = ? AND tipo = ? AND fecha = ? AND monto_total_minor = ?
+              AND (strftime('%s', 'now') - strftime('%s', creada_en)) < ?
+            LIMIT 1;
+        """
+        params = (activo_id, tipo, fecha, monto_total_minor, VENTANA_DUPLICADO_SEGUNDOS)
+        ejecutor = conn if conn is not None else self._db.conn
+        return ejecutor.execute(sql, params).fetchone() is not None
 
     # ----------------------------------------------------------
     # CREATE
@@ -62,6 +94,10 @@ class MovimientosActivoRepository:
         """
         Inserta un movimiento de activo (compra/venta/rendimiento).
 
+        Antes del INSERT, rechaza la operación con MovimientoDuplicadoError
+        si ya existe un movimiento con el mismo activo_id/tipo/fecha/
+        monto_total_minor creado hace menos de VENTANA_DUPLICADO_SEGUNDOS.
+
         transaccion_id: opcional, ver docstring del módulo. NULL si el
         movimiento es puramente informal (comportamiento previo, sin
         cambios).
@@ -72,6 +108,15 @@ class MovimientosActivoRepository:
         módulo). Si no se pasa, comportamiento standalone normal vía
         self._db.execute().
         """
+        if self._existe_duplicado_reciente(
+            activo_id, tipo, fecha, monto_total_minor, conn=conn,
+        ):
+            raise MovimientoDuplicadoError(
+                f"Ya existe un movimiento idéntico (activo_id={activo_id}, "
+                f"tipo={tipo}, fecha={fecha}, monto_total_minor={monto_total_minor}) "
+                f"creado hace menos de {VENTANA_DUPLICADO_SEGUNDOS} segundos."
+            )
+
         sql = """
             INSERT INTO movimientos_activo
                 (activo_id, tipo, fecha, cantidad, precio_unitario_minor,
@@ -115,3 +160,26 @@ class MovimientosActivoRepository:
             .order("fecha")
             .ejecutar(self._db.conn)
         )
+
+    # ----------------------------------------------------------
+    # DELETE
+    # ----------------------------------------------------------
+
+    def eliminar(self, movimiento_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+        """
+        DELETE físico del movimiento. Solo el movimiento en sí — NO borra
+        sus asignaciones (eso es responsabilidad de quien orquesta, ver
+        AsignacionesRepository.eliminar_por_movimiento(), que debe llamarse
+        ANTES que este método dentro de la misma transacción para no violar
+        la FK asignaciones.movimiento_id → movimientos_activo(id)) ni la
+        transacción real vinculada (transaccion_id) — eso lo decide
+        SavingsService.delete_movement() según el flag
+        eliminar_transaccion_vinculada.
+
+        Si se pasa `conn`, participa de la transacción externa.
+        """
+        sql = "DELETE FROM movimientos_activo WHERE id = ?;"
+        if conn is not None:
+            conn.execute(sql, (movimiento_id,))
+            return
+        self._db.execute(sql, (movimiento_id,))

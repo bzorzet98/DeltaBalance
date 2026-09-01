@@ -2,8 +2,9 @@
 verify/cuentas_categorias/verify_accounts_service.py
 
 Verifica AccountsService (services/accounts_service.py). Cubre
-create_account() multi-moneda (una y dos monedas, atómico; lista vacía;
-ids repetidos; moneda inexistente; cuenta_pago_id inexistente),
+create_account() multi-moneda (una y dos monedas, atómico; lista vacía o
+sin pasar el argumento — Tarea 6f: crea la cuenta sin ningún saldo_inicial,
+sin error; ids repetidos; moneda inexistente; cuenta_pago_id inexistente),
 add_currency_to_account() (camino feliz y el bloqueo de duplicado),
 list_currencies(), get_account()/list_accounts() con el shape de lista de
 saldos, update_account() con el sentinel NO_CAMBIAR, el bloqueo de
@@ -134,10 +135,22 @@ def main() -> None:
         ValueError,
         lambda: svc.create_account(nombre="Cuenta rara", tipo="no_existe", monedas=[moneda_ars]),
     )
-    caso_excepcion(
-        "create_account() con lista de monedas vacía lanza ValueError",
-        ValueError,
-        lambda: svc.create_account(nombre="Cuenta sin moneda", tipo="debito", monedas=[]),
+    resultado_sin_moneda = svc.create_account(nombre="Cuenta sin moneda", tipo="debito", monedas=[])
+    caso(
+        "create_account() con lista de monedas vacía ya NO lanza error: success=True (Tarea 6f)",
+        True,
+        resultado_sin_moneda.success,
+    )
+    caso(
+        "create_account() con monedas=[] crea la cuenta sin ningún saldo_inicial todavía",
+        0,
+        len(resultado_sin_moneda.data["saldos"]),
+    )
+    resultado_sin_moneda_default = svc.create_account(nombre="Cuenta sin moneda (default)", tipo="debito")
+    caso(
+        "create_account() sin pasar monedas en absoluto (default None) también crea la cuenta sin saldos",
+        0,
+        len(resultado_sin_moneda_default.data["saldos"]),
     )
     caso_excepcion(
         "create_account() con monedas repetidas lanza ValueError",

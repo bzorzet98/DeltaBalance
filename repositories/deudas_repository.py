@@ -58,10 +58,42 @@ from db.database import DatabaseManager
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
+# Ver mismo mecanismo/motivo en repositories/transacciones_repository.py
+# (VENTANA_DUPLICADO_SEGUNDOS / TransaccionDuplicadaError) — chequeo de
+# seguridad contra doble-click/doble-Enter, no una regla de negocio.
+VENTANA_DUPLICADO_SEGUNDOS = 5
+
+
+class DeudaDuplicadaError(Exception):
+    """
+    Se lanza cuando crear() detecta una deuda con los mismos campos
+    relevantes (entidad_persona, tipo, monto_original_minor, fecha_inicio)
+    insertada hace menos de VENTANA_DUPLICADO_SEGUNDOS. Ver
+    TransaccionDuplicadaError en transacciones_repository.py — mismo
+    criterio exacto (Tarea 9, Parte B).
+    """
+
 
 class DeudasRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
+
+    def _existe_duplicado_reciente(
+        self,
+        entidad_persona: str,
+        tipo: str,
+        monto_minor: int,
+        fecha_inicio: str,
+    ) -> bool:
+        sql = """
+            SELECT 1 FROM deudas
+            WHERE entidad_persona = ? AND tipo = ? AND monto_original_minor = ?
+              AND fecha_inicio = ?
+              AND (strftime('%s', 'now') - strftime('%s', creada_en)) < ?
+            LIMIT 1;
+        """
+        params = (entidad_persona, tipo, monto_minor, fecha_inicio, VENTANA_DUPLICADO_SEGUNDOS)
+        return self._db.conn.execute(sql, params).fetchone() is not None
 
     # ----------------------------------------------------------
     # CREATE
@@ -88,7 +120,21 @@ class DeudasRepository:
         del bug donde antes se pisaban en actualizar()): concepto es la
         descripción corta de la deuda (equivalente a
         transacciones.concepto), notas es memo/motivo libre.
+
+        Antes del INSERT, rechaza la operación con DeudaDuplicadaError si ya
+        existe una deuda con la misma entidad_persona/tipo/
+        monto_original_minor/fecha_inicio creada hace menos de
+        VENTANA_DUPLICADO_SEGUNDOS (Tarea 9, Parte B) — mismo criterio que
+        TransaccionesRepository.crear()/ComprasCuotasRepository.crear().
         """
+        if self._existe_duplicado_reciente(entidad_persona, tipo, monto_minor, fecha_inicio):
+            raise DeudaDuplicadaError(
+                f"Ya existe una deuda idéntica (entidad_persona='{entidad_persona}', "
+                f"tipo='{tipo}', monto_original_minor={monto_minor}, "
+                f"fecha_inicio={fecha_inicio}) creada hace menos de "
+                f"{VENTANA_DUPLICADO_SEGUNDOS} segundos."
+            )
+
         return self._db.execute(
             """
             INSERT INTO deudas
@@ -333,3 +379,20 @@ class DeudasRepository:
             conn.execute(sql, params)
             return
         self._db.execute(sql, params)
+
+    # ----------------------------------------------------------
+    # ELIMINAR
+    # ----------------------------------------------------------
+
+    def eliminar(self, deuda_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+        """
+        DELETE físico de la deuda (Tarea 9, Parte B — ventana de corrección
+        temprana, CLAUDE.md §4). No valida si tiene pagos asociados en
+        deuda_pagos — esa es responsabilidad de DebtsService.delete_debt()
+        (regla de negocio, no de este repositorio).
+        """
+        sql = "DELETE FROM deudas WHERE id = ?;"
+        if conn is not None:
+            conn.execute(sql, (deuda_id,))
+            return
+        self._db.execute(sql, (deuda_id,))

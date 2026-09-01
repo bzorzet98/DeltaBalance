@@ -52,11 +52,52 @@ from typing import Any, Optional
 from db.database import DatabaseManager
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
+from repositories.cuentas_repository import CuentasRepository
+
+# Ventana de bloqueo de duplicados (parte de "seguridad ante doble-click/
+# doble-Enter", no una regla de negocio de dominio): si ya existe una fila
+# con los mismos cuenta_id/categoria_id/monto_minor/fecha/concepto creada
+# hace menos de esta cantidad de segundos, crear() rechaza el INSERT en vez
+# de duplicar la fila. Constante nombrada, no un número suelto en la query.
+VENTANA_DUPLICADO_SEGUNDOS = 5
+
+
+class TransaccionDuplicadaError(Exception):
+    """
+    Se lanza cuando crear() detecta una fila con los mismos campos
+    relevantes (cuenta, categoría, monto, fecha, concepto) insertada hace
+    menos de VENTANA_DUPLICADO_SEGUNDOS — protección contra doble-click/
+    doble-Enter en la UI, no una validación de regla de negocio. Los
+    services que llaman a crear() (TransactionService, SavingsService vía
+    su transacción vinculada) no la atrapan: la dejan subir tal cual para
+    que la UI la muestre en un SnackBar.
+    """
 
 
 class TransaccionesRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
+        self._cuentas_repo = CuentasRepository(db)
+
+    def _existe_duplicado_reciente(
+        self,
+        fecha: str,
+        concepto: str,
+        cuenta_id: int,
+        categoria_id: int,
+        monto_minor: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> bool:
+        sql = """
+            SELECT 1 FROM transacciones
+            WHERE cuenta_id = ? AND categoria_id = ? AND monto_minor = ?
+              AND fecha = ? AND concepto = ? AND deleted_at IS NULL
+              AND (strftime('%s', 'now') - strftime('%s', creada_en)) < ?
+            LIMIT 1;
+        """
+        params = (cuenta_id, categoria_id, monto_minor, fecha, concepto, VENTANA_DUPLICADO_SEGUNDOS)
+        ejecutor = conn if conn is not None else self._db.conn
+        return ejecutor.execute(sql, params).fetchone() is not None
 
     def crear(
         self,
@@ -74,14 +115,45 @@ class TransaccionesRepository:
         """
         Inserta una transacción. Nunca toca deleted_at.
 
+        Antes del INSERT, rechaza la operación con TransaccionDuplicadaError
+        si ya existe una fila con la misma cuenta_id/categoria_id/
+        monto_minor/fecha/concepto creada hace menos de
+        VENTANA_DUPLICADO_SEGUNDOS (ver docstring de esa excepción) — chequeo
+        de seguridad contra doble-envío, no una regla de negocio.
+
+        Justo antes del INSERT (Tarea 6f, docs/PROXIMOS_PASOS.md), resuelve
+        la moneda de la cuenta de forma perezosa vía
+        CuentasRepository.get_or_create_saldo_inicial(cuenta_id, moneda_id):
+        si esta combinación cuenta+moneda todavía no tiene fila en
+        cuentas_saldos (por ejemplo porque la cuenta se creó sin declarar
+        ninguna moneda), la crea con saldo_inicial_minor = 0 antes de que
+        la transacción se aplique. Este es el único punto común más bajo
+        por el que pasan hoy todos los caminos que generan transacciones
+        reales (Registro vía TransactionService, Compras en cuotas vía
+        TransactionService.create_transfer(), Ahorros y Empleos vía
+        SavingsService/EmpleosService) — resolverlo acá cubre a todos sin
+        duplicar la lógica en cada service.
+
         Si se pasa `conn` (por ejemplo el conn que entrega
-        `self._db.transaction()` dentro de un `with`), el INSERT se ejecuta
-        ahí directamente, sin pasar por self._db.execute() ni comitear —
-        para poder participar de una transacción externa (ver
-        TransactionService.create_transfer(), que hace dos crear() atómicos
-        dentro de una sola transacción). Si no se pasa, comportamiento
-        actual sin cambios: abre/comitea a través de self._db.execute().
+        `self._db.transaction()` dentro de un `with`), tanto la resolución
+        de moneda como el INSERT se ejecutan ahí directamente, sin pasar por
+        self._db.execute() ni comitear — para poder participar de una
+        transacción externa (ver TransactionService.create_transfer(), que
+        hace dos crear() atómicos dentro de una sola transacción). Si no se
+        pasa, este método abre su propia transacción (self._db.transaction())
+        para que la resolución de moneda y el INSERT sean atómicos entre sí
+        — ninguno de los dos, o los dos.
         """
+        if self._existe_duplicado_reciente(
+            fecha, concepto, cuenta_id, categoria_id, monto_minor, conn=conn,
+        ):
+            raise TransaccionDuplicadaError(
+                f"Ya existe una transacción idéntica (cuenta_id={cuenta_id}, "
+                f"categoria_id={categoria_id}, monto_minor={monto_minor}, "
+                f"fecha={fecha}) creada hace menos de "
+                f"{VENTANA_DUPLICADO_SEGUNDOS} segundos."
+            )
+
         sql = """
             INSERT INTO transacciones
                 (fecha, concepto, cuenta_id, categoria_id, moneda_id,
@@ -93,8 +165,12 @@ class TransaccionesRepository:
             tipo_movimiento, monto_minor, tag, notas,
         )
         if conn is not None:
+            self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_id, conn=conn)
             return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+
+        with self._db.transaction() as conn_local:
+            self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_id, conn=conn_local)
+            return conn_local.execute(sql, params).lastrowid
 
     def crear_autotransferencia(
         self,
@@ -293,12 +369,23 @@ class TransaccionesRepository:
         )
         return True
 
-    def eliminar(self, transaccion_id: int) -> None:
-        """Soft-delete: deleted_at = CURRENT_TIMESTAMP. Nunca un DELETE físico."""
-        self._db.execute(
-            "UPDATE transacciones SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?;",
-            (transaccion_id,),
-        )
+    def eliminar(
+        self, transaccion_id: int, conn: Optional[sqlite3.Connection] = None,
+    ) -> None:
+        """
+        Soft-delete: deleted_at = CURRENT_TIMESTAMP. Nunca un DELETE físico.
+
+        Si se pasa `conn`, el UPDATE se ejecuta ahí directamente sin
+        comitear, para participar de una transacción externa (ver
+        SavingsService.delete_movement(), que puede soft-eliminar la
+        transacción vinculada a un movimiento_activo en la misma operación
+        atómica que borra el movimiento y sus asignaciones).
+        """
+        sql = "UPDATE transacciones SET deleted_at = CURRENT_TIMESTAMP WHERE id = ?;"
+        if conn is not None:
+            conn.execute(sql, (transaccion_id,))
+            return
+        self._db.execute(sql, (transaccion_id,))
 
     def restaurar(self, transaccion_id: int) -> None:
         """Revierte eliminar(): deja deleted_at en NULL de nuevo."""

@@ -116,7 +116,22 @@ duplicar ~60 líneas de lógica de filas/validación.
 Lista simple (nombre, tipo, moneda) con "+ Nuevo activo" — SIN los tres
 íconos de acción por fila de la versión anterior (Compra/Rendimiento/
 Venta ahora viven todos detrás del botón "+" único del Registro de
-movimientos, no por activo puntual).
+movimientos, no por activo puntual). Desde la Tarea 6g, "+ Nuevo activo"
+suma un selector de Cuenta asociada (opcional) — vincula el activo a una
+cuenta real para que register_purchase()/register_sale() resuelvan solos
+esa cuenta en cada movimiento futuro, sin tener que elegirla de nuevo cada
+vez.
+
+--- Cuenta/categoría de un movimiento (Tarea 6g) ---
+
+Ningún diálogo de movimiento (Compra, Rendimiento, Egreso general) pide
+Cuenta ni Categoría — SavingsService las resuelve solas: cuenta_id sale de
+activo["cuenta_id"] (vinculada al crear el activo, ver arriba) y
+categoria_id siempre es la categoría protegida 'Ahorro/Inversión'. El
+CampoFiltrable de activo, en Rendimiento y en Egreso general, muestra la
+cuenta asociada en el label de cada opción ("NVDA — Bull Market") para
+desambiguar activos con el mismo nombre en cuentas distintas — ver
+_label_activo() (mismo helper que ui/components/dialogo_compra_ahorro.py).
 
 --- General ---
 
@@ -128,8 +143,10 @@ de moneda, asumiendo DECIMALES_SIN_MONEDA_DEFAULT. get_balance_por_tipo()/
 get_balance_por_activo() SÍ tienen moneda real (agrupan por moneda_id o
 heredan la del activo), así que esas dos tiles muestran símbolo correcto.
 
-Reglas de arquitectura: solo SavingsService/AccountsService/
-CategoriasService — nunca repositories/ ni db/ directo (CLAUDE.md §2/§3).
+Reglas de arquitectura: solo SavingsService/AccountsService — nunca
+repositories/ ni db/ directo (CLAUDE.md §2/§3). CategoriasService dejó de
+hacer falta acá (Tarea 6g: ningún diálogo de esta pantalla elige
+categoría).
 """
 
 from datetime import date, datetime
@@ -138,7 +155,6 @@ from typing import Callable, Optional
 import flet as ft
 
 from services.accounts_service import AccountsService
-from services.categorias_service import CategoriasService
 from services.savings_service import SavingsError, SavingsResult, SavingsService
 from ui.components import dialogo_compra_ahorro
 from ui.components.campo_filtrable import CampoFiltrable
@@ -169,6 +185,7 @@ ANCHO_COL_CANTIDAD = 90
 ANCHO_COL_MONTO = 120
 ANCHO_COL_MONEDA = 90
 ANCHO_COL_OBJETIVOS = 240
+ANCHO_COL_ELIMINAR = 40
 DIA_TOPE_RANGO_MES = 31  # cota superior de fecha_hasta del período — comparación lexicográfica de strings ISO, no una fecha real (ver _cargar_movimientos())
 
 TIPOS_ACTIVO = ("accion", "fci", "plazo_fijo", "cripto", "otro")
@@ -189,6 +206,18 @@ def _tipo_activo_display(tipo: str) -> str:
     }.get(tipo, tipo)
 
 
+def _label_activo(activo: dict, cuentas_por_id: dict) -> str:
+    """
+    Label de una opción de activo existente en un CampoFiltrable: "nombre —
+    cuenta" si el activo tiene cuenta_id vinculada, solo "nombre" si no
+    (Tarea 6g, docs/PROXIMOS_PASOS.md) — mismo helper que
+    ui/components/dialogo_compra_ahorro.py (sin extraer a un módulo
+    compartido: es una línea, no vale la pena la indirección).
+    """
+    cuenta = cuentas_por_id.get(activo["cuenta_id"]) if activo["cuenta_id"] is not None else None
+    return f"{activo['nombre']} — {cuenta['nombre']}" if cuenta else activo["nombre"]
+
+
 def _texto_a_minor(texto: Optional[str], decimales: int) -> Optional[int]:
     """Reconvierte un texto ya confirmado (de un CampoMonto que se va a reconstruir) a minor units con decimales nuevos — mismo helper que dialogo_compra_ahorro.py."""
     if not texto:
@@ -203,7 +232,6 @@ def build(
     page: ft.Page,
     savings_service: SavingsService,
     accounts_service: AccountsService,
-    categorias_service: CategoriasService,
     on_volver: Optional[Callable[[], None]] = None,
 ) -> ft.Control:
     def _mostrar_mensaje(mensaje: str, es_error: bool = False) -> None:
@@ -217,6 +245,9 @@ def build(
 
     def _mostrar_ok(mensaje: str) -> None:
         _mostrar_mensaje(mensaje, es_error=False)
+
+    def _mostrar_error(mensaje: str) -> None:
+        _mostrar_mensaje(mensaje, es_error=True)
 
     def _cerrar_dialogo(e=None) -> None:
         page.pop_dialog()
@@ -544,6 +575,14 @@ def build(
         page.update()
 
     def _abrir_dialogo_nuevo_activo(e=None) -> None:
+        # Cuenta asociada (Tarea 6g): opcional, se elige acá al crear el
+        # activo — no en cada movimiento posterior. Sin tarjetas de
+        # crédito (un ahorro no se origina desde una) ni cuentas
+        # archivadas, mismo filtro que dialogo_compra_ahorro.py.
+        cuentas_activas_no_credito = [
+            c for c in cuentas_por_id.values() if c["activa"] and c["tipo"] != "credito"
+        ]
+
         campo_nombre = ft.TextField(label="Nombre", autofocus=True)
         dropdown_tipo = ft.Dropdown(
             label="Tipo",
@@ -553,6 +592,11 @@ def build(
         campo_moneda = CampoFiltrable(
             page, [(str(m["id"]), m["codigo"]) for m in monedas],
             on_seleccionar=lambda id_: None, placeholder="Moneda", width=ANCHO_DIALOGO, dense=False,
+        )
+        campo_cuenta = CampoFiltrable(
+            page, [(str(c["id"]), c["nombre"]) for c in cuentas_activas_no_credito],
+            on_seleccionar=lambda id_: None, placeholder="Cuenta asociada (opcional)",
+            width=ANCHO_DIALOGO, dense=False,
         )
         texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
 
@@ -570,6 +614,7 @@ def build(
             try:
                 savings_service.create_activo(
                     nombre=nombre, tipo=dropdown_tipo.value, moneda_id=int(campo_moneda.id_seleccionado),
+                    cuenta_id=int(campo_cuenta.id_seleccionado) if campo_cuenta.id_seleccionado else None,
                 )
             except SavingsError as err:
                 texto_error.value = str(err)
@@ -585,7 +630,7 @@ def build(
             content=ft.Container(
                 width=ANCHO_DIALOGO,
                 content=ft.Column(
-                    [campo_nombre, dropdown_tipo, campo_moneda.control, texto_error],
+                    [campo_nombre, dropdown_tipo, campo_moneda.control, campo_cuenta.control, texto_error],
                     tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO,
                 ),
             ),
@@ -612,15 +657,35 @@ def build(
         # ya traiga un activo elegido (a diferencia de la versión anterior
         # de esta pantalla). Sin pre-carga, pedido explícito.
         formulario = dialogo_compra_ahorro.construir(
-            page, savings_service, accounts_service, categorias_service, on_exito=_on_exito,
+            page, savings_service, accounts_service, on_exito=_on_exito,
         )
+
+        # Deshabilita el botón de confirmar ANTES de llamar a
+        # formulario.confirmar() — evita que un doble-click dispare dos
+        # guardados antes de que el primero vuelva (ver docstring del
+        # módulo, Parte A). formulario.confirmar() no distingue éxito/error
+        # con un valor de retorno propio (ver dialogo_compra_ahorro.py): en
+        # éxito _on_exito() ya cierra el diálogo (boton_confirmar_compra
+        # queda huérfano, re-habilitarlo después es inofensivo); en error
+        # el diálogo sigue abierto con el mensaje mostrado adentro, así que
+        # SÍ hace falta re-habilitar para poder reintentar.
+        def _click_confirmar_compra(e=None) -> None:
+            boton_confirmar_compra.disabled = True
+            page.update()
+            try:
+                formulario.confirmar()
+            finally:
+                boton_confirmar_compra.disabled = False
+                page.update()
+
+        boton_confirmar_compra = ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_click_confirmar_compra)
         dialogo = ft.AlertDialog(
             modal=True,
             title=ft.Text("Compra"),
             content=formulario.contenido,
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=lambda e: formulario.confirmar()),
+                boton_confirmar_compra,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -653,7 +718,7 @@ def build(
             page.update()
 
         campo_activo = CampoFiltrable(
-            page, [(str(a["id"]), a["nombre"]) for a in activos_lista],
+            page, [(str(a["id"]), _label_activo(a, cuentas_por_id)) for a in activos_lista],
             on_seleccionar=lambda id_: _reconstruir_monto(), placeholder="Activo", dense=False, autofocus=True,
         )
         campo_fecha = ft.TextField(label="Fecha", value=date.today().isoformat())
@@ -661,7 +726,7 @@ def build(
 
         texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
 
-        def _confirmar(e=None) -> None:
+        def _procesar_confirmar(e=None) -> None:
             texto_error.value = ""
             if not campo_activo.id_seleccionado:
                 texto_error.value = "Seleccioná el activo del rendimiento."
@@ -705,6 +770,19 @@ def build(
             _mostrar_ok(f"Rendimiento registrado{aviso}.")
             _refrescar()
 
+        # Deshabilita el botón de confirmar ANTES de procesar — ver
+        # docstring del módulo, Parte A. Re-habilitar tras un error es
+        # inofensivo tras un éxito también (el diálogo ya se cerró).
+        def _confirmar(e=None) -> None:
+            boton_confirmar.disabled = True
+            page.update()
+            try:
+                _procesar_confirmar()
+            finally:
+                boton_confirmar.disabled = False
+                page.update()
+
+        boton_confirmar = ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar)
         dialogo = ft.AlertDialog(
             modal=True,
             title=ft.Text("Rendimiento"),
@@ -727,7 +805,7 @@ def build(
             ),
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar),
+                boton_confirmar,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -771,7 +849,7 @@ def build(
             page.update()
 
         campo_activo = CampoFiltrable(
-            page, [(str(a["id"]), a["nombre"]) for a in activos_con_saldo],
+            page, [(str(a["id"]), _label_activo(a, cuentas_por_id)) for a in activos_con_saldo],
             on_seleccionar=lambda id_: _reconstruir_monto(), placeholder="Activo (con saldo positivo)",
             dense=False, autofocus=True,
         )
@@ -781,7 +859,7 @@ def build(
         editor_asignaciones = dialogo_compra_ahorro.construir_editor_asignaciones(page, objetivos_disponibles)
         texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
 
-        def _confirmar(e=None) -> None:
+        def _procesar_confirmar(e=None) -> None:
             texto_error.value = ""
             activo = _activo_seleccionado()
             if activo is None:
@@ -831,6 +909,18 @@ def build(
             _mostrar_ok(f"Egreso registrado para '{activo['nombre']}' (movimiento #{resultado.entity_id}).")
             _refrescar()
 
+        # Deshabilita el botón de confirmar ANTES de procesar — ver
+        # docstring del módulo, Parte A.
+        def _confirmar(e=None) -> None:
+            boton_confirmar.disabled = True
+            page.update()
+            try:
+                _procesar_confirmar()
+            finally:
+                boton_confirmar.disabled = False
+                page.update()
+
+        boton_confirmar = ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar)
         dialogo = ft.AlertDialog(
             modal=True,
             title=ft.Text("Egreso general"),
@@ -851,7 +941,7 @@ def build(
             ),
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar),
+                boton_confirmar,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -935,6 +1025,57 @@ def build(
             size=TypographyTokens.TABLE_CONTENT_SIZE, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=texto,
         )
 
+    def _eliminar_movimiento(m: dict) -> None:
+        """
+        Borrado por fila del Registro de movimientos (nuevo). Si el
+        movimiento tiene transaccion_id vinculado (Tarea 6b), pregunta
+        explícitamente si también hay que borrar esa transacción real —
+        Sí llama con eliminar_transaccion_vinculada=True, No con False (el
+        movimiento se borra igual en ambos casos). Si no tiene vínculo,
+        confirmación simple.
+        """
+        def _procesar(eliminar_transaccion: bool):
+            def _handler(e=None) -> None:
+                _cerrar_dialogo()
+                try:
+                    resultado = savings_service.delete_movement(
+                        m["id"], eliminar_transaccion_vinculada=eliminar_transaccion,
+                    )
+                except SavingsError as err:
+                    _mostrar_error(str(err))
+                    return
+                _mostrar_ok(resultado.message)
+                _refrescar()
+            return _handler
+
+        if m["transaccion_id"] is not None:
+            dialogo = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Eliminar movimiento"),
+                content=ft.Text(
+                    "Este movimiento generó una transacción real vinculada "
+                    "(descontó/acreditó una cuenta). ¿Borrar también esa transacción?"
+                ),
+                actions=[
+                    ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
+                    ft.TextButton(content=ft.Text("No, solo el movimiento"), on_click=_procesar(False)),
+                    ft.ElevatedButton(content=ft.Text("Sí, borrar ambos"), on_click=_procesar(True)),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+        else:
+            dialogo = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Eliminar movimiento"),
+                content=ft.Text("¿Eliminar este movimiento? Esta acción no se puede deshacer."),
+                actions=[
+                    ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
+                    ft.ElevatedButton(content=ft.Text("Eliminar"), on_click=_procesar(False)),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+        page.show_dialog(dialogo)
+
     def _fila_movimiento(m: dict) -> ft.Control:
         color_tipo = _COLOR_TIPO_MOVIMIENTO.get(m["tipo"])
         texto_tipo = _TIPOS_MOVIMIENTO_DISPLAY.get(m["tipo"], m["tipo"])
@@ -959,7 +1100,16 @@ def build(
         else:
             contenido_objetivos = ft.Text("Sin asignar", size=TypographyTokens.LABEL_SIZE, italic=True, color=ft.Colors.OUTLINE)
 
-        return ft.Row(
+        boton_eliminar = ft.IconButton(
+            icon=ft.Icons.DELETE_OUTLINE,
+            icon_color=ft.Colors.ERROR,
+            icon_size=18,
+            tooltip="Eliminar",
+            on_click=lambda e, m=m: _eliminar_movimiento(m),
+        )
+        celda_eliminar = ft.Container(width=ANCHO_COL_ELIMINAR, content=boton_eliminar, opacity=0.0)
+
+        fila_contenido = ft.Row(
             [
                 ft.Container(width=ANCHO_COL_FECHA, padding=4, content=_texto_celda(m["fecha"])),
                 ft.Container(width=ANCHO_COL_ACTIVO, padding=4, content=_texto_celda(m["activo_nombre"])),
@@ -976,9 +1126,18 @@ def build(
                 ),
                 ft.Container(width=ANCHO_COL_MONEDA, padding=4, content=_texto_celda(codigo_moneda)),
                 ft.Container(width=ANCHO_COL_OBJETIVOS, padding=4, content=contenido_objetivos),
+                celda_eliminar,
             ],
             spacing=ESPACIADO_FILA,
         )
+
+        def _on_hover_fila(e: ft.ControlEvent) -> None:
+            # Normalizado defensivamente — mismo patrón sin confirmar que
+            # ui/components/registro_transacciones.py (ver su docstring).
+            celda_eliminar.opacity = 1.0 if str(e.data).lower() == "true" else 0.0
+            page.update()
+
+        return ft.Container(content=fila_contenido, on_hover=_on_hover_fila)
 
     def _cargar_movimientos() -> list[dict]:
         fecha_desde = f"{estado['anio']:04d}-{estado['mes']:02d}-01"
@@ -1024,6 +1183,7 @@ def build(
             _header("Monto", ANCHO_COL_MONTO),
             _header("Moneda", ANCHO_COL_MONEDA),
             _header("Objetivo(s)", ANCHO_COL_OBJETIVOS),
+            _header("", ANCHO_COL_ELIMINAR),
         ],
         spacing=ESPACIADO_FILA,
     )

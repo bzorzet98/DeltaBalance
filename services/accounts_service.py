@@ -21,10 +21,17 @@ Purpose:
           docs/DATA_MODEL_DECISIONS.md sección 14) — schema.sql ya lo
           soportaba desde el diseño original vía cuentas_saldos
           (PK (cuenta_id, moneda_id)), esto solo lo expone desde el
-          service. El set de monedas de una cuenta se fija al crearla y
-          después solo puede CRECER (add_currency_to_account()), nunca
-          reducirse — quitar una moneda implicaría decidir qué hacer con
-          su historial de transacciones, fuera de alcance por ahora.
+          service. Declarar moneda al crear la cuenta ya NO es obligatorio
+          (Tarea 6f, docs/PROXIMOS_PASOS.md): create_account() puede
+          crearse sin ninguna, y cada combinación cuenta+moneda se resuelve
+          sola (fila en cuentas_saldos con saldo_inicial_minor = 0) la
+          primera vez que una transacción real la usa, vía
+          TransaccionesRepository.crear() ->
+          CuentasRepository.get_or_create_saldo_inicial(). El set de
+          monedas de una cuenta (declaradas de antemano o resueltas solas)
+          después solo puede CRECER, nunca reducirse — quitar una moneda
+          implicaría decidir qué hacer con su historial de transacciones,
+          fuera de alcance por ahora.
         - cuenta_pago_id vincula una cuenta (ej. una tarjeta de crédito) a
           la cuenta desde la que efectivamente se paga (ej. la caja de
           ahorro asociada). Debe apuntar a una cuenta existente y nunca a
@@ -109,7 +116,11 @@ class AccountsService:
         db  = DatabaseManager()
         svc = AccountsService(db)
 
-        # Cuenta que opera en ARS y USD desde el arranque
+        # Cuenta sin moneda declarada — la más común desde la Tarea 6f: se
+        # resuelve sola la primera vez que una transacción real la usa.
+        svc.create_account(nombre="Broker nuevo", tipo="inversion")
+
+        # Cuenta que ya sabemos de antemano que opera en ARS y USD
         result = svc.create_account(
             nombre="Banco Galicia - Caja de ahorro",
             tipo="debito",
@@ -232,7 +243,7 @@ class AccountsService:
         self,
         nombre: str,
         tipo: str,
-        monedas: list[int],
+        monedas: Optional[list[int]] = None,
         cuenta_pago_id: Optional[int] = None,
         notas: Optional[str] = None,
         color_hex: Optional[str] = None,
@@ -246,9 +257,20 @@ class AccountsService:
         Args:
             nombre:         Account name. Must be unique (schema UNIQUE).
             tipo:           One of 'debito', 'credito', 'efectivo', 'crypto', 'inversion'.
-            monedas:        List of moneda_id the account operates in. At least
-                            one, no duplicates. Structural — see class docstring:
-                            can only grow later, via add_currency_to_account().
+            monedas:        Optional list of moneda_id the account already
+                            knows it operates in. Default None/empty: the
+                            account is created without declaring any
+                            currency yet — no cuentas_saldos row is created
+                            at all (Tarea 6f, docs/PROXIMOS_PASOS.md:
+                            declarar moneda al crear ya no es obligatorio,
+                            se resuelve sola la primera vez que una
+                            transacción real usa la cuenta, vía
+                            TransaccionesRepository.crear() ->
+                            CuentasRepository.get_or_create_saldo_inicial()).
+                            If a non-empty list is passed, behavior is
+                            unchanged from before: no duplicates, and it's
+                            still structural — see class docstring: can only
+                            grow later, via add_currency_to_account().
             cuenta_pago_id: Optional parent account (e.g. a credit card's origin
                             account). Must exist and cannot reference itself.
             notas:          Optional free-text notes.
@@ -260,19 +282,19 @@ class AccountsService:
 
         Returns:
             AccountsResult with the new account's id and its enriched data
-            (data["saldos"] has one entry per moneda_id passed in).
+            (data["saldos"] has one entry per moneda_id passed in, or is
+            empty if monedas was not passed).
 
         Raises:
             AccountsError if nombre is empty.
-            ValueError if tipo is invalid, monedas is empty, monedas has
-                       duplicates, or color_hex doesn't match '#RRGGBB'.
+            ValueError if tipo is invalid, monedas has duplicates, or
+                       color_hex doesn't match '#RRGGBB'.
             CurrencyNotFoundError if any moneda_id does not exist.
             ParentAccountNotFoundError if cuenta_pago_id does not exist.
         """
+        monedas = monedas or []
         if not nombre or not nombre.strip():
             raise AccountsError("El nombre de la cuenta no puede estar vacío.")
-        if not monedas:
-            raise ValueError("Hay que indicar al menos una moneda.")
         if len(monedas) != len(set(monedas)):
             raise ValueError("La lista de monedas no puede tener ids repetidos.")
 
@@ -286,7 +308,7 @@ class AccountsService:
             account_id = self._repo.crear(
                 nombre=nombre.strip(),
                 tipo=tipo_validado,
-                moneda_codigo=monedas_rows[0]["codigo"],
+                moneda_codigo=monedas_rows[0]["codigo"] if monedas_rows else None,
                 saldo_inicial=0.0,
                 cuenta_pago_id=cuenta_pago_id,
                 notas=notas,
