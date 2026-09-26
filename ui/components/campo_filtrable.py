@@ -106,10 +106,10 @@ from typing import Callable, Optional
 import flet as ft
 
 # --- Configuración de layout ---
-MAX_SUGERENCIAS = 6
+MAX_SUGERENCIAS = 50  # mostramos todas las que matcheen, el scroll las contiene
 ALTURA_ITEM_SUGERENCIA = 36
+ALTURA_MAX_LISTA = 220  # ~6 ítems visibles, el resto con scroll
 BLUR_DELAY_SEGUNDOS = 0.2
-
 
 class CampoFiltrable:
     """
@@ -185,7 +185,12 @@ class CampoFiltrable:
         self._lista_sugerencias = ft.Column(spacing=0)
         self._contenedor_sugerencias = ft.Container(
             width=width,
-            content=self._lista_sugerencias,
+            height=ALTURA_MAX_LISTA,
+            content=ft.Column(
+                [self._lista_sugerencias],
+                scroll=ft.ScrollMode.AUTO,
+                spacing=0,
+            ),
             border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=4,
             bgcolor=ft.Colors.SURFACE,

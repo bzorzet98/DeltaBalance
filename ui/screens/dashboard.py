@@ -229,7 +229,7 @@ def build(
 
     return ft.Column(
         [
-            ft.Text("Dashboard", size=TypographyTokens.PAGE_TITLE_SIZE, weight=TypographyTokens.PAGE_TITLE_WEIGHT),
+            ft.Text("REGISTRO", size=TypographyTokens.PAGE_TITLE_SIZE, weight=TypographyTokens.PAGE_TITLE_WEIGHT),
             ft.Container(height=8),
             contenedor_datos,
         ],

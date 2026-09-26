@@ -528,11 +528,11 @@ def build(
             actions_alignment=ft.MainAxisAlignment.END,
         )
         page.show_dialog(dialogo)
-
     def _dialogo_editar_deuda(d: dict) -> None:
-        campo_persona = ft.TextField(label="Persona", value=d["entidad_persona"], width=300)
-        campo_concepto = ft.TextField(label="Concepto", value=d["concepto"] or "", width=300)
-        campo_notas = ft.TextField(label="Notas", value=d["notas"] or "", width=300)
+        activa = d["estado"] == "activa"
+        campo_persona = ft.TextField(label="Persona", value=d["entidad_persona"], width=300, disabled=not activa)
+        campo_concepto = ft.TextField(label="Concepto", value=d["concepto"] or "", width=300, disabled=not activa)
+        campo_notas = ft.TextField(label="Notas", value=d["notas"] or "", width=300, disabled=not activa)
 
         def _confirmar(e=None) -> None:
             try:
@@ -546,16 +546,37 @@ def build(
             _mostrar_ok("Deuda actualizada.")
             _refrescar_vista_deudas()
 
+        def _ir_a_pago(e=None) -> None:
+            _cerrar_dialogo()
+            _dialogo_registrar_pago_deuda(d)
+
+        def _ir_a_incobrable(e=None) -> None:
+            _cerrar_dialogo()
+            _dialogo_incobrable(d)
+
+        acciones_extra = []
+        if activa:
+            acciones_extra = [
+                ft.TextButton(content=ft.Text("Registrar pago"), on_click=_ir_a_pago),
+                ft.TextButton(
+                    content=ft.Text("Marcar incobrable", color=ft.Colors.ERROR),
+                    on_click=_ir_a_incobrable,
+                ),
+            ]
+
         dialogo = ft.AlertDialog(
             modal=True,
             title=ft.Text("Editar deuda"),
             content=ft.Container(
                 width=_ANCHO_DIALOGO,
-                content=ft.Column([campo_persona, campo_concepto, campo_notas], tight=True, spacing=10),
+                content=ft.Column(
+                    [campo_persona, campo_concepto, campo_notas] + acciones_extra,
+                    tight=True, spacing=10,
+                ),
             ),
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Guardar"), on_click=_confirmar),
+                ft.ElevatedButton(content=ft.Text("Guardar"), on_click=_confirmar, disabled=not activa),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -631,10 +652,19 @@ def build(
 
         botones_accion = ft.Row(
             [
-                ft.IconButton(icon=ft.Icons.EDIT_OUTLINED, icon_size=16, tooltip="Editar", disabled=not activa, on_click=lambda e, d=d: _dialogo_editar_deuda(d)),
-                ft.IconButton(icon=ft.Icons.PAYMENTS_OUTLINED, icon_size=16, tooltip="Registrar pago", disabled=not activa, on_click=lambda e, d=d: _dialogo_registrar_pago_deuda(d)),
-                ft.IconButton(icon=ft.Icons.MONEY_OFF, icon_size=16, tooltip="Marcar incobrable", disabled=not activa, on_click=lambda e, d=d: _dialogo_incobrable(d)),
-                ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_size=16, icon_color=ft.Colors.ERROR, tooltip="Eliminar", on_click=lambda e, d=d: _confirmar_eliminar_deuda(d)),
+                ft.IconButton(
+                    icon=ft.Icons.EDIT_OUTLINED,
+                    icon_size=16,
+                    tooltip="Editar / Registrar pago",
+                    on_click=lambda e, d=d: _dialogo_editar_deuda(d),
+                ),
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE,
+                    icon_size=16,
+                    icon_color=ft.Colors.ERROR,
+                    tooltip="Eliminar",
+                    on_click=lambda e, d=d: _confirmar_eliminar_deuda(d),
+                ),
             ],
             spacing=0,
         )
@@ -648,7 +678,7 @@ def build(
                 ft.Container(width=_ANCHO_MONTO, padding=4, content=_texto_celda(amount_display(d["monto_pendiente_minor"], d["decimales"], ""), weight=TypographyTokens.TABLE_CONTENT_WEIGHT, color=color_monto)),
                 ft.Container(width=_ANCHO_FECHA, padding=4, content=_texto_celda(d["fecha_inicio"])),
                 ft.Container(width=_ANCHO_ESTADO, padding=4, content=_texto_celda(d["estado"])),
-                ft.Container(width=_ANCHO_ACCIONES, padding=4, content=botones_accion),
+                ft.Container(width=90, padding=4, content=botones_accion),
             ],
             spacing=_ESPACIADO_FILA,
         )
@@ -675,7 +705,7 @@ def build(
         [
             _header("Persona", _ANCHO_PERSONA), _header("Concepto", _ANCHO_CONCEPTO), _header("Tipo", _ANCHO_TIPO),
             _header("Monto original", _ANCHO_MONTO), _header("Pendiente", _ANCHO_MONTO), _header("Fecha", _ANCHO_FECHA),
-            _header("Estado", _ANCHO_ESTADO), _header("", _ANCHO_ACCIONES),
+            _header("Estado", _ANCHO_ESTADO), _header("", 90),
         ],
         spacing=_ESPACIADO_FILA,
     )
@@ -752,6 +782,11 @@ def build(
             usuario_local = await obtener_usuario_local(page) or ""
 
             async def _tras_crear_o_unirse() -> None:
+                # Forzamos la vista a "compartidos" — el usuario terminó de
+                # configurar su hogar, tiene que ver esa vista, no "deudas"
+                # (que es el default inicial y nunca cambió porque el usuario
+                # llegó acá sin pasar por el toggle).
+                vista["activa"] = "compartidos"
                 await _refrescar_todo()
 
             abrir_dialogo_sin_hogar(page, shared_expenses_service, usuario_local, on_listo=_tras_crear_o_unirse)

@@ -50,6 +50,9 @@ from services.presupuestos_service import PresupuestosService
 from services.savings_service import SavingsService
 from services.shared_expenses_service import SharedExpensesService
 from services.transaction_service import TransactionService
+from services.ingresos_proyectados_service import IngresosProyectadosService
+
+from ui.screens import ingresos as ingresos_screen
 from ui.screens import ahorros as ahorros_screen
 from ui.screens import categorias as categorias_screen
 from ui.screens import compras_cuotas as compras_cuotas_screen
@@ -79,7 +82,7 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     presupuestos_service = PresupuestosService(db)
     savings_service = SavingsService(db)
     debts_service = DebtsService(db)
-
+    ingresos_service = IngresosProyectadosService(db)
     content_area = ft.Container(expand=True, padding=24)
 
     def mostrar_dashboard(e=None) -> None:
@@ -95,7 +98,15 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             on_ir_a_cuentas=mostrar_cuentas,
         )
         page.update()
-
+    def mostrar_ingresos(e=None) -> None:
+        content_area.content = ingresos_screen.build(
+            page,
+            ingresos_service,
+            accounts_service,
+            on_volver=mostrar_dashboard,
+        )
+        page.update()
+        
     def mostrar_compras_cuotas(e=None) -> None:
         content_area.content = compras_cuotas_screen.build(
             page,
@@ -212,11 +223,6 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         )
 
     def _contenido_sidebar(expandido: bool) -> ft.Control:
-        """
-        `expandido` decide SOLO qué se dibuja (labels vs. íconos) — puede
-        venir del estado fijado (estado_sidebar) o de un preview de hover
-        con la fijación en colapsado, ver _on_hover_sidebar().
-        """
         encabezado = (
             ft.Container(
                 padding=ft.Padding.symmetric(horizontal=12, vertical=8),
@@ -232,16 +238,12 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
 
         controles: list[ft.Control] = [
             encabezado,
-            _item_nav("Dashboard", ft.Icons.DASHBOARD, mostrar_dashboard, expandido),
-            _item_nav("Compras en cuotas", ft.Icons.CREDIT_CARD, mostrar_compras_cuotas, expandido),
-            # HANDSHAKE (no PEOPLE — ya usado por el ícono "Compartir" de
-            # filas del Registro/Compras en cuotas, evita confundirlos).
-            _item_nav("Deudas y compartidos", ft.Icons.HANDSHAKE, mostrar_deudas_y_compartidos, expandido),
-            _item_nav("Presupuestos", ft.Icons.SAVINGS, mostrar_presupuestos, expandido),
-            _item_nav("Estadísticas", ft.Icons.BAR_CHART, mostrar_estadisticas, expandido),
-            # ACCOUNT_BALANCE_WALLET (no SAVINGS — ya usado por "Presupuestos"
-            # arriba, evita dos ítems con el mismo ícono).
-            _item_nav("Ahorros", ft.Icons.ACCOUNT_BALANCE_WALLET, mostrar_ahorros, expandido),
+            _item_nav("REGISTRO", ft.Icons.RECEIPT_LONG, mostrar_dashboard, expandido),
+            _item_nav("INGRESOS", ft.Icons.TRENDING_UP, mostrar_ingresos, expandido),
+            _item_nav("PRESUPUESTOS", ft.Icons.SAVINGS, mostrar_presupuestos, expandido),
+            _item_nav("COMPRAS EN CUOTAS", ft.Icons.CREDIT_CARD, mostrar_compras_cuotas, expandido),
+            _item_nav("DEUDAS Y COMPARTIDOS", ft.Icons.HANDSHAKE, mostrar_deudas_y_compartidos, expandido),
+            _item_nav("ESTADÍSTICAS", ft.Icons.BAR_CHART, mostrar_estadisticas, expandido),
             ft.Container(expand=True),
             ft.Divider(),
         ]
@@ -254,8 +256,8 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
                     ),
                 )
             )
-        controles.append(_item_nav("Cuentas", ft.Icons.ACCOUNT_BALANCE, mostrar_cuentas, expandido))
-        controles.append(_item_nav("Categorías", ft.Icons.CATEGORY, mostrar_categorias, expandido))
+        controles.append(_item_nav("CUENTAS", ft.Icons.ACCOUNT_BALANCE, mostrar_cuentas, expandido))
+        controles.append(_item_nav("CATEGORÍAS", ft.Icons.CATEGORY, mostrar_categorias, expandido))
         controles.append(_boton_toggle())
 
         return ft.Column(controles, expand=True)
