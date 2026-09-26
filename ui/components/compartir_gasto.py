@@ -83,6 +83,7 @@ def build_icon(
     # ------------------------------------------------------------
     def _abrir_cargar_gasto(usuario_local: str, mis_hogares: list[dict]) -> None:
         hogar_seleccionado = {"id": mis_hogares[0]["hogar_id"]}
+        es_ingreso = transaccion["tipo_movimiento"] == "ingreso"
 
         def _sugerencia(hogar_id: int) -> tuple[Optional[float], str]:
             otros = [
@@ -97,22 +98,16 @@ def build_icon(
                 return None, f"'{otro['usuario_local']}' no tiene un coeficiente default configurado."
             return sugerido, f"Sugerido según el default de '{otro['usuario_local']}'."
 
-        sugerido_inicial, ayuda_inicial = _sugerencia(hogar_seleccionado["id"])
-        campo_coeficiente = ft.TextField(
-            label="Coeficiente (%) del otro miembro",
-            value=str(sugerido_inicial) if sugerido_inicial is not None else "",
-            helper_text=ayuda_inicial,
-            autofocus=(len(mis_hogares) == 1),
-        )
-
         def _on_select_hogar(e: ft.ControlEvent) -> None:
             hogar_seleccionado["id"] = int(dropdown_hogar.value)
-            sugerido, ayuda = _sugerencia(hogar_seleccionado["id"])
-            campo_coeficiente.value = str(sugerido) if sugerido is not None else ""
-            campo_coeficiente.helper_text = ayuda
+            if not es_ingreso:
+                sugerido, ayuda = _sugerencia(hogar_seleccionado["id"])
+                campo_coeficiente.value = str(sugerido / 100) if sugerido is not None else ""
+                campo_coeficiente.hint_text = ayuda
             page.update()
 
         controles: list[ft.Control] = []
+
         if len(mis_hogares) > 1:
             dropdown_hogar = ft.Dropdown(
                 label="Hogar",
@@ -125,14 +120,42 @@ def build_icon(
                 autofocus=True,
             )
             controles.append(dropdown_hogar)
-        controles.append(campo_coeficiente)
+
+        if es_ingreso:
+            controles.append(
+                ft.Text(
+                    "Este ingreso se registrará como pago recibido (coeficiente 100%).",
+                    color=ft.Colors.OUTLINE,
+                    size=12,
+                )
+            )
+            campo_coeficiente = None
+        else:
+            sugerido_inicial, ayuda_inicial = _sugerencia(hogar_seleccionado["id"])
+            campo_coeficiente = ft.TextField(
+                label="Coeficiente del otro miembro (0 a 1)",
+                value=str(sugerido_inicial / 100) if sugerido_inicial is not None else "",
+                hint_text=ayuda_inicial,
+                autofocus=(len(mis_hogares) == 1),
+            )
+            controles.append(campo_coeficiente)
 
         def _confirmar(e: ft.ControlEvent) -> None:
-            try:
-                coeficiente = float((campo_coeficiente.value or "").strip().replace(",", "."))
-            except ValueError:
-                _mostrar_mensaje("El coeficiente no es un número válido.", es_error=True)
-                return
+            if es_ingreso:
+                coeficiente = 100.0
+            else:
+                try:
+                    coeficiente = float((campo_coeficiente.value or "").strip().replace(",", "."))
+                except ValueError:
+                    _mostrar_mensaje("El coeficiente no es un número válido.", es_error=True)
+                    return
+                if coeficiente <= 0 or coeficiente > 1:
+                    _mostrar_mensaje("El coeficiente debe estar entre 0 y 1 (ej: 0.5 para 50%).", es_error=True)
+                    return
+                coeficiente = coeficiente * 100
+
+            monto_base = -transaccion["monto_minor"] if es_ingreso else transaccion["monto_minor"]
+
             try:
                 resultado = shared_expenses_service.add_shared_expense(
                     hogar_id=hogar_seleccionado["id"],
@@ -140,7 +163,7 @@ def build_icon(
                     origen_tipo="transaccion",
                     origen_id=transaccion["id"],
                     categoria_id=transaccion["categoria_id"],
-                    monto_base_minor=transaccion["monto_minor"],
+                    monto_base_minor=monto_base,
                     coeficiente_deuda=coeficiente,
                     fecha=transaccion["fecha"],
                 )

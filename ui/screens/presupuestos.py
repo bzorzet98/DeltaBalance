@@ -74,14 +74,14 @@ DashboardService/AccountsService (esta última solo para
 list_currencies()) — nunca repositories/ ni db/ directo (CLAUDE.md §2/§3).
 
 --- Parte A (pendiente de una tarea anterior que no llegó a correr):
-categorías mostradas por default + "+ Agregar categoría" ---
+categorías mostradas por default + "Agregar presupuesto" ---
 
 Antes de esta tarea, la grilla mostraba SIEMPRE las ~14 categorías de
 egreso completas del catálogo. Ahora, por default, solo se muestran las
 categorías que tienen al menos una fila en `presupuestos` en CUALQUIER
 período (PresupuestosService.list_budgeted_category_ids(), sin filtrar por
 mes/año — ver PresupuestosRepository.listar_categoria_ids_con_presupuesto()).
-El control "+ Agregar categoría" (junto a "Copiar recurrentes del mes
+El control "Agregar presupuesto" (junto a "Copiar recurrentes del mes
 anterior") abre un AlertDialog con un CampoFiltrable de las categorías de
 egreso que TODAVÍA no están en la lista visible; al confirmar, su id se
 agrega a `estado["categorias_extra"]` (un set, vive en `estado` para
@@ -149,7 +149,7 @@ def build(
     on_volver: Optional[Callable[[], None]] = None,
 ) -> ft.Control:
     hoy = date.today()
-    # categorias_extra: ids agregados vía "+ Agregar categoría" en esta
+    # categorias_extra: ids agregados vía "Agregar presupuesto" en esta
     # sesión que todavía podrían no tener ningún presupuesto confirmado —
     # ver docstring del módulo, Parte A.
     estado = {"mes": hoy.month, "anio": hoy.year, "categorias_extra": set()}
@@ -185,7 +185,7 @@ def build(
     def _filas_de_datos(mes: int, anio: int) -> list[dict]:
         # Parte A: por default, solo categorías con al menos un presupuesto
         # cargado alguna vez (cualquier período) + las agregadas a mano en
-        # esta sesión vía "+ Agregar categoría" — ver docstring del módulo.
+        # esta sesión vía "Agregar presupuesto" — ver docstring del módulo.
         todas_las_de_egreso = categorias_service.list_categories(tipo="egreso")
         ids_con_presupuesto = set(presupuestos_service.list_budgeted_category_ids())
         ids_visibles = ids_con_presupuesto | estado["categorias_extra"]
@@ -408,7 +408,7 @@ def build(
         _refrescar()
 
     # ------------------------------------------------------------
-    # "+ AGREGAR CATEGORÍA" (Parte A) — dialog con CampoFiltrable de las
+    # "Agregar presupuesto" (Parte A) — dialog con CampoFiltrable de las
     # categorías de egreso que todavía no están en la lista visible.
     # ------------------------------------------------------------
 
@@ -447,7 +447,7 @@ def build(
 
         dialogo = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Agregar categoría a presupuestar"),
+            title=ft.Text("Agregar presupuesto a presupuestar"),
             content=ft.Container(width=ANCHO_DIALOGO_AGREGAR_CATEGORIA, content=campo_nueva_categoria.control),
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
@@ -465,7 +465,7 @@ def build(
     def _refrescar() -> None:
         selector = selector_periodo.build(estado, _refrescar)
         boton_agregar_categoria = ft.ElevatedButton(
-            content=ft.Text("+ Agregar categoría"),
+            content=ft.Text("Agregar presupuesto"),
             icon=ft.Icons.ADD,
             on_click=_abrir_agregar_categoria,
         )
@@ -500,7 +500,7 @@ def build(
         else:
             filas_grilla = [
                 ft.Text(
-                    "Todavía no presupuestaste ninguna categoría — usá \"+ Agregar categoría\" para empezar.",
+                    "Todavía no presupuestaste ninguna categoría — usá \"Agregar presupuesto\" para empezar.",
                     italic=True, color=ft.Colors.OUTLINE,
                 )
             ]

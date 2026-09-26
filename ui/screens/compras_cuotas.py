@@ -608,7 +608,7 @@ def build(
                 page.update()
 
         campo_concepto_alta = ft.TextField(
-            width=_ANCHO_CONCEPTO, label="Comercio / concepto", dense=True,
+            width=_ANCHO_CONCEPTO, label="Concepto", dense=True,
             text_size=TypographyTokens.TABLE_CONTENT_SIZE,
         )
         campo_categoria_alta = CampoFiltrable(

@@ -283,7 +283,7 @@ from ui.components import barra_filtros, compartir_gasto, dialogo_compra_ahorro
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
 from ui.components.color_chip import color_chip
-from ui.theme.tokens import SharedFieldText, TypographyTokens
+from ui.theme.tokens import LayoutTokens, SharedFieldText, TypographyTokens
 from utils.money import amount_display, amount_to_minor
 
 # --- Configuración de layout ---
@@ -388,7 +388,6 @@ def build(
             overflow=ft.TextOverflow.ELLIPSIS,
             tooltip=texto,
         )
-
     cuentas_activas = _cuentas_no_credito(accounts_service.list_accounts(solo_activas=True))
     cuentas_todas = accounts_service.list_accounts(solo_activas=False)
     cuentas_todas_no_credito = _cuentas_no_credito(cuentas_todas)
@@ -970,7 +969,7 @@ def build(
                 content=_texto_celda(texto_mostrado, color=color_texto, weight=weight),
                 on_click=lambda e: _editar(),
                 ink=True,
-                padding=4,
+                padding=LayoutTokens.PADDING_CELDA,
             )
             page.update()
 
@@ -1079,7 +1078,11 @@ def build(
         para Categoría (Banco no tiene edición inline en esta tabla, ver
         docstring del módulo).
         """
-        contenedor = ft.Container(width=width, padding=4)
+        contenedor = ft.Container(
+            width=width,
+            height=LayoutTokens.ALTURA_FILA_TABLA,
+            padding=LayoutTokens.PADDING_CELDA,
+        )
 
         def _mostrar() -> None:
             contenedor.content = ft.Container(
@@ -1225,17 +1228,69 @@ def build(
         )
 
         cuenta_de_la_fila = cuentas_por_id.get(t["cuenta_id"])
-        celda_banco = ft.Container(
+
+        def _confirmar_banco(nuevo_id: str) -> None:
+            _guardar_campo(account_id=int(nuevo_id))
+
+        opciones_banco = [(str(c["id"]), c["nombre"]) for c in cuentas_todas_no_credito]
+
+        # Texto mostrado incluye el chip de color — en modo lectura
+        # se arma un Row con chip + nombre, igual que antes.
+        def _texto_banco_con_chip() -> ft.Control:
+            return ft.Container(
+                height=LayoutTokens.ALTURA_FILA_TABLA,
+                content=ft.Row(
+                    [
+                        color_chip(cuenta_de_la_fila["color_hex"] if cuenta_de_la_fila else None),
+                        ft.Text(
+                            t["account_name"],
+                            size=TypographyTokens.TABLE_CONTENT_SIZE,
+                            max_lines=1,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
+                    ],
+                    spacing=6,
+                ),
+                alignment=ft.Alignment.CENTER_LEFT,
+            )
+
+        contenedor_banco = ft.Container(
             width=ANCHO_COL_BANCO,
-            padding=4,
-            content=ft.Row(
-                [
-                    color_chip(cuenta_de_la_fila["color_hex"] if cuenta_de_la_fila else None),
-                    _texto_celda(t["account_name"]),
-                ],
-                spacing=6,
-            ),
+            padding=LayoutTokens.PADDING_CELDA,
         )
+
+        def _mostrar_banco() -> None:
+            contenedor_banco.content = ft.Container(
+                content=_texto_banco_con_chip(),
+                on_click=lambda e: _editar_banco(),
+                ink=True,
+            )
+            page.update()
+
+        def _editar_banco() -> None:
+            def _on_confirmar_banco(id_sel: Optional[str]) -> None:
+                if id_sel is None:
+                    return
+                try:
+                    _confirmar_banco(id_sel)
+                except (TransactionError, ValueError) as err:
+                    _mostrar_error(str(err))
+                    _mostrar_banco()
+
+            campo = CampoFiltrable(
+                page,
+                opciones_banco,
+                on_seleccionar=_on_confirmar_banco,
+                valor_inicial_id=str(t["cuenta_id"]),
+                width=ANCHO_COL_BANCO,
+                text_size=TypographyTokens.FILTER_SIZE,
+                autofocus=True,
+            )
+            contenedor_banco.content = campo.control
+            page.update()
+
+        _mostrar_banco()
+        celda_banco = contenedor_banco
 
         def _confirmar_categoria(nuevo_id: str) -> None:
             _guardar_campo(category_id=int(nuevo_id))

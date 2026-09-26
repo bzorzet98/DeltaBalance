@@ -623,6 +623,7 @@ class TransactionService:
         amount:         Optional[float] = None,
         currency_code:  Optional[str]   = None,
         category_id:    Optional[int]   = None,
+        account_id:     Optional[int]   = None,
         tag:            Optional[str]   = None,
         notes:          Optional[str]   = None,
     ) -> TransactionResult:
@@ -675,6 +676,14 @@ class TransactionService:
             self._get_category(category_id)  # validate existence
             campos_repo["categoria_id"] = category_id
 
+        if account_id is not None:
+            cuenta = self._db.fetchone(
+                "SELECT id FROM cuentas WHERE id = ? AND activa = 1;", (account_id,)
+            )
+            if cuenta is None:
+                raise AccountNotFoundError(f"Cuenta id={account_id} no encontrada o inactiva.")
+            campos_repo["cuenta_id"] = account_id
+        
         if amount is not None and currency_code is not None:
             self._validate_amount(amount)
             currency = self._get_currency(currency_code)

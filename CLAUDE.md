@@ -40,6 +40,9 @@ gana, salvo que el usuario diga explícitamente lo contrario en ese prompt.
 - **Excepciones propias por dominio**, siguiendo el patrón ya usado en
   `services/debts_service.py` y `services/fees_service.py` (una clase base de error del
   dominio + subclases específicas).
+- **Todo texto visible al usuario en MAYÚSCULAS.** Labels, headers de tabla, opciones de
+  dropdown, títulos de sección, botones, tooltips — todo en mayúsculas. Aplicar
+  `.upper()` o escribir directamente en mayúsculas en los strings de UI.
 
 ## 2. Qué es "motor de datos" vs. qué es "de aplicación"
 
@@ -84,9 +87,7 @@ Las correcciones típicas son errores de tipeo o de cuenta mal vinculada, hechas
 pocos días de la carga — no reescritura de historial arbitrario. Aplicar esta regla en
 todos los servicios nuevos y al tocar los existentes:
 
-- **Sin dependencias con estado propio generado** (ninguna `cuota_credito` vencida o
-  pagada, ningún `gasto_compartido` sincronizado, ningún `resumen_tarjeta` cerrado) →
-  editar y borrar directo, sin fricción.
+- **Sin dependencias con estado propio generado** → editar y borrar directo, sin fricción.
 - **Con dependencias con estado propio generado** → bloquear el edit/delete directo.
   La corrección se hace con un movimiento de ajuste explícito, nunca reescribiendo en
   silencio un registro del que ya dependen otras filas con estado.
@@ -98,57 +99,121 @@ todos los servicios nuevos y al tocar los existentes:
 En vez de tests automatizados, cada script de `verify/` es un programa Python que:
 
 1. Se puede correr a mano (`python verify/verify_x.py`) — vos no lo ejecutás, el usuario sí.
-2. Arma un escenario realista usando el motor de datos real (contra una copia de la DB
-   o una DB temporal, nunca contra `data/deltabalance.db` directamente).
+2. Arma un escenario realista usando el motor de datos real contra una DB temporal,
+   nunca contra `data/deltabalance.db` directamente.
 3. Imprime en consola, de forma legible, qué se esperaba vs. qué se obtuvo, con ✅/❌.
 4. No usa `assert` silencioso ni pytest — es un script narrativo pensado para que una
    persona lo lea y entienda qué se está probando y por qué.
 
-Un script de `verify/` por servicio o por funcionalidad significativa. Nombre:
-`verify_<dominio>.py` (ej. `verify_gastos_compartidos.py`).
-
 ## 6. Migración de datos viejos
 
 Existe un sistema anterior (planillas Excel) con años de registros. La migración en sí
-es una fase futura — no la implementes salvo que se pida explícitamente. Sí tené en
-cuenta, al diseñar cualquier tabla o servicio nuevo, que en algún momento un script en
-`migration/` va a necesitar insertar datos históricos masivamente. Por eso:
-
-- Todo alta debe poder hacerse también con fecha pasada (no asumir `fecha = hoy`).
-- Las tablas que agreguemos deberían poder poblarse por lote sin depender de que el
-  usuario haga clicks en una UI.
-- Ver `docs/MIGRATION_NOTES.md` para más contexto de lo que se sabe del sistema viejo.
+es una fase futura — no la implementes salvo que se pida explícitamente. Ver
+`docs/MIGRATION_NOTES.md` para más contexto.
 
 ## 7. Antes de terminar cualquier tarea
 
 - Revisá que no dejaste código duplicado entre un service nuevo y uno existente.
 - Si tocaste `schema.sql`, actualizá `docs/DATA_MODEL_DECISIONS.md` en la misma tarea.
-- Si agregaste un service nuevo, crea (o dejá pedido explícitamente) su script en
-  `verify/`.
+- Si agregaste un service nuevo, crea (o dejá pedido explícitamente) su script en `verify/`.
 - No toques `ui/` a menos que el prompt sea específicamente sobre UI.
 
 ## 8. Convenciones de layout en `ui/`
 
-Toda pantalla en `ui/screens/` (y cualquier componente en `ui/components/`) debe
-definir TODOS sus valores de layout que no vengan de `theme/tokens.py` (anchos de
-columna en píxeles, alturas fijas, cantidades por default, límites de paginación,
-etc.) como constantes nombradas en MAYÚSCULAS al principio del archivo, agrupadas
-bajo un comentario `# --- Configuración de layout ---` o similar. Nada de números
-sueltos en medio del código de construcción de widgets. Esto es además de (no en
-reemplazo de) usar los tokens de `theme/tokens.py` para colores/spacing/tipografía
-genéricos — es específicamente para los valores particulares de esa pantalla.
+Toda pantalla en `ui/screens/` y componente en `ui/components/` debe:
 
-Cualquier valor usado para decidir layout según plataforma o tamaño de pantalla
-(breakpoints de `page.width`, anchos de sidebar expandida/colapsada, umbrales de
-responsive, relaciones de aspecto) debe declararse como variable global al
-principio del archivo donde se usa — mismo criterio ya vigente para números
-mágicos en general, pero remarcado explícitamente para esto porque estos valores
-van a necesitar ajustarse distinto entre web, Android y desktop, y tienen que ser
-fáciles de encontrar y tocar sin buscar en medio del código.
+- Definir TODOS sus valores de layout propios como constantes en MAYÚSCULAS al principio
+  del archivo bajo `# --- Configuración de layout ---`.
+- Importar y usar `LayoutTokens` y `TypographyTokens` de `ui/theme/tokens.py` para
+  valores compartidos entre pantallas.
+- **Nunca usar números mágicos** en medio del código de widgets.
+
+### Tokens disponibles en `ui/theme/tokens.py`
+
+```python
+class TypographyTokens:
+    PAGE_TITLE_SIZE / PAGE_TITLE_WEIGHT       # título de página
+    SECTION_TITLE_SIZE / SECTION_TITLE_WEIGHT # título de sección/tarjeta
+    TABLE_HEADER_SIZE / TABLE_HEADER_WEIGHT   # header de columna de tabla
+    TABLE_CONTENT_SIZE / TABLE_CONTENT_WEIGHT / TABLE_CONTENT_WEIGHT_REGULAR
+    METADATA_SIZE / LABEL_SIZE
+    FILTER_SIZE                               # controles de barra de filtros
+
+class LayoutTokens:
+    ALTURA_FILA_TABLA = 36   # alto fijo de cada fila — lectura Y edición
+    PADDING_CELDA = 4        # padding interno de celda en modo lectura
+    CELDA_DENSE = True       # dense=True en todos los TextField/Dropdown inline
+```
 
 ## 9. Campos de Monto
 
-Todo campo que reciba un monto en cualquier pantalla nueva o existente debe usar
-`ui/components/campo_monto.py` (`CampoMonto`), nunca un `TextField` crudo con
-validación numérica manual — así la calculadora de fórmulas queda disponible de
-forma consistente en toda la app sin tener que pedirlo pantalla por pantalla.
+Todo campo que reciba un monto debe usar `ui/components/campo_monto.py` (`CampoMonto`),
+nunca un `TextField` crudo con validación numérica manual. `CampoMonto` soporta
+fórmulas con `=` (ej. `=950000+50000`) — esto debe estar disponible en **todos** los
+campos de monto de la app sin excepción. Usar siempre `persistir_formula=True` cuando
+el campo muestra un valor ya guardado que el usuario puede querer ajustar con una fórmula.
+
+## 10. Patrón de celda editable inline
+
+El patrón estándar de edición en tablas es **click para editar**, igual en todas las
+pantallas. Una celda en modo lectura muestra texto plano; al hacer click se convierte en
+un campo editable; al confirmar (Enter o blur) vuelve a modo lectura. La altura de la
+celda NO cambia entre modos — usar `LayoutTokens.ALTURA_FILA_TABLA` en el contenedor.
+
+```python
+# Estructura estándar de celda editable
+contenedor = ft.Container(
+    width=ANCHO_COL_X,
+    height=LayoutTokens.ALTURA_FILA_TABLA,
+    padding=LayoutTokens.PADDING_CELDA,
+)
+
+def _mostrar() -> None:
+    contenedor.content = ft.Container(
+        content=_texto_celda(texto_actual),
+        on_click=lambda e: _editar(),
+        ink=True,
+        padding=LayoutTokens.PADDING_CELDA,
+    )
+    page.update()
+
+def _editar() -> None:
+    campo = ft.TextField(dense=LayoutTokens.CELDA_DENSE, autofocus=True, ...)
+    # o CampoMonto / CampoFiltrable según el tipo de dato
+    contenedor.content = campo
+    page.update()
+
+_mostrar()
+```
+
+Para campos de monto, usar `CampoMonto` con `persistir_formula=True`.
+Para campos de selección (banco, categoría), usar `CampoFiltrable`.
+Para dropdowns simples (moneda), usar `ft.Dropdown(dense=True)`.
+
+## 11. `sqlite3.Row` — nunca usar `.get()`
+
+`sqlite3.Row` NO tiene método `.get()`. Para acceder con valor default usar:
+
+```python
+# MAL
+valor = fila.get("campo", "default")
+
+# BIEN
+valor = fila["campo"] if "campo" in fila.keys() else "default"
+
+# O convertir a dict primero si se va a acceder muchas veces
+fila_dict = dict(fila)
+valor = fila_dict.get("campo", "default")
+```
+
+Siempre que un service o repositorio devuelva `sqlite3.Row`, convertir a `dict` con
+`dict(fila)` antes de pasarlo a la UI para evitar este error.
+
+## 12. Persistencia local del usuario
+
+`ft.SharedPreferences` **no persiste entre sesiones** en Flet 0.86.5 desktop. La
+persistencia local del nombre de usuario y hogar se hace con un archivo JSON en
+`Path.cwd() / ".deltabalance_prefs.json"` vía las funciones `obtener_usuario_local()`
+y `guardar_usuario_local()` en `ui/components/usuario_local.py`. No usar
+`page.client_storage` ni `ft.SharedPreferences` para ningún dato que deba sobrevivir
+al reinicio de la app.
