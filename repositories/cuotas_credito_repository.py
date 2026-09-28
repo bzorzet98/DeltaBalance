@@ -42,6 +42,21 @@ FeesService ningún método que edite libremente cuotas_credito más allá de
 estas tres transiciones puntuales — agregar uno ahora sería anticiparse a
 una necesidad que no está confirmada (CLAUDE.md: no inventar convenciones
 que no estén respaldadas por el código real).
+
+Escrituras fuera de las transiciones de estado (ventana de corrección
+temprana, CLAUDE.md §4 — el service decide si la corrección está
+permitida y calcula los valores nuevos, estos métodos solo escriben):
+    - actualizar_monto_por_compra(): BLOQUE por compra_id, reescribe
+      monto_cuota_minor de todas las cuotas de una compra que estén en un
+      estado dado. Cubre FeesService.update_purchase() al corregir el
+      monto total.
+    - eliminar_por_compra(): DELETE físico de todas las cuotas de una
+      compra, para que el service las regenere con crear_lote() en la
+      misma transacción. Cubre FeesService.update_purchase_cuotas() (otra
+      cantidad de cuotas) y update_purchase() cuando la fecha cambia de
+      mes (el cronograma se corre).
+Siguen sin ser un actualizar() genérico a propósito — mismo criterio de
+arriba.
 """
 
 import sqlite3
@@ -245,6 +260,73 @@ class CuotasCreditoRepository:
             "WHERE compra_id = ? AND estado = ?;"
         )
         params = (nuevo_estado, notas, compra_id, estado_actual)
+        if conn is not None:
+            return conn.execute(sql, params).rowcount
+        cur = self._db.conn.execute(sql, params)
+        self._db.conn.commit()
+        return cur.rowcount
+
+    # ----------------------------------------------------------
+    # MONTO (bloque por compra)
+    # ----------------------------------------------------------
+
+    def actualizar_monto_por_compra(
+        self,
+        compra_id: int,
+        estado_actual: str,
+        monto_cuota_minor: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> int:
+        """
+        Escritura en BLOQUE: todas las cuotas de `compra_id` que estén en
+        `estado_actual` pasan a tener `monto_cuota_minor`. Cubre
+        FeesService.update_purchase() al corregir el monto total de una
+        compra (ver docstring del módulo). Devuelve la cantidad de filas
+        afectadas.
+
+        No decide si la corrección está permitida (eso lo valida el
+        service antes de llamar acá). Acepta `conn` porque es la mitad de
+        una escritura atómica: la otra mitad es
+        ComprasCuotasRepository.actualizar() sobre la compra.
+
+        Mismo motivo que marcar_estado_por_resumen() para no usar
+        self._db.execute() en el caso standalone (rowcount confiable).
+        """
+        sql = (
+            "UPDATE cuotas_credito SET monto_cuota_minor = ? "
+            "WHERE compra_id = ? AND estado = ?;"
+        )
+        params = (monto_cuota_minor, compra_id, estado_actual)
+        if conn is not None:
+            return conn.execute(sql, params).rowcount
+        cur = self._db.conn.execute(sql, params)
+        self._db.conn.commit()
+        return cur.rowcount
+
+    # ----------------------------------------------------------
+    # DELETE (bloque por compra)
+    # ----------------------------------------------------------
+
+    def eliminar_por_compra(
+        self,
+        compra_id: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> int:
+        """
+        DELETE físico de TODAS las cuotas de `compra_id`, sin mirar su
+        estado — validar que se puedan borrar (todas 'pendiente', ninguna
+        compartida) es trabajo del service antes de llamar acá (ver
+        docstring del módulo). Devuelve la cantidad de filas borradas.
+
+        Acepta `conn` porque siempre es la mitad de una escritura atómica:
+        la otra mitad es crear_lote() con el cronograma nuevo (+
+        ComprasCuotasRepository.actualizar() sobre la compra).
+
+        Mismo motivo que marcar_estado_por_resumen() para no usar
+        self._db.execute() en el caso standalone (rowcount confiable).
+        """
+        sql = "DELETE FROM cuotas_credito WHERE compra_id = ?;"
+        params = (compra_id,)
         if conn is not None:
             return conn.execute(sql, params).rowcount
         cur = self._db.conn.execute(sql, params)

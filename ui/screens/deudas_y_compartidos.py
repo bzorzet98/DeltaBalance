@@ -46,8 +46,7 @@ db/schema.sql) — nunca 'manual'. Un gasto compartido SIEMPRE nace de una
 transacción o compra ya cargada en otro lado (ícono "Compartir" del
 Registro o de Compras en cuotas, ver ui/components/compartir_gasto.py/
 compartir_compra.py) — no hay forma de crear uno desde cero, así que esta
-pantalla es de gestión (editar descripción / pagar / eliminar), nunca de
-alta.
+pantalla es de gestión (editar / pagar / eliminar), nunca de alta.
 
 Onboarding sin hogar: reusa abrir_dialogo_sin_hogar()/obtener_usuario_local()
 de ui/components/usuario_local.py (el mismo mecanismo que ya usan
@@ -74,23 +73,36 @@ local() ya no puede resolverse de forma síncrona. El bootstrap inicial de
 build() (más abajo) sigue siendo 100% síncrono a propósito: `vista`
 siempre arranca en "deudas", que no depende de nada async.
 
---- Acciones por fila ---
-Deudas: editar (DebtsService.update()), eliminar (delete_debt()), "Marcar
-incobrable" (write_off()), "Registrar pago" (mini-diálogo: CampoMonto +
-selector tipo_pago, llama a register_payment() — la moneda del pago es
-SIEMPRE la de la propia deuda, no editable en el diálogo, para no exponer
-el caso no cubierto de un pago en una moneda distinta a la de la deuda).
-Editar/Marcar incobrable/Registrar pago se deshabilitan si la deuda ya no
-está 'activa' (register_payment()/update()/write_off() lo rechazarían de
-todas formas — mismo criterio que compras_cuotas.py con un resumen
-cerrado).
+--- Edición inline y acciones por fila ---
+Celdas editables (click para editar, CLAUDE.md §10) — mismo patrón que
+ui/screens/compras_cuotas.py/ui/components/registro_transacciones.py,
+copiado acá (son closures de esos build(), no se pueden importar).
 
-Gastos compartidos: editar (update_shared_expense() — SOLO descripción,
-único campo editable que expone el repositorio), eliminar
-(delete_shared_expense()), "Registrar pago" (mini-diálogo: CampoMonto +
-selector tipo_pago, llama a aplicar_pago() — sin moneda, gastos_compartidos
-no tiene columna de moneda propia). "Registrar pago" se deshabilita si el
-gasto ya está 'saldado'.
+Deudas: Persona, Concepto y Notas son editables inline
+(DebtsService.update()) — reemplazan al diálogo de editar, que se
+eliminó. Solo si la deuda está 'activa' (update() rechaza el resto): si
+no, las tres se muestran de solo lectura con el motivo en el tooltip.
+Acciones de la fila: "Registrar pago" (mini-diálogo: CampoMonto + selector
+tipo_pago, llama a register_payment() — la moneda del pago es SIEMPRE la
+de la propia deuda, no editable en el diálogo, para no exponer el caso no
+cubierto de un pago en una moneda distinta a la de la deuda) y "Marcar
+incobrable" (write_off()) — antes vivían dentro del diálogo de editar,
+ahora son íconos de la fila, visibles solo si la deuda está 'activa' — y
+eliminar (delete_debt()).
+
+Gastos compartidos: Descripción y Fecha son editables inline en cualquier
+estado; Monto base (CampoMonto, persistir_formula=True) y Coeficiente (el
+usuario tipea 0-1, el service recibe 0-100) solo si el gasto está
+'pendiente' — si no, solo lectura con el motivo en el tooltip. Todas
+llaman a SharedExpensesService.update_shared_expense(), que además
+bloquea monto/coeficiente de un gasto pendiente con pagos parciales
+(CLAUDE.md §4) y recalcula adeudado/pendiente. gastos_compartidos no tiene
+columna de fórmula, así que la fórmula tipeada en Monto base no sobrevive
+al refresco. Acciones de la fila: editar (diálogo de descripción, previo a
+la edición inline), eliminar (delete_shared_expense()), "Registrar pago"
+(mini-diálogo: CampoMonto + selector tipo_pago, llama a aplicar_pago() —
+sin moneda, gastos_compartidos no tiene columna de moneda propia).
+"Registrar pago" se deshabilita si el gasto ya está 'saldado'.
 
 NO implementado en esta tarea (diferido, ver docs/PROXIMOS_PASOS.md Tarea 9
 Parte C): "pago general" automático repartiendo un ingreso contra varios
@@ -125,12 +137,14 @@ from services.shared_expenses_service import (
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
 from ui.components.usuario_local import abrir_dialogo_sin_hogar, obtener_usuario_local
-from ui.theme.tokens import TypographyTokens
+from ui.theme.tokens import LayoutTokens, TypographyTokens
 from utils.money import amount_display
 
 # --- Configuración de layout ---
 _ANCHO_PERSONA = 140
 _ANCHO_CONCEPTO = 200
+_ANCHO_NOTAS = 180
+_ANCHO_DESCRIPCION = 180
 _ANCHO_TIPO = 110
 _ANCHO_MONTO = 110
 _ANCHO_FECHA = 110
@@ -146,6 +160,19 @@ _ANCHO_TOOLBAR_FILTRO_ESTADO = 140
 _ANCHO_DIALOGO = 360
 
 _LIMITE_FILAS = 500  # tope de per_page al pedir deudas/gastos (se filtra por período client-side)
+
+# Celdas editables inline — mismos valores que
+# ui/components/registro_transacciones.py / ui/screens/compras_cuotas.py.
+_ANCHO_BOTON_CONFIRMAR = 48
+_ANCHO_MINIMO_CAMPO_CELDA = 40
+_ICONO_ACCION_FILA = 16
+# gastos_compartidos no tiene moneda propia: los montos se muestran y se
+# cargan con 2 decimales, mismo criterio que el resto de esta vista.
+_DECIMALES_GASTO = 2
+# Coeficiente: el usuario tipea 0-1 (0.5), el service recibe 0-100 (50.0),
+# redondeado a esta cantidad de decimales para no guardar ruido de float
+# (0.3 * 100 = 30.000000000000004).
+_DECIMALES_COEFICIENTE = 2
 
 _ESTADOS_DEUDA = ("activa", "saldada", "incobrable")
 _ESTADOS_GASTO = ("pendiente", "saldado")
@@ -239,9 +266,12 @@ def build(
     # ============================================================
 
     def _cargar_deudas() -> list:
-        deudas = debts_service.list_debts(
-            estado=estado_deudas["filtro_estado"], per_page=_LIMITE_FILAS,
-        )
+        # dict() antes de pasar a la UI (CLAUDE.md §11).
+        deudas = [
+            dict(d) for d in debts_service.list_debts(
+                estado=estado_deudas["filtro_estado"], per_page=_LIMITE_FILAS,
+            )
+        ]
         mes_str = f"{estado_deudas['anio']:04d}-{estado_deudas['mes']:02d}"
         deudas = [d for d in deudas if d["fecha_inicio"][:7] == mes_str]
         if estado_deudas["filtro_persona"] is not None:
@@ -528,59 +558,6 @@ def build(
             actions_alignment=ft.MainAxisAlignment.END,
         )
         page.show_dialog(dialogo)
-    def _dialogo_editar_deuda(d: dict) -> None:
-        activa = d["estado"] == "activa"
-        campo_persona = ft.TextField(label="Persona", value=d["entidad_persona"], width=300, disabled=not activa)
-        campo_concepto = ft.TextField(label="Concepto", value=d["concepto"] or "", width=300, disabled=not activa)
-        campo_notas = ft.TextField(label="Notas", value=d["notas"] or "", width=300, disabled=not activa)
-
-        def _confirmar(e=None) -> None:
-            try:
-                debts_service.update(
-                    d["id"], person=campo_persona.value, concept=campo_concepto.value, notes=campo_notas.value,
-                )
-            except DebtError as err:
-                _mostrar_mensaje(str(err), es_error=True)
-                return
-            _cerrar_dialogo()
-            _mostrar_ok("Deuda actualizada.")
-            _refrescar_vista_deudas()
-
-        def _ir_a_pago(e=None) -> None:
-            _cerrar_dialogo()
-            _dialogo_registrar_pago_deuda(d)
-
-        def _ir_a_incobrable(e=None) -> None:
-            _cerrar_dialogo()
-            _dialogo_incobrable(d)
-
-        acciones_extra = []
-        if activa:
-            acciones_extra = [
-                ft.TextButton(content=ft.Text("Registrar pago"), on_click=_ir_a_pago),
-                ft.TextButton(
-                    content=ft.Text("Marcar incobrable", color=ft.Colors.ERROR),
-                    on_click=_ir_a_incobrable,
-                ),
-            ]
-
-        dialogo = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Editar deuda"),
-            content=ft.Container(
-                width=_ANCHO_DIALOGO,
-                content=ft.Column(
-                    [campo_persona, campo_concepto, campo_notas] + acciones_extra,
-                    tight=True, spacing=10,
-                ),
-            ),
-            actions=[
-                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Guardar"), on_click=_confirmar, disabled=not activa),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.show_dialog(dialogo)
 
     def _dialogo_incobrable(d: dict) -> None:
         campo_notas = ft.TextField(label="Motivo (opcional)", width=300)
@@ -646,39 +623,244 @@ def build(
             tooltip=texto, color=color,
         )
 
+    # ------------------------------------------------------------
+    # CELDAS EDITABLES INLINE (deudas y gastos compartidos) — mismo patrón
+    # que _celda_texto()/_celda_monto() de ui/screens/compras_cuotas.py y
+    # ui/components/registro_transacciones.py (CLAUDE.md §10). No se
+    # re-renderizan solas tras un guardado exitoso: on_confirmar() dispara
+    # el refresco liviano de su vista, que reconstruye la tabla ya con el
+    # valor nuevo. Solo vuelven a modo lectura acá si on_confirmar() lanza
+    # uno de _ERRORES_EDICION.
+    # ------------------------------------------------------------
+
+    _ERRORES_EDICION = (DebtError, SharedExpensesError, ValueError)
+
+    def _contenedor_celda(width: int) -> ft.Container:
+        return ft.Container(
+            width=width,
+            height=LayoutTokens.ALTURA_FILA_TABLA,
+            padding=LayoutTokens.PADDING_CELDA,
+        )
+
+    def _contenido_lectura(texto_control: ft.Control, on_click: Callable[[], None]) -> ft.Control:
+        return ft.Container(
+            content=texto_control,
+            on_click=lambda e: on_click(),
+            ink=True,
+            padding=LayoutTokens.PADDING_CELDA,
+            alignment=ft.Alignment.CENTER_LEFT,
+        )
+
+    def _boton_confirmar_celda(on_click=None) -> ft.IconButton:
+        # Ícono y padding reducidos: con los default de Material (40px) el
+        # botón no entra en la celda de alto fijo (ver LayoutTokens).
+        return ft.IconButton(
+            icon=ft.Icons.CHECK,
+            icon_color=ft.Colors.PRIMARY,
+            icon_size=LayoutTokens.ICONO_BOTON_CELDA,
+            style=ft.ButtonStyle(padding=ft.Padding.all(LayoutTokens.PADDING_BOTON_CELDA)),
+            on_click=on_click,
+        )
+
+    def _celda_texto(
+        texto_mostrado: str,
+        valor_inicial: str,
+        on_confirmar: Callable[[str], None],
+        width: int,
+        weight=None,
+        color=None,
+    ) -> ft.Control:
+        contenedor = _contenedor_celda(width)
+
+        def _mostrar() -> None:
+            contenedor.content = _contenido_lectura(
+                _texto_celda(texto_mostrado, weight=weight, color=color), _editar,
+            )
+            page.update()
+
+        def _editar() -> None:
+            campo = ft.TextField(
+                value=valor_inicial,
+                width=max(width - _ANCHO_BOTON_CONFIRMAR, _ANCHO_MINIMO_CAMPO_CELDA),
+                dense=LayoutTokens.CELDA_DENSE,
+                text_size=TypographyTokens.TABLE_CONTENT_SIZE,
+                autofocus=True,
+            )
+            boton_confirmar_celda = _boton_confirmar_celda()
+
+            def _confirmar(e=None) -> None:
+                # Deshabilita campo y botón ANTES de llamar al service —
+                # evita que un doble Enter/click dispare dos guardados
+                # (mismo mecanismo que el Registro).
+                campo.disabled = True
+                boton_confirmar_celda.disabled = True
+                page.update()
+                try:
+                    on_confirmar(campo.value)
+                except _ERRORES_EDICION as err:
+                    _mostrar_error(str(err))
+                    _mostrar()
+
+            campo.on_submit = _confirmar
+            boton_confirmar_celda.on_click = _confirmar
+            contenedor.content = ft.Row([campo, boton_confirmar_celda], spacing=0, tight=True)
+            page.update()
+
+        _mostrar()
+        return contenedor
+
+    def _celda_monto(
+        texto_mostrado: str,
+        monto_inicial_minor: int,
+        decimales: int,
+        on_confirmar: Callable[[int], None],
+        width: int,
+        weight=None,
+        color=None,
+    ) -> ft.Control:
+        """
+        on_confirmar recibe el monto ya resuelto en minor units (CampoMonto
+        resuelve la fórmula/número). Re-lanza la excepción tras revertir la
+        celda para que CampoMonto también revierta su texto.
+        """
+        contenedor = _contenedor_celda(width)
+
+        def _mostrar() -> None:
+            contenedor.content = _contenido_lectura(
+                _texto_celda(texto_mostrado, weight=weight, color=color), _editar,
+            )
+            page.update()
+
+        def _editar() -> None:
+            def _confirmar(monto_minor: int) -> None:
+                # Enter y el botón ✓ pasan los dos por campo.confirmar(),
+                # así que deshabilitar acá cubre los dos caminos.
+                campo.control.disabled = True
+                boton_confirmar_monto.disabled = True
+                page.update()
+                try:
+                    on_confirmar(monto_minor)
+                except _ERRORES_EDICION as err:
+                    _mostrar_error(str(err))
+                    _mostrar()
+                    raise
+
+            campo = CampoMonto(
+                page,
+                on_confirmar=_confirmar,
+                decimales=decimales,
+                persistir_formula=True,
+                valor_inicial_minor=monto_inicial_minor,
+                width=max(width - _ANCHO_BOTON_CONFIRMAR, _ANCHO_MINIMO_CAMPO_CELDA),
+                dense=LayoutTokens.CELDA_DENSE,
+                text_size=TypographyTokens.TABLE_CONTENT_SIZE,
+                autofocus=True,
+            )
+            boton_confirmar_monto = _boton_confirmar_celda(on_click=lambda e: campo.confirmar())
+            contenedor.content = ft.Row([campo.control, boton_confirmar_monto], spacing=0, tight=True)
+            page.update()
+
+        _mostrar()
+        return contenedor
+
+    def _celda_bloqueada(texto_mostrado: str, motivo: str, width: int, weight=None) -> ft.Control:
+        """Celda de solo lectura con el motivo del bloqueo como tooltip — mismo alto que las editables."""
+        contenedor = _contenedor_celda(width)
+        contenedor.content = ft.Container(
+            content=ft.Text(
+                texto_mostrado,
+                size=TypographyTokens.TABLE_CONTENT_SIZE,
+                weight=weight or TypographyTokens.TABLE_CONTENT_WEIGHT_REGULAR,
+                color=ft.Colors.OUTLINE,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+                tooltip=motivo,
+            ),
+            padding=LayoutTokens.PADDING_CELDA,
+            alignment=ft.Alignment.CENTER_LEFT,
+        )
+        return contenedor
+
     def _fila_deuda(d: dict) -> ft.Control:
         activa = d["estado"] == "activa"
         color_monto = ft.Colors.GREEN if d["tipo"] == "a_favor" else ft.Colors.RED
 
-        botones_accion = ft.Row(
-            [
+        def _guardar_deuda(**kwargs) -> None:
+            # DebtError del service sube tal cual a la celda, que lo
+            # muestra y revierte.
+            debts_service.update(d["id"], **kwargs)
+            _mostrar_ok(f"DEUDA #{d['id']} ACTUALIZADA.")
+            _refrescar_vista_deudas()
+
+        def _confirmar_persona(nuevo: str) -> None:
+            if not nuevo or not nuevo.strip():
+                raise ValueError("EL NOMBRE DE LA PERSONA NO PUEDE ESTAR VACÍO.")
+            _guardar_deuda(person=nuevo.strip())
+
+        def _confirmar_concepto(nuevo: str) -> None:
+            if not nuevo or not nuevo.strip():
+                raise ValueError("EL CONCEPTO NO PUEDE ESTAR VACÍO.")
+            _guardar_deuda(concept=nuevo.strip())
+
+        def _confirmar_notas(nuevo: str) -> None:
+            # '' limpia las notas (contrato de DebtsService.update()).
+            _guardar_deuda(notes=(nuevo or "").strip())
+
+        # DebtsService.update() solo acepta deudas 'activa' (mismo criterio
+        # que tenía el diálogo de editar, que deshabilitaba los campos) —
+        # si no, las tres celdas quedan de solo lectura con el motivo.
+        def _celda_deuda(texto: str, on_confirmar: Callable[[str], None], width: int) -> ft.Control:
+            if activa:
+                return _celda_texto(texto, texto, on_confirmar, width)
+            return _celda_bloqueada(texto, "NO SE PUEDE MODIFICAR: LA DEUDA YA NO ESTÁ ACTIVA", width)
+
+        celda_persona = _celda_deuda(d["entidad_persona"], _confirmar_persona, _ANCHO_PERSONA)
+        celda_concepto = _celda_deuda(d["concepto"] or "", _confirmar_concepto, _ANCHO_CONCEPTO)
+        celda_notas = _celda_deuda(d["notas"] or "", _confirmar_notas, _ANCHO_NOTAS)
+
+        # Registrar pago / Marcar incobrable: antes vivían dentro del
+        # diálogo de editar (eliminado) — ahora son acciones de la fila,
+        # solo para deudas activas (register_payment()/write_off() las
+        # rechazarían de todas formas).
+        acciones: list[ft.Control] = []
+        if activa:
+            acciones += [
                 ft.IconButton(
-                    icon=ft.Icons.EDIT_OUTLINED,
-                    icon_size=16,
-                    tooltip="Editar / Registrar pago",
-                    on_click=lambda e, d=d: _dialogo_editar_deuda(d),
+                    icon=ft.Icons.PAYMENTS_OUTLINED,
+                    icon_size=_ICONO_ACCION_FILA,
+                    tooltip="REGISTRAR PAGO",
+                    on_click=lambda e, d=d: _dialogo_registrar_pago_deuda(d),
                 ),
                 ft.IconButton(
-                    icon=ft.Icons.DELETE_OUTLINE,
-                    icon_size=16,
+                    icon=ft.Icons.MONEY_OFF_OUTLINED,
+                    icon_size=_ICONO_ACCION_FILA,
                     icon_color=ft.Colors.ERROR,
-                    tooltip="Eliminar",
-                    on_click=lambda e, d=d: _confirmar_eliminar_deuda(d),
+                    tooltip="MARCAR INCOBRABLE",
+                    on_click=lambda e, d=d: _dialogo_incobrable(d),
                 ),
-            ],
-            spacing=0,
+            ]
+        acciones.append(
+            ft.IconButton(
+                icon=ft.Icons.DELETE_OUTLINE,
+                icon_size=_ICONO_ACCION_FILA,
+                icon_color=ft.Colors.ERROR,
+                tooltip="ELIMINAR",
+                on_click=lambda e, d=d: _confirmar_eliminar_deuda(d),
+            )
         )
+        botones_accion = ft.Row(acciones, spacing=0)
 
         fila = ft.Row(
             [
-                ft.Container(width=_ANCHO_PERSONA, padding=4, content=_texto_celda(d["entidad_persona"])),
-                ft.Container(width=_ANCHO_CONCEPTO, padding=4, content=_texto_celda(d["concepto"] or "")),
+                celda_persona,
+                celda_concepto,
+                celda_notas,
                 ft.Container(width=_ANCHO_TIPO, padding=4, content=_texto_celda("Me deben" if d["tipo"] == "a_favor" else "Debo")),
                 ft.Container(width=_ANCHO_MONTO, padding=4, content=_texto_celda(amount_display(d["monto_original_minor"], d["decimales"], ""))),
                 ft.Container(width=_ANCHO_MONTO, padding=4, content=_texto_celda(amount_display(d["monto_pendiente_minor"], d["decimales"], ""), weight=TypographyTokens.TABLE_CONTENT_WEIGHT, color=color_monto)),
                 ft.Container(width=_ANCHO_FECHA, padding=4, content=_texto_celda(d["fecha_inicio"])),
                 ft.Container(width=_ANCHO_ESTADO, padding=4, content=_texto_celda(d["estado"])),
-                ft.Container(width=90, padding=4, content=botones_accion),
+                ft.Container(width=_ANCHO_ACCIONES, padding=4, content=botones_accion),
             ],
             spacing=_ESPACIADO_FILA,
         )
@@ -703,9 +885,9 @@ def build(
 
     encabezado_deudas = ft.Row(
         [
-            _header("Persona", _ANCHO_PERSONA), _header("Concepto", _ANCHO_CONCEPTO), _header("Tipo", _ANCHO_TIPO),
-            _header("Monto original", _ANCHO_MONTO), _header("Pendiente", _ANCHO_MONTO), _header("Fecha", _ANCHO_FECHA),
-            _header("Estado", _ANCHO_ESTADO), _header("", 90),
+            _header("PERSONA", _ANCHO_PERSONA), _header("CONCEPTO", _ANCHO_CONCEPTO), _header("NOTAS", _ANCHO_NOTAS),
+            _header("TIPO", _ANCHO_TIPO), _header("MONTO ORIGINAL", _ANCHO_MONTO), _header("PENDIENTE", _ANCHO_MONTO),
+            _header("FECHA", _ANCHO_FECHA), _header("ESTADO", _ANCHO_ESTADO), _header("", _ANCHO_ACCIONES),
         ],
         spacing=_ESPACIADO_FILA,
     )
@@ -800,9 +982,12 @@ def build(
         )
 
     def _cargar_gastos() -> list:
-        gastos = shared_expenses_service.list_shared_expenses(
-            hogar_actual["id"], estado=estado_gastos["filtro_estado"], pagador=estado_gastos["filtro_pagador"],
-        )
+        # dict() antes de pasar a la UI (CLAUDE.md §11).
+        gastos = [
+            dict(g) for g in shared_expenses_service.list_shared_expenses(
+                hogar_actual["id"], estado=estado_gastos["filtro_estado"], pagador=estado_gastos["filtro_pagador"],
+            )
+        ]
         mes_str = f"{estado_gastos['anio']:04d}-{estado_gastos['mes']:02d}"
         return [g for g in gastos if g["fecha"][:7] == mes_str]
 
@@ -980,7 +1165,68 @@ def build(
 
     def _fila_gasto(g: dict) -> ft.Control:
         saldado = g["estado"] == "saldado"
+        pendiente = g["estado"] == "pendiente"
         color_monto = ft.Colors.OUTLINE if saldado else None
+
+        def _guardar_gasto(**kwargs) -> None:
+            # SharedExpensesError/ValueError del service (ej. monto de un
+            # gasto con pagos registrados) sube tal cual a la celda, que lo
+            # muestra y revierte.
+            shared_expenses_service.update_shared_expense(gasto_id=g["id"], hogar_id=hogar_actual["id"], **kwargs)
+            _mostrar_ok(f"GASTO COMPARTIDO #{g['id']} ACTUALIZADO.")
+            _refrescar_vista_gastos()
+
+        def _confirmar_descripcion(nuevo: str) -> None:
+            # Vacío limpia la descripción (None, contrato del service).
+            _guardar_gasto(descripcion=(nuevo or "").strip() or None)
+
+        def _confirmar_monto_base(monto_minor: int) -> None:
+            # Puede ser negativo (reintegro mayor al monto, ver
+            # add_shared_expense()); nunca 0.
+            if monto_minor == 0:
+                raise ValueError("EL MONTO BASE NO PUEDE SER 0.")
+            _guardar_gasto(monto_base_minor=monto_minor)
+
+        def _confirmar_coeficiente(nuevo: str) -> None:
+            try:
+                valor = float((nuevo or "").strip().replace(",", "."))
+            except ValueError:
+                raise ValueError("EL COEFICIENTE DEBE SER UN NÚMERO ENTRE 0 Y 1 (EJ. 0.5).") from None
+            if not (0 < valor <= 1):
+                raise ValueError("EL COEFICIENTE DEBE SER MAYOR A 0 Y COMO MÁXIMO 1 (EJ. 0.5).")
+            _guardar_gasto(coeficiente_deuda=round(valor * 100, _DECIMALES_COEFICIENTE))
+
+        def _confirmar_fecha(nuevo: str) -> None:
+            try:
+                datetime.strptime((nuevo or "").strip(), "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("LA FECHA DEBE TENER EL FORMATO AAAA-MM-DD.") from None
+            _guardar_gasto(fecha=nuevo.strip())
+
+        celda_descripcion = _celda_texto(
+            g["descripcion"] or "", g["descripcion"] or "", _confirmar_descripcion, _ANCHO_DESCRIPCION,
+        )
+
+        # Monto base y coeficiente: editables solo si el gasto sigue
+        # 'pendiente' (pedido explícito). Un gasto pendiente con pagos
+        # parciales también los bloquea, pero esa regla la aplica
+        # update_shared_expense() (CLAUDE.md §4) — su SharedExpensesError
+        # se muestra en la celda.
+        texto_monto_base = amount_display(g["monto_base_minor"], _DECIMALES_GASTO, "")
+        texto_coeficiente = f"{g['coeficiente_deuda']}%"
+        if pendiente:
+            celda_monto_base = _celda_monto(
+                texto_monto_base, g["monto_base_minor"], _DECIMALES_GASTO, _confirmar_monto_base, _ANCHO_MONTO,
+            )
+            celda_coeficiente = _celda_texto(
+                texto_coeficiente, f"{g['coeficiente_deuda'] / 100:g}", _confirmar_coeficiente, _ANCHO_COEFICIENTE,
+            )
+        else:
+            motivo = "NO SE PUEDE MODIFICAR: EL GASTO YA FUE SALDADO"
+            celda_monto_base = _celda_bloqueada(texto_monto_base, motivo, _ANCHO_MONTO)
+            celda_coeficiente = _celda_bloqueada(texto_coeficiente, motivo, _ANCHO_COEFICIENTE)
+
+        celda_fecha = _celda_texto(g["fecha"], g["fecha"], _confirmar_fecha, _ANCHO_FECHA)
 
         botones_accion = ft.Row(
             [
@@ -994,12 +1240,13 @@ def build(
         fila = ft.Row(
             [
                 ft.Container(width=_ANCHO_PERSONA, padding=4, content=_texto_celda(g["pagador"])),
+                celda_descripcion,
                 ft.Container(width=_ANCHO_CATEGORIA, padding=4, content=_texto_celda(g["category_name"] or "")),
-                ft.Container(width=_ANCHO_MONTO, padding=4, content=_texto_celda(amount_display(g["monto_base_minor"], 2, ""))),
-                ft.Container(width=_ANCHO_COEFICIENTE, padding=4, content=_texto_celda(f"{g['coeficiente_deuda']}%")),
+                celda_monto_base,
+                celda_coeficiente,
                 ft.Container(width=_ANCHO_MONTO, padding=4, content=_texto_celda(amount_display(g["monto_adeudado_minor"], 2, ""))),
                 ft.Container(width=_ANCHO_MONTO, padding=4, content=_texto_celda(amount_display(g["monto_pendiente_minor"], 2, ""), weight=TypographyTokens.TABLE_CONTENT_WEIGHT, color=color_monto)),
-                ft.Container(width=_ANCHO_FECHA, padding=4, content=_texto_celda(g["fecha"])),
+                celda_fecha,
                 ft.Container(width=_ANCHO_ESTADO, padding=4, content=_texto_celda(g["estado"])),
                 ft.Container(width=_ANCHO_ACCIONES, padding=4, content=botones_accion),
             ],
@@ -1023,9 +1270,10 @@ def build(
 
     encabezado_gastos = ft.Row(
         [
-            _header("Pagador", _ANCHO_PERSONA), _header("Categoría", _ANCHO_CATEGORIA), _header("Monto base", _ANCHO_MONTO),
-            _header("Coeficiente", _ANCHO_COEFICIENTE), _header("Adeudado", _ANCHO_MONTO), _header("Pendiente", _ANCHO_MONTO),
-            _header("Fecha", _ANCHO_FECHA), _header("Estado", _ANCHO_ESTADO), _header("", _ANCHO_ACCIONES),
+            _header("PAGADOR", _ANCHO_PERSONA), _header("DESCRIPCIÓN", _ANCHO_DESCRIPCION),
+            _header("CATEGORÍA", _ANCHO_CATEGORIA), _header("MONTO BASE", _ANCHO_MONTO),
+            _header("COEFICIENTE", _ANCHO_COEFICIENTE), _header("ADEUDADO", _ANCHO_MONTO), _header("PENDIENTE", _ANCHO_MONTO),
+            _header("FECHA", _ANCHO_FECHA), _header("ESTADO", _ANCHO_ESTADO), _header("", _ANCHO_ACCIONES),
         ],
         spacing=_ESPACIADO_FILA,
     )

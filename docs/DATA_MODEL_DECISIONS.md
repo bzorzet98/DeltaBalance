@@ -110,6 +110,53 @@ realtime.
 Ver `CLAUDE.md` sección 4 — ventana de corrección temprana según si el registro ya
 generó dependencias con estado propio.
 
+**Edición de `compras_cuotas` — ✅ implementado en `FeesService.update_purchase()` /
+`update_purchase_cuotas()`, sin cambio de schema.** Por campo:
+- `concepto`, `categoria_id` y `fecha_compra` dentro del mismo mes: siempre (son
+  descriptivos; las cuotas guardan mes/año, no el día).
+- `cuenta_id`: solo si todas las `cuotas_credito` siguen en `pendiente` — una cuota
+  `en_resumen`/`pagado` pertenece al resumen de ESA tarjeta.
+- `fecha_compra` a otro mes: el cronograma se regenera desde el mes nuevo (borrar +
+  recrear cuotas en la misma transacción), solo si todas siguen `pendiente` y
+  ninguna tiene un gasto compartido por cuota (`origen_tipo = 'cuota_credito'`).
+- `total_cuotas` (`update_purchase_cuotas()`): mismo total, cuotas borradas y
+  recreadas de `round(total / nueva_cantidad)`. Mismas condiciones que mover la
+  fecha, más reparto por default (ver abajo). Una compra compartida en modo
+  `total_unico` sí se puede: ese gasto sale del total, que no cambia.
+- `monto_total_minor`: todas las cuotas en `pendiente`, sin `gastos_compartidos` por
+  la compra (`'compra_cuotas'`) ni por cuota, y `monto_por_cuota_minor` es el
+  reparto por default (`total / total_cuotas`, no un `amount_per_fee` custom). Se
+  reescriben `monto_total_minor`, `monto_por_cuota_minor` y el `monto_cuota_minor` de
+  todas las cuotas (`round(total / total_cuotas)`, mismo criterio que
+  `create_purchase()`) en la misma transacción.
+- `moneda_id`: todas las cuotas en `pendiente` (una cuota en un resumen es parte del
+  total de ESA moneda) y sin `gastos_compartidos` por la compra ni por cuota
+  (`gastos_compartidos` no tiene moneda propia: cambiarla mezclaría monedas en el
+  saldo del hogar). Se mantiene el importe MOSTRADO, igual que el Registro
+  (`TransactionService.update()` recibe monto + moneda juntos): si la moneda nueva
+  tiene otros decimales (CLP 0, BTC 8) se reescalan `monto_total_minor`,
+  `monto_por_cuota_minor` (recalculado del total nuevo si el reparto es el default),
+  el `monto_cuota_minor` de cada cuota y `monto_reintegro_minor`. No valida que la
+  moneda sea operativa de la tarjeta — igual que `create_purchase()`; eso lo filtra
+  la UI.
+
+Si una condición falla, `FeesError`: la corrección va por un cargo extra de tipo
+`ajuste` en el resumen, nunca reescribiendo en silencio. Pendiente conocido: editar
+`categoria_id`/`fecha_compra` NO propaga a `gastos_compartidos.categoria_id`/`fecha`
+de una compra ya compartida (mismo comportamiento que `TransactionService.update()`
+con transacciones compartidas).
+
+**Edición de `gastos_compartidos` — ✅ implementado en
+`SharedExpensesService.update_shared_expense()`, sin cambio de schema.**
+`descripcion` y `fecha` se editan en cualquier estado. `monto_base_minor` y
+`coeficiente_deuda` solo si el gasto está `pendiente` Y no tiene ninguna fila en
+`gasto_compartido_pagos` (un pago es dependencia con estado propio — mismo criterio
+que `delete_shared_expense()`); si se editan, se recalculan en la misma transacción
+`monto_adeudado_minor = round(monto_base_minor * coeficiente_deuda / 100)` y
+`monto_pendiente_minor` (= adeudado, porque no hay pagos). Editar el monto base
+desacopla el gasto de su origen (`origen_tipo`/`origen_id`): no se toca la
+transacción/compra de la que salió.
+
 ## 10. Convención general
 Toda plata en minor units (enteros). Fechas en `TEXT` formato `YYYY-MM-DD` (ya
 validado con `CHECK(... GLOB '????-??-??')` en el schema existente — mantener el

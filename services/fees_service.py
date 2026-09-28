@@ -16,8 +16,20 @@ Purpose:
     statement) is handled by TransactionService. FeesService only manages the
     credit-side tracking.
 
+    Reads (never writes) gastos_compartidos, only to know whether a purchase
+    is already shared before letting update_purchase() change its total —
+    same read-only cross-domain pattern SharedExpensesService already uses
+    over compras_cuotas/cuotas_credito.
+
     Key workflows:
         1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito
+           update_purchase()      → early-correction edit (CLAUDE.md §4): concepto /
+                                    categoria_id / same-month fecha always; cuenta_id,
+                                    another-month fecha, monto_total_minor and moneda
+                                    only while the fees they feed have no state of
+                                    their own yet
+           update_purchase_cuotas() → regenerates the fee schedule with another number
+                                    of fees, same total, same §4 rule
         2. open_statement()       → creates or fetches a resumenes_tarjeta for a month
         3. confirm_fee()          → marks a cuota as 'en_resumen', linking it to a statement
         4. close_statement()      → marks 'cerrado' AND consolidates real totals
@@ -35,13 +47,14 @@ Purpose:
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Optional
+from typing import Any, Optional
 
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
 from utils.money import amount_display
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
 from repositories.cuotas_credito_repository import CuotasCreditoRepository
+from repositories.gastos_compartidos_repository import GastosCompartidosRepository
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
 from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 
@@ -154,6 +167,8 @@ class FeesService:
         self._cuotas_repo = CuotasCreditoRepository(db)
         self._resumenes_repo = ResumenesTarjetaRepository(db)
         self._cargos_repo = ResumenCargosExtraRepository(db)
+        # Read-only — see module docstring (update_purchase()).
+        self._gastos_repo = GastosCompartidosRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -282,6 +297,33 @@ class FeesService:
             year += 1
         return month, year
 
+    @classmethod
+    def _build_fee_schedule(cls, fecha_compra: str, total_fees: int, per_fee_minor: int) -> list[dict]:
+        """
+        Fee rows for CuotasCreditoRepository.crear_lote(): N fees projected
+        month by month, the first one on the purchase month. Shared by
+        create_purchase() and the fee regeneration of the edit methods.
+
+        Args:
+            fecha_compra:  Validated purchase date 'YYYY-MM-DD'.
+            total_fees:    Number of fees (>= 1).
+            per_fee_minor: Amount of each fee, in minor units.
+        """
+        dt    = datetime.strptime(fecha_compra, "%Y-%m-%d")
+        month = dt.month
+        year  = dt.year
+
+        cuotas = []
+        for n in range(1, total_fees + 1):
+            cuotas.append({
+                "numero_cuota": n,
+                "mes_proyectado": month,
+                "anio_proyectado": year,
+                "monto_cuota_minor": per_fee_minor,
+            })
+            month, year = cls._advance_month(month, year)
+        return cuotas
+
     # ----------------------------------------------------------
     # CREATE PURCHASE
     # ----------------------------------------------------------
@@ -359,20 +401,7 @@ class FeesService:
             )
 
             # Auto-generate N fee rows projected month by month
-            dt    = datetime.strptime(validated_date, "%Y-%m-%d")
-            month = dt.month
-            year  = dt.year
-
-            cuotas = []
-            for n in range(1, total_fees + 1):
-                cuotas.append({
-                    "numero_cuota": n,
-                    "mes_proyectado": month,
-                    "anio_proyectado": year,
-                    "monto_cuota_minor": per_fee_minor,
-                })
-                month, year = self._advance_month(month, year)
-
+            cuotas = self._build_fee_schedule(validated_date, total_fees, per_fee_minor)
             self._cuotas_repo.crear_lote(compra_id=purchase_id, cuotas=cuotas, conn=conn)
 
         return FeesResult(
@@ -1135,6 +1164,320 @@ class FeesService:
             pagina=page,
             por_pagina=per_page,
         )
+
+    # ----------------------------------------------------------
+    # UPDATE PURCHASE
+    # ----------------------------------------------------------
+
+    # Same shape as TransactionService.update(): None = no change, one
+    # repository kwarg per field that actually changes. Early-correction
+    # rule (CLAUDE.md §4) applied per field — cuotas_credito and
+    # gastos_compartidos are generated rows with state of their own, so a
+    # field that feeds them is editable only while nothing downstream has
+    # left its initial state; otherwise blocked, and the correction goes
+    # through an explicit adjustment instead of silently rewriting history:
+    #   - concepto / categoria_id: descriptive only — always editable.
+    #   - fecha, same month: descriptive only (fees store month/year, not
+    #     the day) — always editable.
+    #   - fecha, another month: the fee schedule shifts (regenerated) →
+    #     every fee still 'pendiente' and none shared per fee.
+    #   - cuenta_id: a fee 'en_resumen'/'pagado' belongs to THAT card's
+    #     statement → every fee still 'pendiente'.
+    #   - monto_total_minor: every fee carries its own amount and shared
+    #     expenses were computed from the total → every fee 'pendiente',
+    #     nothing shared, default split. Otherwise: an 'ajuste' extra
+    #     charge on the statement.
+    #   - moneda_codigo: a fee in a statement is part of that statement's
+    #     currency total, and gastos_compartidos has no currency of its own
+    #     (a shared purchase switching currency would mix currencies in the
+    #     household balance) → every fee 'pendiente', nothing shared.
+    # The number of fees has its own method: update_purchase_cuotas().
+    def update_purchase(
+        self,
+        purchase_id:       int,
+        concepto:          Optional[str] = None,
+        categoria_id:      Optional[int] = None,
+        monto_total_minor: Optional[int] = None,
+        cuenta_id:         Optional[int] = None,
+        fecha:             Optional[str] = None,
+        moneda_codigo:     Optional[str] = None,
+    ) -> FeesResult:
+        """
+        Updates one or more fields of an existing purchase.
+        Only the fields explicitly passed (non-None) are modified. Every
+        check runs before any write — a blocked field leaves the whole call
+        unwritten, including the other fields passed with it.
+
+        Changing monto_total_minor recalculates monto_por_cuota_minor as
+        round(monto_total_minor / total_cuotas) — same default split as
+        create_purchase() — and rewrites every fee with that amount.
+        Moving fecha to another month regenerates the fee schedule from the
+        new month. Both happen in the same transaction as the purchase row.
+
+        Changing moneda_codigo keeps the DISPLAYED amount (3000.00 ARS →
+        3000.00 USD), same criterion as the Registro, where
+        TransactionService.update() receives amount + currency together:
+        when the new currency has other decimals (CLP 0, BTC 8) every
+        amount in minor units is rescaled — total, per-fee (recalculated
+        from the new total if the split is the default one), every fee and
+        monto_reintegro_minor. If monto_total_minor is passed in the same
+        call, it is taken as already expressed in the new currency.
+
+        Args:
+            purchase_id:       The purchase to modify.
+            concepto:          New description. None = no change.
+            categoria_id:      New category ID. None = no change.
+            monto_total_minor: New positive total, in minor units. None = no change.
+            cuenta_id:         New credit card account ID. None = no change.
+            fecha:             New purchase date 'YYYY-MM-DD'. None = no change.
+            moneda_codigo:     New currency code, e.g. 'USD'. None = no change.
+
+        Returns:
+            FeesResult with success=True if at least one field changed.
+
+        Raises:
+            PurchaseNotFoundError if the purchase does not exist.
+            ValueError for an invalid date format or an unknown currency.
+            FeesError if concepto is empty, categoria_id / cuenta_id does not
+                exist (or the account is inactive), monto_total_minor <= 0,
+                an amount would round to 0 in the new currency, or the field
+                can no longer be edited directly (see the early-correction
+                note above).
+        """
+        purchase = self._get_purchase(purchase_id)
+        cuotas = self._cuotas_repo.listar_por_compra(purchase_id)
+        campos_repo: dict[str, Any] = {}
+
+        if concepto is not None:
+            if not concepto.strip():
+                raise FeesError("Concept cannot be empty.")
+            campos_repo["concepto"] = concepto.strip()
+
+        if categoria_id is not None:
+            self._get_category(categoria_id)  # validate existence
+            campos_repo["categoria_id"] = categoria_id
+
+        if cuenta_id is not None and cuenta_id != purchase["cuenta_id"]:
+            self._get_account(cuenta_id)  # validate existence (active)
+            self._require_fees_pending(purchase_id, cuotas, "its card can no longer be changed")
+            campos_repo["cuenta_id"] = cuenta_id
+
+        regenerar_cuotas = False
+        if fecha is not None:
+            fecha_validada = self._validate_date(fecha)
+            if fecha_validada != purchase["fecha_compra"]:
+                if fecha_validada[:7] != purchase["fecha_compra"][:7]:
+                    accion = "its date can no longer move to another month"
+                    self._require_fees_pending(purchase_id, cuotas, accion)
+                    self._require_fees_not_shared(purchase_id, cuotas, accion)
+                    regenerar_cuotas = True
+                campos_repo["fecha_compra"] = fecha_validada
+
+        nueva_moneda = None
+        if moneda_codigo is not None:
+            moneda = self._get_currency(moneda_codigo)  # ValueError if unknown
+            if moneda["id"] != purchase["moneda_id"]:
+                accion = "its currency can no longer be changed"
+                self._require_fees_pending(purchase_id, cuotas, accion)
+                self._require_purchase_not_shared(purchase_id, accion)
+                self._require_fees_not_shared(purchase_id, cuotas, accion)
+                nueva_moneda = moneda
+                campos_repo["moneda_id"] = moneda["id"]
+
+        nuevo_monto_cuota_minor = None
+        if monto_total_minor is not None:
+            if monto_total_minor <= 0:
+                raise FeesError(f"Total amount must be positive. Received: {monto_total_minor}.")
+            if monto_total_minor != purchase["monto_total_minor"]:
+                accion = "its total can no longer be edited directly"
+                self._require_fees_pending(
+                    purchase_id, cuotas,
+                    f"{accion}; register the difference as an 'ajuste' extra charge on the statement instead",
+                )
+                self._require_purchase_not_shared(purchase_id, accion)
+                self._require_fees_not_shared(purchase_id, cuotas, accion)
+                self._require_default_split(purchase, "its total cannot be recalculated")
+                nuevo_monto_cuota_minor = round(monto_total_minor / purchase["total_cuotas"])
+                campos_repo["monto_total_minor"] = monto_total_minor
+                campos_repo["monto_por_cuota_minor"] = nuevo_monto_cuota_minor
+
+        # New currency with other decimals and no new total in the same
+        # call: rescale every amount so the displayed value stays the same
+        # (see docstring). Same decimals → amounts untouched.
+        if nueva_moneda is not None and monto_total_minor is None:
+            decimales_actuales = self.get_purchase(purchase_id)["decimales"]
+            decimales_nuevos = nueva_moneda["decimales"]
+            if decimales_nuevos != decimales_actuales:
+                def _reescalar(minor: int) -> int:
+                    return self._rescale_minor(minor, decimales_actuales, decimales_nuevos)
+
+                nuevo_total = _reescalar(purchase["monto_total_minor"])
+                nuevo_monto_cuota_minor = (
+                    round(nuevo_total / purchase["total_cuotas"])
+                    if self._is_default_split(purchase)
+                    else _reescalar(purchase["monto_por_cuota_minor"])
+                )
+                if nuevo_total <= 0 or nuevo_monto_cuota_minor <= 0:
+                    raise FeesError(
+                        f"Purchase id={purchase_id}: its amount rounds to 0 in "
+                        f"{nueva_moneda['codigo']} ({decimales_nuevos} decimals)."
+                    )
+                campos_repo["monto_total_minor"] = nuevo_total
+                campos_repo["monto_por_cuota_minor"] = nuevo_monto_cuota_minor
+                if purchase["monto_reintegro_minor"]:
+                    campos_repo["monto_reintegro_minor"] = _reescalar(purchase["monto_reintegro_minor"])
+
+        if not campos_repo:
+            return FeesResult(
+                success=False,
+                entity_id=purchase_id,
+                message="No fields to update were provided.",
+            )
+
+        fees_updated = 0
+        conn = self._db.conn
+        with self._db.transaction():
+            self._compras_repo.actualizar(purchase_id, conn=conn, **campos_repo)
+            if regenerar_cuotas:
+                monto_cuota_minor = (
+                    nuevo_monto_cuota_minor if nuevo_monto_cuota_minor is not None
+                    else purchase["monto_por_cuota_minor"]
+                )
+                fees_updated = self._regenerate_fees(
+                    purchase_id, campos_repo["fecha_compra"], purchase["total_cuotas"], monto_cuota_minor, conn,
+                )
+            elif nuevo_monto_cuota_minor is not None:
+                fees_updated = self._cuotas_repo.actualizar_monto_por_compra(
+                    purchase_id, "pendiente", nuevo_monto_cuota_minor, conn=conn,
+                )
+
+        return FeesResult(
+            success=True,
+            entity_id=purchase_id,
+            data={"fields_changed": list(campos_repo), "fees_updated": fees_updated},
+            message=f"Purchase #{purchase_id} updated ({len(campos_repo)} field(s) changed).",
+        )
+
+    # The whole fee schedule is regenerated (delete + recreate in one
+    # transaction), so it follows the same §4 rule as moving the date to
+    # another month, plus the default-split rule of the total. A purchase
+    # shared as 'total_unico' is NOT blocked: that shared expense was
+    # computed from the total, which does not change here.
+    def update_purchase_cuotas(self, compra_id: int, nueva_cantidad: int) -> FeesResult:
+        """
+        Changes the number of fees of a purchase, keeping its total:
+        deletes every fee and recreates nueva_cantidad of them, projected
+        month by month from the purchase month, each of
+        round(monto_total_minor / nueva_cantidad).
+
+        Args:
+            compra_id:      The purchase to modify.
+            nueva_cantidad: New number of fees (>= 1).
+
+        Returns:
+            FeesResult with success=False if nueva_cantidad is the current one.
+
+        Raises:
+            PurchaseNotFoundError if the purchase does not exist.
+            FeesError if nueva_cantidad < 1, a fee already left 'pendiente',
+                a fee is shared, or the purchase was created with a custom
+                per-fee amount.
+        """
+        purchase = self._get_purchase(compra_id)
+        if nueva_cantidad < 1:
+            raise FeesError(f"Total fees must be >= 1. Received: {nueva_cantidad}.")
+        if nueva_cantidad == purchase["total_cuotas"]:
+            return FeesResult(success=False, entity_id=compra_id, message="Number of fees unchanged.")
+
+        cuotas = self._cuotas_repo.listar_por_compra(compra_id)
+        accion = "its number of fees can no longer be changed"
+        self._require_fees_pending(compra_id, cuotas, accion)
+        self._require_fees_not_shared(compra_id, cuotas, accion)
+        self._require_default_split(purchase, "its fees cannot be recalculated")
+
+        monto_cuota_minor = round(purchase["monto_total_minor"] / nueva_cantidad)
+        conn = self._db.conn
+        with self._db.transaction():
+            self._compras_repo.actualizar(
+                compra_id, total_cuotas=nueva_cantidad, monto_por_cuota_minor=monto_cuota_minor, conn=conn,
+            )
+            self._regenerate_fees(compra_id, purchase["fecha_compra"], nueva_cantidad, monto_cuota_minor, conn)
+
+        return FeesResult(
+            success=True,
+            entity_id=compra_id,
+            data={"total_fees": nueva_cantidad, "monto_por_cuota_minor": monto_cuota_minor},
+            message=f"Purchase #{compra_id} now has {nueva_cantidad} fee(s).",
+        )
+
+    # --- Early-correction checks (CLAUDE.md §4) shared by the edits above ---
+
+    def _require_fees_pending(self, purchase_id: int, cuotas: list[sqlite3.Row], accion: str) -> None:
+        no_pendientes = [c for c in cuotas if c["estado"] != "pendiente"]
+        if no_pendientes:
+            raise FeesError(
+                f"Purchase id={purchase_id} has {len(no_pendientes)} fee(s) already in a "
+                f"statement, paid or omitted — {accion}."
+            )
+
+    def _require_fees_not_shared(self, purchase_id: int, cuotas: list[sqlite3.Row], accion: str) -> None:
+        if any(self._gastos_repo.listar_por_origen("cuota_credito", c["id"]) for c in cuotas):
+            raise FeesError(
+                f"Purchase id={purchase_id} is shared per fee — {accion}; "
+                f"delete the shared expense(s) first."
+            )
+
+    def _require_purchase_not_shared(self, purchase_id: int, accion: str) -> None:
+        # Shared as a whole ('total_unico' → origen_tipo 'compra_cuotas').
+        if self._gastos_repo.listar_por_origen("compra_cuotas", purchase_id):
+            raise FeesError(
+                f"Purchase id={purchase_id} is shared — {accion}; delete the shared expense(s) first."
+            )
+
+    @staticmethod
+    def _is_default_split(purchase: sqlite3.Row) -> bool:
+        # A per-fee amount that differs from total / total_cuotas by more
+        # than rounding (at most half a minor unit per fee) means the
+        # purchase was created with a custom amount_per_fee (e.g. interest).
+        total_cuotas = purchase["total_cuotas"]
+        diferencia = abs(purchase["monto_por_cuota_minor"] * total_cuotas - purchase["monto_total_minor"])
+        return diferencia <= total_cuotas
+
+    def _require_default_split(self, purchase: sqlite3.Row, accion: str) -> None:
+        # Recalculating the split of a custom per-fee amount would silently drop it.
+        if not self._is_default_split(purchase):
+            raise FeesError(
+                f"Purchase id={purchase['id']} was created with a custom per-fee amount — "
+                f"{accion} automatically."
+            )
+
+    @staticmethod
+    def _rescale_minor(minor: int, decimales_desde: int, decimales_hasta: int) -> int:
+        """
+        Same displayed amount expressed with other decimals:
+        300000 (2 dec, 3000.00) → 3000 (0 dec) / → 300000000000 (8 dec).
+        Exact when gaining decimals; rounded when losing them.
+        """
+        if decimales_hasta >= decimales_desde:
+            return minor * 10 ** (decimales_hasta - decimales_desde)
+        return round(minor / 10 ** (decimales_desde - decimales_hasta))
+
+    def _regenerate_fees(
+        self,
+        purchase_id:       int,
+        fecha_compra:      str,
+        total_cuotas:      int,
+        monto_cuota_minor: int,
+        conn:              sqlite3.Connection,
+    ) -> int:
+        """Deletes every fee of the purchase and recreates the schedule. Returns the new fee count."""
+        self._cuotas_repo.eliminar_por_compra(purchase_id, conn=conn)
+        ids = self._cuotas_repo.crear_lote(
+            compra_id=purchase_id,
+            cuotas=self._build_fee_schedule(fecha_compra, total_cuotas, monto_cuota_minor),
+            conn=conn,
+        )
+        return len(ids)
 
     # ----------------------------------------------------------
     # CANCEL PURCHASE
