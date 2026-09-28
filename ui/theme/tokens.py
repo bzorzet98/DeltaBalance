@@ -38,6 +38,16 @@ class TypographyTokens:
     NAV_LABEL_SIZE = 13
     NAV_LABEL_WEIGHT = ft.FontWeight.W_500
 
+    # Registro de transacciones (tabla planilla)
+    REGISTRO_FONT_HEADER     = 11
+    REGISTRO_FONT_CELDA      = 12
+    REGISTRO_FONT_MONTO      = 13
+    # Barra de saldo + buscador + selector de mes: escalón entre el título
+    # de página (PAGE_TITLE_SIZE) y el contenido de la tabla.
+    REGISTRO_FONT_SALDO_BAR  = 15
+    REGISTRO_FONT_BARRA_FLOT = 13
+    REGISTRO_FONT_OVERLAY    = 12
+
 
 class LayoutTokens:
     """

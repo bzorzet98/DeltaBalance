@@ -35,7 +35,7 @@ BASE_DIR    = Path(__file__).resolve().parent.parent
 DATA_DIR    = BASE_DIR / "data"
 SCHEMA_PATH = BASE_DIR / "db" / "schema.sql"
 SEED_PATH   = BASE_DIR / "db" / "seed.sql"
-DB_PATH     = DATA_DIR / "deltabalance.db"
+DB_PATH     = DATA_DIR / "deltabalanceBZ.db"
 
 
 # =============================================================

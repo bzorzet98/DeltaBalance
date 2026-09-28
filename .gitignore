@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+# Migrations
+migration/sources/
+
+# DeltaBalance — datos y preferencias locales
+.deltabalance_prefs.json
+data/*.db
+data/*.db-shm
+data/*.db-wal

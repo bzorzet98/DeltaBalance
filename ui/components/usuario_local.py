@@ -25,43 +25,25 @@ de abajo — así que `guardar_usuario_local()` NUNCA guardaba nada de verdad
 es reabrir el mismo diálogo — un cambio visible que se puede confundir con
 progreso — mientras que ui/screens/deudas_y_compartidos.py simplemente
 volvía a mostrar la misma pantalla "sin hogar" de antes, indistinguible de
-"no pasó nada"). La API real de persistencia cliente en este ciclo de Flet
-es el servicio `ft.SharedPreferences` (confirmado por lectura de
-flet/controls/services/shared_preferences.py del paquete instalado):
-`get`/`set`/`contains_key`/`remove`/`get_keys`/`clear`, TODOS `async def` —
-se agrega una única instancia a `page.services` (mismo patrón que
-FilePicker, ver docs/FLET_API_NOTES.md "FilePicker ahora es un servicio,
-se agrega a page.services") y se reusa esa misma instancia en cada
-llamada, en vez de instanciar una nueva cada vez (existe un
-`page.shared_preferences` en el paquete instalado, pero está DEPRECADO —
-"Use SharedPreferences() instead" — y devuelve una instancia nueva sin
-registrar en cada acceso, así que no se usa acá).
+"no pasó nada").
 
-Como get/set son ahora `async def`, obtener_usuario_local()/
-guardar_usuario_local()/abrir_dialogo_sin_hogar() (los botones "Crear
-hogar"/"Unirme" de adentro) también lo son — Flet soporta handlers de
-evento async de forma nativa (mismo patrón ya confirmado y en uso en
-ui/components/campo_filtrable.py, `_on_blur`). `on_listo` cambia de
-`Callable[[], None]` a `Callable[[], Awaitable[None]]`: todo caller
-(compartir_gasto.py, compartir_compra.py, ui/screens/deudas_y_compartidos.py)
-tiene que pasar ahora una función async y este módulo la `await`ea antes
-de devolver el control — si un caller le pasara una función sync, on_listo()
-devolvería un coroutine sin ejecutar y quedaría exactamente en el mismo
-bug de "no pasa nada" que se está corrigiendo acá.
+Persistencia: archivo JSON local vía ui/utils/prefs.py, clave
+"usuario_local" (CLAUDE.md §12). La versión intermedia usaba el servicio
+`ft.SharedPreferences`, que en Flet 0.86.5 desktop no persiste entre
+sesiones — se reemplazó.
+
+obtener_usuario_local()/guardar_usuario_local() siguen siendo `async def`
+aunque la lectura/escritura del archivo es síncrona: así no cambia ningún
+caller (compartir_gasto.py, compartir_compra.py,
+ui/screens/deudas_y_compartidos.py los `await`ean). `on_listo` es
+`Callable[[], Awaitable[None]]`: todo caller pasa una función async y este
+módulo la `await`ea antes de devolver el control — si un caller le pasara
+una función sync, on_listo() devolvería un coroutine sin ejecutar y
+quedaría en el mismo bug de "no pasa nada" de arriba.
 
 `abrir_dialogo_sin_hogar()` en sí NO necesita ser async (arma y muestra el
 diálogo de forma síncrona, como siempre) — el `await` vive adentro de los
 handlers `_crear()`/`_unirse()`, que sí son event handlers async.
-
-Registro del servicio en `page.services` + `page.update()` inmediato tras
-agregarlo (antes de cualquier `get()`/`set()`): asegura que el cliente ya
-conoce el control del servicio antes de invocarle un método RPC — mismo
-principio ya usado en este proyecto para SnackBar (`page.overlay.append(...);
-page.update()` antes de que quede "activo"). Pendiente de confirmar
-corriendo la app: el mecanismo exacto de registro de un Service standalone
-no está en la lista de cambios de docs/FLET_API_NOTES.md — si
-`ft.SharedPreferences` sigue sin persistir corriendo la app de verdad, es
-el siguiente punto a revisar.
 """
 
 from typing import Awaitable, Callable, Optional
@@ -69,6 +51,7 @@ from typing import Awaitable, Callable, Optional
 import flet as ft
 
 from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
+from ui.utils.prefs import escribir_prefs, leer_prefs
 
 # --- Configuración de layout ---
 ANCHO_DIALOGO_HOGAR = 360
@@ -76,34 +59,15 @@ ANCHO_DIALOGO_HOGAR = 360
 CLAVE_USUARIO_LOCAL = "usuario_local"
 
 
-def _shared_preferences(page: ft.Page) -> ft.SharedPreferences:
-    """
-    Reusa la única instancia de ft.SharedPreferences ya registrada en
-    page.services (agregada por una llamada anterior desde esta misma
-    página) en vez de crear una nueva en cada get/set — ver docstring del
-    módulo para el motivo.
-    """
-    for servicio in page.services:
-        if isinstance(servicio, ft.SharedPreferences):
-            return servicio
-    prefs = ft.SharedPreferences()
-    page.services.append(prefs)
-    page.update()
-    return prefs
-
-
 async def obtener_usuario_local(page: ft.Page) -> Optional[str]:
-    try:
-        return await _shared_preferences(page).get(CLAVE_USUARIO_LOCAL)
-    except Exception:
-        return None
+    nombre = leer_prefs().get(CLAVE_USUARIO_LOCAL)
+    return nombre if isinstance(nombre, str) and nombre else None
 
 
 async def guardar_usuario_local(page: ft.Page, nombre: str) -> None:
-    try:
-        await _shared_preferences(page).set(CLAVE_USUARIO_LOCAL, nombre)
-    except Exception:
-        pass
+    prefs = leer_prefs()
+    prefs[CLAVE_USUARIO_LOCAL] = nombre
+    escribir_prefs(prefs)
 
 
 def abrir_dialogo_sin_hogar(
