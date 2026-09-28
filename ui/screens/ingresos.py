@@ -6,6 +6,16 @@ período (SUELDO, BECA, etc.), con estado pendiente/parcial/cobrado.
 Usa IngresosProyectadosService — tabla propia `ingresos_proyectados`,
 separada de `presupuestos`. En el futuro se vinculará con recibos de
 sueldo y obra social.
+
+ESPERADO es editable inline (click para editar, CLAUDE.md §10) con
+CampoMonto — mismo patrón que _celda_monto() de
+ui/components/registro_transacciones.py. Al confirmar llama a
+IngresosProyectadosService.update() con monto_estimado_minor solo. El
+diálogo de editar completo (_abrir_editar) se mantiene para concepto y
+moneda. persistir_formula=True (CLAUDE.md §9), pero ingresos_proyectados
+no tiene columna de fórmula (a diferencia de presupuestos.formula_estimado),
+así que la fórmula tipeada no sobrevive a _refrescar(): se guarda solo el
+número resuelto.
 """
 
 from datetime import date
@@ -20,7 +30,7 @@ from services.ingresos_proyectados_service import (
 )
 from ui.components import selector_periodo
 from ui.components.campo_monto import CampoMonto
-from ui.theme.tokens import TypographyTokens
+from ui.theme.tokens import LayoutTokens, TypographyTokens
 from utils.money import amount_display
 
 # --- Configuración de layout ---
@@ -32,6 +42,10 @@ ANCHO_ACCIONES        = 140
 ESPACIADO_FILA        = 8
 MONEDA_DEFAULT_CODIGO = "ARS"
 ANCHO_DIALOGO         = 340
+# Celda editable inline de ESPERADO — mismos valores que
+# ui/components/registro_transacciones.py (_celda_monto()).
+ANCHO_BOTON_CONFIRMAR = 48
+ANCHO_MINIMO_CAMPO_CELDA = 40
 
 _COLORES_ESTADO = {
     "pendiente": ft.Colors.OUTLINE,
@@ -343,6 +357,90 @@ def build(
         ))
 
     # ------------------------------------------------------------
+    # CELDA EDITABLE INLINE (monto) — mismo patrón que _celda_monto() de
+    # ui/components/registro_transacciones.py (CLAUDE.md §10). No se
+    # re-renderiza sola tras un guardado exitoso: on_confirmar() dispara
+    # _refrescar(), que reconstruye la grilla ya con el valor nuevo. Solo
+    # vuelve a modo lectura acá si on_confirmar() lanza
+    # IngresoProyectadoError/ValueError.
+    # ------------------------------------------------------------
+
+    def _celda_monto(
+        texto_mostrado: str,
+        monto_inicial_minor: int,
+        decimales: int,
+        on_confirmar: Callable[[int], None],
+        width: int,
+    ) -> ft.Control:
+        contenedor = ft.Container(
+            width=width,
+            height=LayoutTokens.ALTURA_FILA_TABLA,
+            padding=LayoutTokens.PADDING_CELDA,
+        )
+
+        def _mostrar() -> None:
+            contenedor.content = ft.Container(
+                content=ft.Text(
+                    texto_mostrado,
+                    size=TypographyTokens.TABLE_CONTENT_SIZE,
+                    weight=TypographyTokens.TABLE_CONTENT_WEIGHT,
+                    max_lines=1,
+                    overflow=ft.TextOverflow.ELLIPSIS,
+                    tooltip=texto_mostrado,
+                ),
+                on_click=lambda e: _editar(),
+                ink=True,
+                padding=LayoutTokens.PADDING_CELDA,
+                alignment=ft.Alignment.CENTER_LEFT,
+            )
+            page.update()
+
+        def _editar() -> None:
+            def _confirmar(monto_minor: int) -> None:
+                # Deshabilita campo y botón ANTES de llamar al service —
+                # evita que un doble Enter/click dispare dos guardados
+                # (mismo mecanismo que el Registro). Enter y el botón ✓
+                # pasan los dos por campo.confirmar(), así que alcanza con
+                # hacerlo acá.
+                campo.control.disabled = True
+                boton_confirmar_monto.disabled = True
+                page.update()
+                try:
+                    on_confirmar(monto_minor)
+                except (IngresoProyectadoError, ValueError) as err:
+                    _mostrar_mensaje(str(err), es_error=True)
+                    _mostrar()
+                    raise
+
+            campo = CampoMonto(
+                page,
+                on_confirmar=_confirmar,
+                decimales=decimales,
+                persistir_formula=True,
+                valor_inicial_minor=monto_inicial_minor,
+                width=max(width - ANCHO_BOTON_CONFIRMAR, ANCHO_MINIMO_CAMPO_CELDA),
+                dense=LayoutTokens.CELDA_DENSE,
+                text_size=TypographyTokens.TABLE_CONTENT_SIZE,
+                autofocus=True,
+            )
+
+            def _on_click_confirmar(e: ft.ControlEvent) -> None:
+                campo.confirmar()
+
+            boton_confirmar_monto = ft.IconButton(
+                icon=ft.Icons.CHECK, icon_color=ft.Colors.PRIMARY, on_click=_on_click_confirmar,
+            )
+            contenedor.content = ft.Row(
+                [campo.control, boton_confirmar_monto],
+                spacing=0,
+                tight=True,
+            )
+            page.update()
+
+        _mostrar()
+        return contenedor
+
+    # ------------------------------------------------------------
     # FILA
     # ------------------------------------------------------------
 
@@ -355,6 +453,21 @@ def build(
         texto_estimado  = amount_display(ingreso["monto_estimado_minor"], decimales, simbolo)
         texto_percibido = amount_display(ingreso["monto_percibido_minor"], decimales, simbolo)
         color_estado    = _COLORES_ESTADO.get(estado_str, ft.Colors.OUTLINE)
+
+        def _confirmar_esperado(monto_minor: int) -> None:
+            if monto_minor <= 0:
+                raise ValueError("EL MONTO ESPERADO DEBE SER MAYOR A CERO.")
+            ingresos_service.update(ingreso["id"], monto_estimado_minor=monto_minor)
+            _mostrar_mensaje("INGRESO ACTUALIZADO.")
+            _refrescar()
+
+        celda_esperado = _celda_monto(
+            texto_mostrado=texto_estimado,
+            monto_inicial_minor=ingreso["monto_estimado_minor"],
+            decimales=decimales,
+            on_confirmar=_confirmar_esperado,
+            width=ANCHO_ESTIMADO,
+        )
 
         botones = ft.Row(
             [
@@ -385,7 +498,7 @@ def build(
         return ft.Row(
             [
                 ft.Container(width=ANCHO_CONCEPTO,  content=ft.Text(ingreso["concepto"], size=TypographyTokens.TABLE_CONTENT_SIZE)),
-                ft.Container(width=ANCHO_ESTIMADO,  content=ft.Text(texto_estimado, size=TypographyTokens.TABLE_CONTENT_SIZE, weight=TypographyTokens.TABLE_CONTENT_WEIGHT)),
+                celda_esperado,
                 ft.Container(width=ANCHO_PERCIBIDO, content=ft.Text(texto_percibido, size=TypographyTokens.TABLE_CONTENT_SIZE, weight=TypographyTokens.TABLE_CONTENT_WEIGHT, color=ft.Colors.GREEN if cobrado else None)),
                 ft.Container(width=ANCHO_ESTADO,    content=ft.Text(estado_str.upper(), size=TypographyTokens.TABLE_CONTENT_SIZE, color=color_estado, weight=TypographyTokens.TABLE_CONTENT_WEIGHT)),
                 ft.Container(width=ANCHO_ACCIONES,  content=botones),

@@ -125,7 +125,7 @@ from services.presupuestos_service import PresupuestoError, PresupuestosService
 from ui.components import selector_periodo
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
-from ui.theme.tokens import TypographyTokens
+from ui.theme.tokens import LayoutTokens, TypographyTokens
 from utils.money import amount_display
 
 # --- Configuración de layout ---
@@ -373,7 +373,14 @@ def build(
                     width=ANCHO_CATEGORIA,
                     content=ft.Text(fila["categoria_nombre"], size=TypographyTokens.TABLE_CONTENT_SIZE),
                 ),
-                ft.Container(width=ANCHO_ESTIMADO, content=campo_estimado.control),
+                # Alto fijo (CLAUDE.md §10): la fila no cambia de alto al
+                # entrar/salir de foco en Estimado.
+                ft.Container(
+                    width=ANCHO_ESTIMADO,
+                    height=LayoutTokens.ALTURA_FILA_TABLA,
+                    alignment=ft.Alignment.CENTER_LEFT,
+                    content=campo_estimado.control,
+                ),
                 ft.Container(
                     width=ANCHO_REAL,
                     content=ft.Text(

@@ -33,8 +33,8 @@ agregada vía db/schema_migrations.py, no acá en el CREATE TABLE (misma
 razón que el resto de las columnas de esa lista). crear() la inicializa
 igual a monto_adeudado_minor; actualizar_monto_pendiente() es el único
 punto que la modifica después, y lo hace ya con el valor calculado por
-SharedExpensesService.aplicar_pago() — este repositorio nunca resta ni
-decide el nuevo estado.
+SharedExpensesService.aplicar_pago() / update_shared_expense() — este
+repositorio nunca resta ni decide el nuevo estado.
 """
 
 import sqlite3
@@ -263,23 +263,38 @@ class GastosCompartidosRepository:
         self,
         gasto_id: int,
         descripcion: Any = NO_CAMBIAR,
+        fecha: Any = NO_CAMBIAR,
+        monto_base_minor: Any = NO_CAMBIAR,
+        coeficiente_deuda: Any = NO_CAMBIAR,
+        monto_adeudado_minor: Any = NO_CAMBIAR,
         conn: Optional[sqlite3.Connection] = None,
     ) -> bool:
         """
-        Update parcial. Único campo editable hoy: descripcion — el resto
-        de los campos de un gasto compartido no deberían editarse
-        libremente una vez creado (origen/monto/coeficiente son el
-        resultado de un cálculo, no datos sueltos); el estado tiene su
-        propia transición dedicada en marcar_saldado().
+        Update parcial. Default NO_CAMBIAR = no tocar ese campo. Pasar None
+        explícito escribe NULL (solo tiene sentido para `descripcion`, la
+        única nullable de esta lista).
+
+        No calcula monto_adeudado_minor a partir de monto_base_minor/
+        coeficiente_deuda ni decide si el gasto se puede editar — ambas
+        cosas vienen resueltas por SharedExpensesService.
+        update_shared_expense(). monto_pendiente_minor y estado NO están
+        acá a propósito: siguen modificándose únicamente por
+        actualizar_monto_pendiente() (ver docstring del módulo).
         """
-        if descripcion is NO_CAMBIAR:
+        campos, valores = [], []
+        if descripcion          is not NO_CAMBIAR: campos.append("descripcion = ?");          valores.append(descripcion)
+        if fecha                is not NO_CAMBIAR: campos.append("fecha = ?");                valores.append(fecha)
+        if monto_base_minor     is not NO_CAMBIAR: campos.append("monto_base_minor = ?");     valores.append(monto_base_minor)
+        if coeficiente_deuda    is not NO_CAMBIAR: campos.append("coeficiente_deuda = ?");    valores.append(coeficiente_deuda)
+        if monto_adeudado_minor is not NO_CAMBIAR: campos.append("monto_adeudado_minor = ?"); valores.append(monto_adeudado_minor)
+        if not campos:
             return False
-        sql = "UPDATE gastos_compartidos SET descripcion = ? WHERE id = ?;"
-        params = (descripcion, gasto_id)
+        valores.append(gasto_id)
+        sql = f"UPDATE gastos_compartidos SET {', '.join(campos)} WHERE id = ?;"
         if conn is not None:
-            conn.execute(sql, params)
+            conn.execute(sql, tuple(valores))
         else:
-            self._db.execute(sql, params)
+            self._db.execute(sql, tuple(valores))
         return True
 
     def marcar_saldado(self, gasto_id: int, conn: Optional[sqlite3.Connection] = None) -> None:

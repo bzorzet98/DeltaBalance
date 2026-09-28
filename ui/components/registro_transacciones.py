@@ -981,7 +981,12 @@ def build(
                 autofocus=True,
             )
 
-            boton_confirmar_celda = ft.IconButton(icon=ft.Icons.CHECK, icon_color=ft.Colors.PRIMARY)
+            boton_confirmar_celda = ft.IconButton(
+                icon=ft.Icons.CHECK,
+                icon_color=ft.Colors.PRIMARY,
+                icon_size=LayoutTokens.ICONO_BOTON_CELDA,
+                style=ft.ButtonStyle(padding=ft.Padding.all(LayoutTokens.PADDING_BOTON_CELDA)),
+            )
 
             def _confirmar(e=None) -> None:
                 # Deshabilita el campo y el botón ANTES de llamar al service
@@ -1183,7 +1188,11 @@ def build(
                 campo.confirmar()
 
             boton_confirmar_monto = ft.IconButton(
-                icon=ft.Icons.CHECK, icon_color=ft.Colors.PRIMARY, on_click=_on_click_confirmar,
+                icon=ft.Icons.CHECK,
+                icon_color=ft.Colors.PRIMARY,
+                icon_size=LayoutTokens.ICONO_BOTON_CELDA,
+                style=ft.ButtonStyle(padding=ft.Padding.all(LayoutTokens.PADDING_BOTON_CELDA)),
+                on_click=_on_click_confirmar,
             )
             contenedor.content = ft.Row(
                 [campo.control, boton_confirmar_monto],

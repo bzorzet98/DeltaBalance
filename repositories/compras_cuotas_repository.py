@@ -250,6 +250,7 @@ class ComprasCuotasRepository:
     def actualizar(
         self,
         compra_id: int,
+        fecha_compra: Any = NO_CAMBIAR,
         concepto: Any = NO_CAMBIAR,
         cuenta_id: Any = NO_CAMBIAR,
         categoria_id: Any = NO_CAMBIAR,
@@ -267,12 +268,13 @@ class ComprasCuotasRepository:
         Update parcial. Default NO_CAMBIAR = no tocar ese campo. Pasar None
         explícito escribe NULL a propósito (solo tiene sentido hoy para
         `notas`, la única columna nullable de esta lista — el resto son
-        NOT NULL en el schema). No hay un update() genérico en
-        FeesService hoy que use esto; se agrega desde el arranque para el
-        paso 2 (edición de compras, ventana de corrección temprana de
-        CLAUDE.md sección 4), igual que el resto de los repositorios.
+        NOT NULL en el schema). Lo usan FeesService.update_purchase()/
+        update_purchase_cuotas() (edición de compras, ventana de corrección
+        temprana de CLAUDE.md sección 4) — este método no decide qué campo
+        se puede editar ni regenera las cuotas; eso es del service.
         """
         campos, valores = [], []
+        if fecha_compra           is not NO_CAMBIAR: campos.append("fecha_compra = ?");           valores.append(fecha_compra)
         if concepto               is not NO_CAMBIAR: campos.append("concepto = ?");               valores.append(concepto)
         if cuenta_id               is not NO_CAMBIAR: campos.append("cuenta_id = ?");               valores.append(cuenta_id)
         if categoria_id            is not NO_CAMBIAR: campos.append("categoria_id = ?");            valores.append(categoria_id)

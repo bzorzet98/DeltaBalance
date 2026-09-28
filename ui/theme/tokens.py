@@ -57,6 +57,13 @@ class LayoutTokens:
     # reduce el alto interno del control para que quepa en ALTURA_FILA_TABLA.
     CELDA_DENSE = True
 
+    # Botón ✓ de confirmar en modo edición (ft.IconButton): con el ícono y
+    # el padding default de Material (24 + 8*2 = 40px) no entra en
+    # ALTURA_FILA_TABLA - 2*PADDING_CELDA = 28px. Con estos valores el
+    # contenido del botón mide 16 + 4*2 = 24px.
+    ICONO_BOTON_CELDA = 16
+    PADDING_BOTON_CELDA = 4
+
 
 class SharedFieldText:
     HINT_MONTO_CON_SIGNO = "± monto"

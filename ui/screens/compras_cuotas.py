@@ -14,10 +14,30 @@ línea, monto CON SIGNO) → tabla de compras existentes, filtrada por
 mes/año/banco/categoría/búsqueda. Reusa el patrón visual de fila de tabla
 de ui/components/color_chip.py — no la lógica de guardado del Registro de
 transacciones del dashboard, que es demasiado distinta (acá el signo
-dispara compra-nueva vs. ajuste-de-resumen, no gasto-vs-ingreso). Sin
-edición inline de compras ya cargadas en esta tarea (alcanza con listar y
-dar de alta) — si se necesita editar más adelante, es tarea aparte
-reusando el mismo patrón del Registro.
+dispara compra-nueva vs. ajuste-de-resumen, no gasto-vs-ingreso).
+
+Edición inline de compras ya cargadas (click para editar, CLAUDE.md §10):
+Concepto y Fecha (_celda_texto), Banco y Categoría (_celda_campo_filtrable
+— Banco con el chip de color en modo lectura), Monto total (_celda_monto,
+CampoMonto con persistir_formula=True) y Cuotas (_celda_texto) — mismas
+celdas que ui/components/registro_transacciones.py, copiadas acá con
+FeesError en vez de TransactionError (son closures de ese build(), no se
+pueden importar). Todas llaman a FeesService.update_purchase(), salvo
+Cuotas, que llama a update_purchase_cuotas() (regenera el cronograma con
+el mismo total). Qué se puede corregir y qué no lo decide el service
+(CLAUDE.md §4, ver el comentario arriba de update_purchase()): si lo
+rechaza, su FeesError se muestra tal cual y la celda vuelve al valor
+anterior. Única regla replicada en la UI (pedido explícito): Cuotas se
+muestra bloqueada, con el motivo en el tooltip, si alguna cuota ya no está
+'pendiente'. El selector de Categoría inline excluye las 3 categorías
+especiales de cargo extra (una compra ya cargada no puede convertirse en
+cargo extra del resumen); el de Banco ofrece las mismas tarjetas que la
+fila de alta. Moneda (_celda_dropdown, ft.Dropdown simple — CLAUDE.md
+§10) ofrece solo las monedas operativas de la tarjeta de la fila; al
+cambiarla, el service mantiene el importe mostrado (reescala los minor
+units si la moneda nueva tiene otros decimales). compras_cuotas no tiene
+columna de fórmula, así que la fórmula tipeada en Monto total no
+sobrevive al refresco: se guarda solo el número resuelto.
 
 A diferencia del Registro (que recibe su `estado` del dashboard y se
 reconstruye entero vía el on_cambio() del caller), esta pantalla administra
@@ -99,9 +119,9 @@ enable_filter=True) ni ft.AutoComplete. Se probaron los dos controles
 nativos en rondas anteriores del proyecto (primero Dropdown, después
 AutoComplete) y ambos tuvieron fricción real — ver el docstring de
 ui/components/registro_transacciones.py para el historial completo y el
-de campo_filtrable.py para el detalle de cómo funciona el reemplazo. Acá
-NO hay edición inline de compras (ver arriba), así que el único lugar
-afectado es la fila de alta. Cuenta muestra solo "nombre" (sin sufijo de
+de campo_filtrable.py para el detalle de cómo funciona el reemplazo. Se
+usa en la fila de alta (Cuenta y Categoría) y en la edición inline de
+Categoría de las compras ya cargadas. Cuenta muestra solo "nombre" (sin sufijo de
 tipo — ya no hace falta, _cuentas_credito() filtra TODA la lista a solo
 tipo='credito', ver más abajo) tanto en las opciones de Cuenta de la fila
 de alta como en el filtro de Banco de la barra de herramientas — a
@@ -166,7 +186,7 @@ from ui.components import barra_filtros, compartir_compra
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
 from ui.components.color_chip import color_chip
-from ui.theme.tokens import SharedFieldText, TypographyTokens
+from ui.theme.tokens import LayoutTokens, SharedFieldText, TypographyTokens
 from utils.money import amount_display, amount_to_minor
 
 # --- Configuración de layout ---
@@ -174,7 +194,9 @@ _ANCHO_CONCEPTO = 170
 _ANCHO_BANCO = 150
 _ANCHO_CATEGORIA = 170
 _ANCHO_MONTO = 110
-_ANCHO_CUOTAS = 80
+# Ampliado (era 80) — en modo edición la celda es campo + botón ✓ (40px de
+# ancho mínimo de Material): con 80 no entraban en el interior de 72px.
+_ANCHO_CUOTAS = 96
 _ANCHO_FECHA = 110
 # Ampliado (era 70) — mismo motivo que ANCHO_COL_MONEDA en
 # registro_transacciones.py: el código de moneda quedaba cortado.
@@ -186,6 +208,10 @@ _ANCHO_TOOLBAR_FILTRO_BANCO = 150
 _ANCHO_TOOLBAR_FILTRO_CATEGORIA = 160
 _ANCHO_TOOLBAR_BUSQUEDA = 200
 _LIMITE_COMPRAS_DEL_MES = 500  # tope de per_page al pedir las compras (se filtra por mes client-side después)
+# Celdas editables inline de compras ya cargadas — mismos valores que
+# ui/components/registro_transacciones.py.
+_ANCHO_BOTON_CONFIRMAR = 48
+_ANCHO_MINIMO_CAMPO_CELDA = 40
 
 # Sección "Cargos extra de este resumen" (Tarea 3)
 _ANCHO_CONCEPTO_CARGO = 200
@@ -855,7 +881,8 @@ def build(
         )
 
     # ------------------------------------------------------------
-    # TABLA DE COMPRAS EXISTENTES (solo lectura salvo el ícono Compartir)
+    # TABLA DE COMPRAS EXISTENTES (Concepto/Categoría/Monto total
+    # editables inline — ver docstring del módulo — + ícono Compartir)
     # ------------------------------------------------------------
 
     tabla_body = ft.Column(spacing=4)
@@ -869,6 +896,277 @@ def build(
             overflow=ft.TextOverflow.ELLIPSIS,
             tooltip=texto,
         )
+
+    # ------------------------------------------------------------
+    # CELDAS EDITABLES INLINE — mismo patrón que _celda_texto()/
+    # _celda_campo_filtrable()/_celda_monto() de
+    # ui/components/registro_transacciones.py (CLAUDE.md §10). No se
+    # re-renderizan solas tras un guardado exitoso: on_confirmar() dispara
+    # _refrescar_datos(), que reconstruye la tabla ya con el valor nuevo
+    # (sin tocar la fila de alta). Solo vuelven a modo lectura acá si
+    # on_confirmar() lanza FeesError/ValueError.
+    # ------------------------------------------------------------
+
+    def _contenedor_celda(width: int) -> ft.Container:
+        return ft.Container(
+            width=width,
+            height=LayoutTokens.ALTURA_FILA_TABLA,
+            padding=LayoutTokens.PADDING_CELDA,
+        )
+
+    def _contenido_lectura(texto_control: ft.Control, on_click: Callable[[], None]) -> ft.Control:
+        return ft.Container(
+            content=texto_control,
+            on_click=lambda e: on_click(),
+            ink=True,
+            padding=LayoutTokens.PADDING_CELDA,
+            alignment=ft.Alignment.CENTER_LEFT,
+        )
+
+    def _celda_texto(
+        texto_mostrado: str,
+        valor_inicial: str,
+        on_confirmar: Callable[[str], None],
+        width: int,
+    ) -> ft.Control:
+        contenedor = _contenedor_celda(width)
+
+        def _mostrar() -> None:
+            contenedor.content = _contenido_lectura(_texto_celda(texto_mostrado), _editar)
+            page.update()
+
+        def _editar() -> None:
+            campo = ft.TextField(
+                value=valor_inicial,
+                width=max(width - _ANCHO_BOTON_CONFIRMAR, _ANCHO_MINIMO_CAMPO_CELDA),
+                dense=LayoutTokens.CELDA_DENSE,
+                text_size=TypographyTokens.TABLE_CONTENT_SIZE,
+                autofocus=True,
+            )
+
+            boton_confirmar_celda = ft.IconButton(
+                icon=ft.Icons.CHECK,
+                icon_color=ft.Colors.PRIMARY,
+                icon_size=LayoutTokens.ICONO_BOTON_CELDA,
+                style=ft.ButtonStyle(padding=ft.Padding.all(LayoutTokens.PADDING_BOTON_CELDA)),
+            )
+
+            def _confirmar(e=None) -> None:
+                # Deshabilita campo y botón ANTES de llamar al service —
+                # evita que un doble Enter/click dispare dos guardados
+                # (mismo mecanismo que el Registro).
+                campo.disabled = True
+                boton_confirmar_celda.disabled = True
+                page.update()
+                try:
+                    on_confirmar(campo.value)
+                except (FeesError, ValueError) as err:
+                    _mostrar_error(str(err))
+                    _mostrar()
+
+            campo.on_submit = _confirmar
+            boton_confirmar_celda.on_click = _confirmar
+            contenedor.content = ft.Row([campo, boton_confirmar_celda], spacing=0, tight=True)
+            page.update()
+
+        _mostrar()
+        return contenedor
+
+    def _celda_campo_filtrable(
+        texto_mostrado: str,
+        opciones: list[tuple[str, str]],
+        valor_inicial: Optional[str],
+        on_confirmar: Callable[[str], None],
+        width: int,
+        contenido_lectura: Optional[Callable[[], ft.Control]] = None,
+    ) -> ft.Control:
+        """
+        contenido_lectura: opcional — arma el control del modo lectura
+        cuando no alcanza con el texto solo (Banco: chip de color + nombre,
+        igual que el Registro). Se llama de nuevo en cada vuelta a modo
+        lectura, así nunca se reusa un control ya desmontado.
+        """
+        contenedor = _contenedor_celda(width)
+
+        def _mostrar() -> None:
+            lectura = contenido_lectura() if contenido_lectura else _texto_celda(texto_mostrado)
+            contenedor.content = _contenido_lectura(lectura, _editar)
+            page.update()
+
+        def _editar() -> None:
+            def _confirmar(id_seleccionado: Optional[str]) -> None:
+                if id_seleccionado is None:
+                    return
+                # CampoFiltrable expone su TextField interno como _campo
+                # (sin setter público de disabled) — mismo acceso que el
+                # Registro.
+                campo._campo.disabled = True
+                page.update()
+                try:
+                    on_confirmar(id_seleccionado)
+                except (FeesError, ValueError) as err:
+                    _mostrar_error(str(err))
+                    _mostrar()
+
+            campo = CampoFiltrable(
+                page,
+                opciones,
+                on_seleccionar=_confirmar,
+                valor_inicial_id=valor_inicial,
+                width=width,
+                text_size=TypographyTokens.FILTER_SIZE,
+                autofocus=True,
+            )
+            contenedor.content = campo.control
+            page.update()
+
+        _mostrar()
+        return contenedor
+
+    def _celda_monto(
+        texto_mostrado: str,
+        monto_inicial_minor: int,
+        decimales: int,
+        on_confirmar: Callable[[int], None],
+        width: int,
+    ) -> ft.Control:
+        """
+        on_confirmar recibe el monto ya resuelto en minor units (CampoMonto
+        resuelve la fórmula/número). Re-lanza la excepción tras revertir la
+        celda para que CampoMonto también revierta su texto (ver su
+        docstring).
+        """
+        contenedor = _contenedor_celda(width)
+
+        def _mostrar() -> None:
+            contenedor.content = _contenido_lectura(
+                _texto_celda(texto_mostrado, weight=TypographyTokens.TABLE_CONTENT_WEIGHT), _editar,
+            )
+            page.update()
+
+        def _editar() -> None:
+            def _confirmar(monto_minor: int) -> None:
+                # Enter y el botón ✓ pasan los dos por campo.confirmar(),
+                # así que deshabilitar acá cubre los dos caminos.
+                campo.control.disabled = True
+                boton_confirmar_monto.disabled = True
+                page.update()
+                try:
+                    on_confirmar(monto_minor)
+                except (FeesError, ValueError) as err:
+                    _mostrar_error(str(err))
+                    _mostrar()
+                    raise
+
+            campo = CampoMonto(
+                page,
+                on_confirmar=_confirmar,
+                decimales=decimales,
+                persistir_formula=True,
+                valor_inicial_minor=monto_inicial_minor,
+                width=max(width - _ANCHO_BOTON_CONFIRMAR, _ANCHO_MINIMO_CAMPO_CELDA),
+                dense=LayoutTokens.CELDA_DENSE,
+                text_size=TypographyTokens.TABLE_CONTENT_SIZE,
+                autofocus=True,
+            )
+
+            def _on_click_confirmar(e: ft.ControlEvent) -> None:
+                campo.confirmar()
+
+            boton_confirmar_monto = ft.IconButton(
+                icon=ft.Icons.CHECK,
+                icon_color=ft.Colors.PRIMARY,
+                icon_size=LayoutTokens.ICONO_BOTON_CELDA,
+                style=ft.ButtonStyle(padding=ft.Padding.all(LayoutTokens.PADDING_BOTON_CELDA)),
+                on_click=_on_click_confirmar,
+            )
+            contenedor.content = ft.Row([campo.control, boton_confirmar_monto], spacing=0, tight=True)
+            page.update()
+
+        _mostrar()
+        return contenedor
+
+    def _celda_dropdown(
+        texto_mostrado: str,
+        opciones: list[tuple[str, str]],
+        valor_inicial: Optional[str],
+        on_confirmar: Callable[[str], None],
+        width: int,
+    ) -> ft.Control:
+        """
+        Mismo rol que _celda_dropdown() del Registro, pero con un
+        ft.Dropdown SIMPLE (CLAUDE.md §10, "dropdowns simples (moneda)") —
+        sin enable_filter/editable, que en el Registro arrastran el bug de
+        selección por teclado #5338 (ver su docstring). ft.Dropdown no tiene
+        on_submit en Flet 0.86.5: on_select es la única vía de confirmar.
+        Elegir el mismo valor que ya tenía vuelve a modo lectura sin llamar
+        al service.
+        """
+        contenedor = _contenedor_celda(width)
+
+        def _mostrar() -> None:
+            contenedor.content = _contenido_lectura(_texto_celda(texto_mostrado), _editar)
+            page.update()
+
+        def _editar() -> None:
+            dd = ft.Dropdown(
+                width=width,
+                dense=LayoutTokens.CELDA_DENSE,
+                text_size=TypographyTokens.TABLE_CONTENT_SIZE,
+                value=valor_inicial,
+                options=[ft.dropdown.Option(key=k, text=t) for k, t in opciones],
+                autofocus=True,
+            )
+
+            def _confirmar(e: Optional[ft.ControlEvent] = None) -> None:
+                if not dd.value or dd.value == valor_inicial:
+                    _mostrar()
+                    return
+                # Mismo mecanismo de "deshabilitar antes de llamar al
+                # service" que el resto de las celdas.
+                dd.disabled = True
+                page.update()
+                try:
+                    on_confirmar(dd.value)
+                except (FeesError, ValueError) as err:
+                    _mostrar_error(str(err))
+                    _mostrar()
+
+            dd.on_select = _confirmar
+            contenedor.content = dd
+            page.update()
+
+        _mostrar()
+        return contenedor
+
+    def _celda_bloqueada(texto_mostrado: str, motivo: str, width: int) -> ft.Control:
+        """Celda de solo lectura con el motivo del bloqueo como tooltip — mismo alto que las editables."""
+        contenedor = _contenedor_celda(width)
+        contenedor.content = ft.Container(
+            content=ft.Text(
+                texto_mostrado,
+                size=TypographyTokens.TABLE_CONTENT_SIZE,
+                weight=TypographyTokens.TABLE_CONTENT_WEIGHT_REGULAR,
+                color=ft.Colors.OUTLINE,
+                max_lines=1,
+                overflow=ft.TextOverflow.ELLIPSIS,
+                tooltip=motivo,
+            ),
+            padding=LayoutTokens.PADDING_CELDA,
+            alignment=ft.Alignment.CENTER_LEFT,
+        )
+        return contenedor
+
+    # Categoría inline: mismas categorías de egreso que la fila de alta,
+    # SIN las 3 especiales de cargo extra — ver docstring del módulo.
+    opciones_categoria_edicion = [
+        (str(cat["id"]), cat["subcategoria"])
+        for cat in categorias
+        if str(cat["id"]) not in mapa_categoria_a_charge_type
+    ]
+    # Banco inline: mismas tarjetas que la fila de alta (solo crédito,
+    # solo activas — ver _cuentas_credito()).
+    opciones_cuenta_edicion = [(str(cta["id"]), cta["nombre"]) for cta in cuentas_activas]
 
     def _confirmar_eliminar_compra(c: dict) -> None:
         """
@@ -912,6 +1210,130 @@ def build(
     def _fila_compra(c: dict) -> ft.Control:
         cuenta = cuentas_por_id.get(c["cuenta_id"])
 
+        def _guardar_campo(**kwargs) -> None:
+            # FeesError del service (ej. monto bloqueado por §4) sube tal
+            # cual a la celda, que lo muestra y revierte.
+            fees_service.update_purchase(c["id"], **kwargs)
+            _mostrar_ok(f"COMPRA #{c['id']} ACTUALIZADA.")
+            _refrescar_datos()
+
+        def _confirmar_concepto(nuevo: str) -> None:
+            if not nuevo or not nuevo.strip():
+                raise ValueError("EL COMERCIO/CONCEPTO NO PUEDE ESTAR VACÍO.")
+            _guardar_campo(concepto=nuevo.strip())
+
+        def _confirmar_categoria(nuevo_id: str) -> None:
+            _guardar_campo(categoria_id=int(nuevo_id))
+
+        def _confirmar_monto(monto_minor: int) -> None:
+            if monto_minor <= 0:
+                raise ValueError("EL MONTO TOTAL DEBE SER MAYOR A 0.")
+            _guardar_campo(monto_total_minor=monto_minor)
+
+        def _confirmar_banco(nuevo_id: str) -> None:
+            _guardar_campo(cuenta_id=int(nuevo_id))
+
+        def _confirmar_fecha(nuevo: str) -> None:
+            try:
+                datetime.strptime((nuevo or "").strip(), "%Y-%m-%d")
+            except ValueError:
+                raise ValueError("LA FECHA DEBE TENER EL FORMATO AAAA-MM-DD.") from None
+            _guardar_campo(fecha=nuevo.strip())
+
+        def _confirmar_cuotas(nuevo: str) -> None:
+            try:
+                cantidad = int((nuevo or "").strip())
+            except ValueError:
+                raise ValueError("LA CANTIDAD DE CUOTAS DEBE SER UN NÚMERO ENTERO.") from None
+            if cantidad < 1:
+                raise ValueError("LA CANTIDAD DE CUOTAS DEBE SER AL MENOS 1.")
+            fees_service.update_purchase_cuotas(c["id"], cantidad)
+            _mostrar_ok(f"COMPRA #{c['id']} ACTUALIZADA.")
+            _refrescar_datos()
+
+        celda_concepto = _celda_texto(
+            texto_mostrado=c["concepto"],
+            valor_inicial=c["concepto"],
+            on_confirmar=_confirmar_concepto,
+            width=_ANCHO_CONCEPTO,
+        )
+
+        def _banco_con_chip() -> ft.Control:
+            return ft.Row(
+                [
+                    color_chip(cuenta["color_hex"] if cuenta else None),
+                    _texto_celda(c["account_name"]),
+                ],
+                spacing=6,
+            )
+
+        celda_banco = _celda_campo_filtrable(
+            texto_mostrado=c["account_name"],
+            opciones=opciones_cuenta_edicion,
+            valor_inicial=str(c["cuenta_id"]),
+            on_confirmar=_confirmar_banco,
+            width=_ANCHO_BANCO,
+            contenido_lectura=_banco_con_chip,
+        )
+        celda_categoria = _celda_campo_filtrable(
+            texto_mostrado=c["category_name"],
+            opciones=opciones_categoria_edicion,
+            valor_inicial=str(c["categoria_id"]),
+            on_confirmar=_confirmar_categoria,
+            width=_ANCHO_CATEGORIA,
+        )
+        celda_monto = _celda_monto(
+            texto_mostrado=amount_display(c["monto_total_minor"], c["decimales"], ""),
+            monto_inicial_minor=c["monto_total_minor"],
+            decimales=c["decimales"],
+            on_confirmar=_confirmar_monto,
+            width=_ANCHO_MONTO,
+        )
+
+        # Cuotas: editable solo si TODAS siguen 'pendiente' (pedido
+        # explícito). La regla completa (compartida por cuota, reparto
+        # custom) la aplica FeesService.update_purchase_cuotas() — si la
+        # rechaza, su FeesError se muestra en la celda como siempre.
+        todas_pendientes = all(q["estado"] == "pendiente" for q in fees_service.get_fees_for_purchase(c["id"]))
+        if todas_pendientes:
+            celda_cuotas = _celda_texto(
+                texto_mostrado=str(c["total_cuotas"]),
+                valor_inicial=str(c["total_cuotas"]),
+                on_confirmar=_confirmar_cuotas,
+                width=_ANCHO_CUOTAS,
+            )
+        else:
+            celda_cuotas = _celda_bloqueada(
+                str(c["total_cuotas"]), "NO SE PUEDE MODIFICAR: HAY CUOTAS YA PROCESADAS", _ANCHO_CUOTAS,
+            )
+
+        celda_fecha = _celda_texto(
+            texto_mostrado=c["fecha_compra"],
+            valor_inicial=c["fecha_compra"],
+            on_confirmar=_confirmar_fecha,
+            width=_ANCHO_FECHA,
+        )
+
+        # Moneda: solo entre las monedas operativas de la tarjeta de esta
+        # fila — mismo criterio que la fila de alta y que el Registro. La
+        # actual se agrega si la tarjeta ya no la tiene, para que el
+        # Dropdown arranque mostrándola. FeesService.update_purchase()
+        # mantiene el importe mostrado y aplica la regla de §4.
+        opciones_moneda = [(s["moneda_codigo"], s["moneda_codigo"]) for s in (cuenta["saldos"] if cuenta else [])]
+        if c["currency_code"] not in [codigo for codigo, _ in opciones_moneda]:
+            opciones_moneda.append((c["currency_code"], c["currency_code"]))
+
+        def _confirmar_moneda(nuevo_codigo: str) -> None:
+            _guardar_campo(moneda_codigo=nuevo_codigo)
+
+        celda_moneda = _celda_dropdown(
+            texto_mostrado=c["currency_code"],
+            opciones=opciones_moneda,
+            valor_inicial=c["currency_code"],
+            on_confirmar=_confirmar_moneda,
+            width=_ANCHO_MONEDA,
+        )
+
         icono_compartir, ya_compartido = compartir_compra.build_icon(
             page, shared_expenses_service, fees_service, c, _refrescar_datos,
         )
@@ -935,30 +1357,13 @@ def build(
 
         fila_contenido = ft.Row(
             [
-                ft.Container(width=_ANCHO_CONCEPTO, padding=4, content=_texto_celda(c["concepto"])),
-                ft.Container(
-                    width=_ANCHO_BANCO,
-                    padding=4,
-                    content=ft.Row(
-                        [
-                            color_chip(cuenta["color_hex"] if cuenta else None),
-                            _texto_celda(c["account_name"]),
-                        ],
-                        spacing=6,
-                    ),
-                ),
-                ft.Container(width=_ANCHO_CATEGORIA, padding=4, content=_texto_celda(c["category_name"])),
-                ft.Container(
-                    width=_ANCHO_MONTO,
-                    padding=4,
-                    content=_texto_celda(
-                        amount_display(c["monto_total_minor"], c["decimales"], ""),
-                        weight=TypographyTokens.TABLE_CONTENT_WEIGHT,
-                    ),
-                ),
-                ft.Container(width=_ANCHO_CUOTAS, padding=4, content=_texto_celda(str(c["total_cuotas"]))),
-                ft.Container(width=_ANCHO_FECHA, padding=4, content=_texto_celda(c["fecha_compra"])),
-                ft.Container(width=_ANCHO_MONEDA, padding=4, content=_texto_celda(c["currency_code"])),
+                celda_concepto,
+                celda_banco,
+                celda_categoria,
+                celda_monto,
+                celda_cuotas,
+                celda_fecha,
+                celda_moneda,
                 celda_compartir,
                 celda_eliminar,
             ],
@@ -987,10 +1392,13 @@ def build(
         nativa — mes/año, categoría y búsqueda de texto se aplican acá
         client-side sobre lo ya traído (ver docstring del módulo).
         """
-        compras = fees_service.list_purchases(
-            account_id=estado["filtro_banco"],
-            per_page=_LIMITE_COMPRAS_DEL_MES,
-        )
+        # dict() antes de pasar a la UI (CLAUDE.md §11).
+        compras = [
+            dict(c) for c in fees_service.list_purchases(
+                account_id=estado["filtro_banco"],
+                per_page=_LIMITE_COMPRAS_DEL_MES,
+            )
+        ]
         mes_str = f"{estado['anio']:04d}-{estado['mes']:02d}"
         compras = [c for c in compras if c["fecha_compra"][:7] == mes_str]
         if estado["filtro_categoria"] is not None:

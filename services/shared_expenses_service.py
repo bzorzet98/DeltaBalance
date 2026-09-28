@@ -47,11 +47,12 @@ import secrets
 import sqlite3
 import string
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
 
 from db.database import DatabaseManager
 from utils.money import amount_display
+from repositories._sentinels import NO_CAMBIAR
 from repositories.hogares_repository import HogaresRepository
 from repositories.hogar_miembros_repository import HogarMiembrosRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
@@ -841,30 +842,66 @@ class SharedExpensesService:
     # ----------------------------------------------------------
 
     def update_shared_expense(
-        self, gasto_id: int, hogar_id: int, descripcion: Optional[str],
+        self,
+        gasto_id: int,
+        hogar_id: int,
+        descripcion: Optional[str] = NO_CAMBIAR,
+        monto_base_minor: Optional[int] = NO_CAMBIAR,
+        coeficiente_deuda: Optional[float] = NO_CAMBIAR,
+        fecha: Optional[str] = NO_CAMBIAR,
     ) -> SharedExpensesResult:
         """
-        Actualiza la descripción de un gasto compartido (Tarea 9, Parte B
-        — UI). Único campo editable hoy: GastosCompartidosRepository.
-        actualizar() no expone ningún otro (origen/monto/coeficiente son
-        el resultado de un cálculo, no datos sueltos que tenga sentido
-        reescribir a mano — ver docstring de ese repositorio). No existía
-        ningún método de service que expusiera esto todavía — se agrega
-        acá porque la pantalla combinada de esta tarea necesita una acción
-        "editar" por fila, y el repositorio ya lo soportaba sin caller.
+        Update parcial de un gasto compartido (edición inline de
+        ui/screens/deudas_y_compartidos.py). Default NO_CAMBIAR = no tocar
+        ese campo — mismo sentinel que los repositorios (igual que
+        IngresosProyectadosService.update()).
+
+        Ventana de corrección temprana (CLAUDE.md §4), por campo:
+        - descripcion / fecha: descriptivos — editables en cualquier
+          estado, incluso 'saldado'. descripcion=None limpia la
+          descripción.
+        - monto_base_minor / coeficiente_deuda: de ellos sale
+          monto_adeudado_minor (y de ahí el saldo neto del hogar).
+          Editables solo mientras el gasto está 'pendiente' Y no tiene
+          ningún pago en gasto_compartido_pagos — un pago es dependencia
+          con estado propio (mismo criterio que delete_shared_expense()):
+          recalcular el adeudado por debajo de lo ya pagado dejaría el
+          historial de pagos inconsistente. Si se pueden editar, se
+          recalculan monto_adeudado_minor = round(monto_base_minor *
+          coeficiente_deuda / 100) (misma fórmula que add_shared_expense())
+          y monto_pendiente_minor (= el adeudado nuevo completo, porque no
+          hay pagos) en la misma transacción. Pasar el mismo valor que ya
+          tiene no cuenta como cambio (no dispara el bloqueo).
+
+        Todas las validaciones corren antes de escribir: si un campo se
+        rechaza, no se escribe ninguno de los pasados en la misma llamada.
+
+        Nota: editar monto/coeficiente acá NO toca la transacción/compra de
+        origen (origen_tipo/origen_id) — el gasto compartido pasa a tener
+        su propio monto, desacoplado del origen.
 
         Args:
-            gasto_id:    El gasto a editar.
-            hogar_id:    Hogar al que debe pertenecer (misma validación de
-                         pertenencia que el resto de los métodos de este
-                         service).
-            descripcion: Nuevo valor. None limpia la descripción (igual
-                         que el resto de los `actualizar()` de este
-                         proyecto que reciben None explícito).
+            gasto_id:          El gasto a editar.
+            hogar_id:          Hogar al que debe pertenecer (misma
+                               validación de pertenencia que el resto de
+                               los métodos de este service).
+            descripcion:       Nuevo valor, o None para limpiarla.
+            monto_base_minor:  Nuevo monto base, en minor units, != 0
+                               (puede ser negativo, ver
+                               add_shared_expense()).
+            coeficiente_deuda: Nuevo porcentaje, 0 < x <= 100.
+            fecha:             Nueva fecha 'YYYY-MM-DD'.
+
+        Returns:
+            SharedExpensesResult con success=False si no cambió nada.
 
         Raises:
             GastoCompartidoNotFoundError si gasto_id no existe o no
                                          pertenece a hogar_id.
+            SharedExpensesError si se cambia monto/coeficiente de un gasto
+                                'saldado' o con pagos registrados.
+            ValueError si fecha no es 'YYYY-MM-DD', monto_base_minor es
+                       0/None o coeficiente_deuda está fuera de (0, 100].
         """
         gasto = self._gastos_repo.obtener_por_id(gasto_id)
         if gasto is None or gasto["hogar_id"] != hogar_id:
@@ -872,12 +909,67 @@ class SharedExpensesService:
                 f"Gasto compartido id={gasto_id} not found on hogar id={hogar_id}."
             )
 
-        self._gastos_repo.actualizar(gasto_id, descripcion=descripcion)
+        campos_repo: dict = {}
+
+        if descripcion is not NO_CAMBIAR:
+            campos_repo["descripcion"] = descripcion
+
+        if fecha is not NO_CAMBIAR:
+            try:
+                datetime.strptime(fecha, "%Y-%m-%d")
+            except (TypeError, ValueError):
+                raise ValueError(f"Invalid date format: '{fecha}'. Expected 'YYYY-MM-DD'.")
+            campos_repo["fecha"] = fecha
+
+        nuevo_adeudado_minor = None
+        if monto_base_minor is not NO_CAMBIAR or coeficiente_deuda is not NO_CAMBIAR:
+            base = gasto["monto_base_minor"] if monto_base_minor is NO_CAMBIAR else monto_base_minor
+            coef = gasto["coeficiente_deuda"] if coeficiente_deuda is NO_CAMBIAR else coeficiente_deuda
+            if (base, coef) != (gasto["monto_base_minor"], gasto["coeficiente_deuda"]):
+                if gasto["estado"] == "saldado":
+                    raise SharedExpensesError(
+                        f"Gasto compartido id={gasto_id} is already 'saldado' — its amount and "
+                        f"coefficient can no longer be edited."
+                    )
+                pagos = self._pagos_repo.listar_por_gasto(gasto_id)
+                if pagos:
+                    raise SharedExpensesError(
+                        f"Gasto compartido id={gasto_id} has {len(pagos)} payment(s) registered — "
+                        f"its amount and coefficient can no longer be edited."
+                    )
+                if base is None or base == 0:
+                    raise ValueError("monto_base_minor cannot be zero.")
+                if coef is None or not (0 < coef <= 100):
+                    raise ValueError(
+                        f"coeficiente_deuda must be between 0 (exclusive) and 100 (inclusive). "
+                        f"Received: {coef}."
+                    )
+                nuevo_adeudado_minor = round(base * coef / 100)
+                campos_repo["monto_base_minor"] = base
+                campos_repo["coeficiente_deuda"] = coef
+                campos_repo["monto_adeudado_minor"] = nuevo_adeudado_minor
+
+        if not campos_repo:
+            return SharedExpensesResult(
+                success=False,
+                entity_id=gasto_id,
+                data={"gasto_id": gasto_id, "hogar_id": hogar_id},
+                message=f"Gasto compartido id={gasto_id}: no fields to update.",
+            )
+
+        with self._db.transaction() as conn:
+            self._gastos_repo.actualizar(gasto_id, conn=conn, **campos_repo)
+            if nuevo_adeudado_minor is not None:
+                # Sin pagos registrados (validado arriba): el pendiente es
+                # el adeudado nuevo completo, y el gasto sigue 'pendiente'.
+                self._gastos_repo.actualizar_monto_pendiente(
+                    gasto_id, nuevo_adeudado_minor, "pendiente", conn=conn,
+                )
 
         return SharedExpensesResult(
             success=True,
             entity_id=gasto_id,
-            data={"gasto_id": gasto_id, "hogar_id": hogar_id, "descripcion": descripcion},
+            data={"gasto_id": gasto_id, "hogar_id": hogar_id, **campos_repo},
             message=f"Gasto compartido id={gasto_id} actualizado.",
         )
 
