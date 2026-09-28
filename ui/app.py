@@ -11,24 +11,14 @@ de animación exacta contra Flet 0.86.5 real, ver docs/FLET_API_NOTES.md
 regla 2, así que el cambio de ancho es instantáneo; animarlo queda como
 mejora futura si se confirma la API corriendo la app): COLAPSADA por
 default (ancho SIDEBAR_ANCHO_COLAPSADO, solo íconos con tooltip al hover,
-flecha apuntando a la derecha). Un botón de flecha al final de la sidebar
-alterna el estado "fijado" (estado_sidebar["colapsado"]) entre expandida
-(ancho SIDEBAR_ANCHO_EXPANDIDO, ícono + texto, flecha apuntando a la
-izquierda) y colapsada — persistido en memoria de sesión, como antes.
+flecha apuntando a la derecha). Solo el botón de flecha al final de la
+sidebar la expande (ancho SIDEBAR_ANCHO_EXPANDIDO, ícono + texto, flecha
+apuntando a la izquierda) o la contrae — pasar el mouse por encima ya no
+la expande (se sacó el hover-to-peek). `_actualizar_sidebar()` reconstruye
+el contenido del Container de la sidebar y parchea solo ese Container.
 
-Hover-to-peek: mientras el estado fijado es colapsado, pasar el mouse por
-encima de la sidebar (Container.on_hover, normalizado defensivamente con
-str(e.data).lower() == "true" — mismo patrón sin confirmar ya usado en
-ui/components/registro_transacciones.py para el hover de fila, ver
-docs/FLET_API_NOTES.md "Patrones nuevos sin confirmar") la expande
-temporalmente a SIDEBAR_ANCHO_EXPANDIDO mostrando los labels, y al sacar
-el mouse vuelve a SIDEBAR_ANCHO_COLAPSADO — sin tocar
-estado_sidebar["colapsado"], es solo una vista previa. Si el estado fijado
-ya es expandido, el hover no hace nada (no hay nada que espiar). El botón
-de flecha siempre refleja el estado FIJADO, nunca el preview de hover —
-clickearlo durante un peek fija la sidebar expandida de verdad.
-`_actualizar_sidebar()`/`_on_hover_sidebar()` reconstruyen el contenido del
-Container de la sidebar sin tocar content_area.
+Tema: oscuro para toda la app (page.theme_mode + page.bgcolor, acá y en
+ningún otro lado).
 
 Onboarding condicional: si AccountsService.list_accounts() está vacío (primera
 vez que se abre la app), se muestra Cuentas primero en vez del Dashboard.
@@ -37,7 +27,47 @@ consulta list_accounts() directo en cada momento en que hace falta decidir
 qué pantalla mostrar (acá al armar el shell, y de nuevo dentro de
 cuentas.py al guardar la primera cuenta), así nunca puede quedar desincronizada
 de la base real.
+
+--- Navegación: pantallas persistentes ---
+
+Antes, cada mostrar_X() reemplazaba content_area.content por una pantalla
+recién construida: al volver a una sección se perdía todo lo que tenía a
+medias (fila de alta, selección, filtros, período, scroll). Ahora cada
+pantalla se construye UNA vez, la primera vez que se visita (lazy), queda
+apilada en content_stack (ft.Stack), y _navegar() solo alterna `visible`.
+Los valores de los controles (texto tipeado, checkboxes, filtros) viven
+del lado de Python, así que sobreviven a quedar ocultos.
+
+Tres detalles que `visible` solo no resuelve:
+
+1. Scroll. `visible=False` saca el control del árbol que dibuja Flutter
+   (docstring de Control.visible en Flet 0.86.5) y con él la posición de
+   scroll, que vive del lado del cliente. _preparar_scroll() le engancha
+   un on_scroll a cada control scrolleable de la pantalla (si no tiene uno
+   propio) que va guardando su posición, y _restaurar_scroll() la vuelve a
+   aplicar con scroll_to() al mostrarla de nuevo. Ese on_scroll apaga el
+   auto-update de Flet (ft.context.disable_auto_update()): un handler que
+   no llama a update() termina en un page.update() completo automático, y
+   con eventos de scroll cada 10 ms (scroll_interval default) eso
+   re-diffeaba la página entera — todas las pantallas apiladas — mientras
+   se scrolleaba. Además el intervalo se sube a SCROLL_INTERVALO_MS: solo
+   hace falta la última posición.
+2. Datos viejos. Una pantalla oculta no se entera de lo que se cargó en
+   otra (una transacción nueva cambia los saldos de Cuentas y el "Real" de
+   Presupuestos). _navegar() anota conn.total_changes (filas escritas en la
+   conexión que comparten todos los services) al ocultar cada pantalla; si
+   al volver cambió, esa pantalla se reconstruye con datos frescos. Si no
+   cambió nada en el medio, se reusa tal cual, con todo su estado.
+3. Hooks. Al ocultar/mostrar una pantalla, _notificar() recorre su árbol y
+   llama a `control.data["al_ocultar"]` / `["al_mostrar"]` de cualquier
+   control que los tenga (ej. el Registro esconde su barra flotante de
+   selección, que vive en page.overlay y si no quedaría encima de las
+   otras pantallas). Opt-in: una pantalla sin hooks no hace nada distinto.
+
 """
+import asyncio
+from typing import Callable, Iterator, Optional
+
 import flet as ft
 
 from db.database import DatabaseManager
@@ -67,11 +97,30 @@ SIDEBAR_ANCHO_EXPANDIDO = 220
 SIDEBAR_ANCHO_COLAPSADO = 64
 SIDEBAR_PADDING_VERTICAL = 16
 SIDEBAR_PADDING_HORIZONTAL = 8
+CONTENIDO_PADDING = 24
+COLOR_FONDO_APP = "#1a1a1a"
+# Espera antes de restaurar el scroll de una pantalla recién mostrada.
+SCROLL_RESTAURAR_DELAY_S = 0.05
+# Throttling de on_scroll (default de Flet: 10 ms) — ver docstring, punto 1.
+SCROLL_INTERVALO_MS = 200
+
+
+def _recorrer_controles(control: ft.Control) -> Iterator[ft.Control]:
+    """El control y todos sus descendientes vía `content` / `controls` (alcanza para Container/Row/Column/Stack)."""
+    yield control
+    contenido = getattr(control, "content", None)
+    if isinstance(contenido, ft.Control):
+        yield from _recorrer_controles(contenido)
+    for hijo in getattr(control, "controls", None) or []:
+        if isinstance(hijo, ft.Control):
+            yield from _recorrer_controles(hijo)
 
 
 def build_app(page: ft.Page, db: DatabaseManager) -> None:
     page.title = "DeltaBalance"
     page.padding = 0
+    page.theme_mode = ft.ThemeMode.DARK
+    page.bgcolor = COLOR_FONDO_APP
 
     accounts_service = AccountsService(db)
     dashboard_service = DashboardService(db)
@@ -83,10 +132,27 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     savings_service = SavingsService(db)
     debts_service = DebtsService(db)
     ingresos_service = IngresosProyectadosService(db)
-    content_area = ft.Container(expand=True, padding=24)
 
-    def mostrar_dashboard(e=None) -> None:
-        content_area.content = dashboard_screen.build(
+    # ------------------------------------------------------------
+    # PANTALLAS PERSISTENTES (ver docstring del módulo, "Navegación")
+    # ------------------------------------------------------------
+    # Cada pantalla se construye una sola vez (lazy, la primera vez que se
+    # visita) y queda apilada en content_stack; navegar solo cambia cuál
+    # está visible. Cada una va envuelta en un Container posicionado en los
+    # cuatro bordes para que ocupe el Stack entero, igual que ocupaba
+    # content_area antes.
+    content_stack = ft.Stack(expand=True)
+    content_area = ft.Container(expand=True, padding=CONTENIDO_PADDING, content=content_stack)
+
+    pantallas: dict[str, ft.Control] = {}
+    # conn.total_changes al ocultar cada pantalla — ver _navegar().
+    cambios_al_ocultar: dict[str, int] = {}
+    # id(control scrolleable) → última posición, ver _preparar_scroll().
+    posiciones_scroll: dict[int, float] = {}
+    pantalla_actual: dict[str, Optional[str]] = {"nombre": None}
+
+    builders: dict[str, Callable[[], ft.Control]] = {
+        "registro": lambda: dashboard_screen.build(
             page,
             accounts_service,
             dashboard_service,
@@ -96,93 +162,141 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             savings_service,
             debts_service,
             on_ir_a_cuentas=mostrar_cuentas,
-        )
+        ),
+        "ingresos": lambda: ingresos_screen.build(
+            page, ingresos_service, accounts_service, on_volver=mostrar_dashboard,
+        ),
+        "compras_cuotas": lambda: compras_cuotas_screen.build(
+            page, accounts_service, categorias_service, fees_service, shared_expenses_service,
+            on_volver=mostrar_dashboard,
+        ),
+        "deudas_y_compartidos": lambda: deudas_y_compartidos_screen.build(
+            page, debts_service, shared_expenses_service, accounts_service, on_volver=mostrar_dashboard,
+        ),
+        "estadisticas": lambda: estadisticas_screen.build(
+            page, accounts_service, dashboard_service, on_volver=mostrar_dashboard,
+        ),
+        "presupuestos": lambda: presupuestos_screen.build(
+            page, categorias_service, presupuestos_service, dashboard_service, accounts_service,
+            on_volver=mostrar_dashboard,
+        ),
+        "ahorros": lambda: ahorros_screen.build(
+            page, savings_service, accounts_service, on_volver=mostrar_dashboard,
+        ),
+        "cuentas": lambda: cuentas_screen.build(
+            page, accounts_service, on_volver=mostrar_dashboard, modo_onboarding=False,
+        ),
+        "categorias": lambda: categorias_screen.build(
+            page, categorias_service, on_volver=mostrar_dashboard,
+        ),
+        "onboarding": lambda: cuentas_screen.build(
+            page, accounts_service, on_volver=None, modo_onboarding=True,
+            on_primera_cuenta_creada=mostrar_dashboard,
+        ),
+    }
+
+    def _cambios_en_db() -> int:
+        # Filas escritas en la conexión desde que se abrió — lo usan todos
+        # los services (un único DatabaseManager), así que cualquier alta/
+        # edición/borrado de cualquier pantalla lo mueve.
+        return db.conn.total_changes
+
+    def _notificar(raiz: ft.Control, evento: str) -> None:
+        for control in _recorrer_controles(raiz):
+            hooks = control.data
+            if isinstance(hooks, dict) and callable(hooks.get(evento)):
+                hooks[evento]()
+
+    def _registrar_scroll(e: ft.OnScrollEvent, clave: int) -> None:
+        # Solo anota la posición: sin esto, Flet haría un page.update()
+        # completo al terminar cada evento de scroll (ver docstring, punto 1).
+        ft.context.disable_auto_update()
+        posiciones_scroll[clave] = e.pixels
+
+    def _preparar_scroll(raiz: ft.Control) -> None:
+        for control in _recorrer_controles(raiz):
+            if getattr(control, "scroll", None) is None or not hasattr(control, "scroll_to"):
+                continue
+            if getattr(control, "on_scroll", False) is None:
+                control.on_scroll = lambda e, clave=id(control): _registrar_scroll(e, clave)
+                control.scroll_interval = SCROLL_INTERVALO_MS
+
+    async def _scroll_diferido(control: ft.Control, offset: float) -> None:
+        # Le da tiempo al cliente a volver a construir el widget recién
+        # mostrado antes de moverle el scroll.
+        await asyncio.sleep(SCROLL_RESTAURAR_DELAY_S)
+        await control.scroll_to(offset=offset, duration=0)
+
+    def _restaurar_scroll(raiz: ft.Control) -> None:
+        for control in _recorrer_controles(raiz):
+            offset = posiciones_scroll.get(id(control))
+            if offset and hasattr(control, "scroll_to"):
+                page.run_task(_scroll_diferido, control, offset)
+
+    def _navegar(nombre: str) -> None:
+        anterior = pantalla_actual["nombre"]
+        if anterior == nombre and nombre in pantallas:
+            return
+
+        if anterior in pantallas:
+            _notificar(pantallas[anterior], "al_ocultar")
+            cambios_al_ocultar[anterior] = _cambios_en_db()
+            if anterior == "onboarding":
+                # Solo se usa una vez: no tiene sentido dejarla apilada.
+                content_stack.controls.remove(pantallas.pop(anterior))
+
+        # Si la base cambió desde que esta pantalla se ocultó (se cargó algo
+        # en OTRA pantalla), se reconstruye: sus datos quedaron viejos. Lo
+        # que la propia pantalla escribió antes de ocultarse ya está
+        # contado en cambios_al_ocultar, así que no la invalida.
+        if nombre in pantallas and cambios_al_ocultar.get(nombre) != _cambios_en_db():
+            content_stack.controls.remove(pantallas.pop(nombre))
+
+        mostrada_de_nuevo = nombre in pantallas
+        if not mostrada_de_nuevo:
+            pantallas[nombre] = ft.Container(left=0, top=0, right=0, bottom=0, content=builders[nombre]())
+            content_stack.controls.append(pantallas[nombre])
+
+        for n, pantalla in pantallas.items():
+            pantalla.visible = (n == nombre)
+        pantalla_actual["nombre"] = nombre
+        _preparar_scroll(pantallas[nombre])
         page.update()
+
+        _notificar(pantallas[nombre], "al_mostrar")
+        if mostrada_de_nuevo:
+            _restaurar_scroll(pantallas[nombre])
+        page.update()
+
+    def mostrar_dashboard(e=None) -> None:
+        _navegar("registro")
+
     def mostrar_ingresos(e=None) -> None:
-        content_area.content = ingresos_screen.build(
-            page,
-            ingresos_service,
-            accounts_service,
-            on_volver=mostrar_dashboard,
-        )
-        page.update()
-        
+        _navegar("ingresos")
+
     def mostrar_compras_cuotas(e=None) -> None:
-        content_area.content = compras_cuotas_screen.build(
-            page,
-            accounts_service,
-            categorias_service,
-            fees_service,
-            shared_expenses_service,
-            on_volver=mostrar_dashboard,
-        )
-        page.update()
+        _navegar("compras_cuotas")
 
     def mostrar_deudas_y_compartidos(e=None) -> None:
-        content_area.content = deudas_y_compartidos_screen.build(
-            page,
-            debts_service,
-            shared_expenses_service,
-            accounts_service,
-            on_volver=mostrar_dashboard,
-        )
-        page.update()
+        _navegar("deudas_y_compartidos")
 
     def mostrar_estadisticas(e=None) -> None:
-        content_area.content = estadisticas_screen.build(
-            page,
-            accounts_service,
-            dashboard_service,
-            on_volver=mostrar_dashboard,
-        )
-        page.update()
+        _navegar("estadisticas")
 
     def mostrar_presupuestos(e=None) -> None:
-        content_area.content = presupuestos_screen.build(
-            page,
-            categorias_service,
-            presupuestos_service,
-            dashboard_service,
-            accounts_service,
-            on_volver=mostrar_dashboard,
-        )
-        page.update()
+        _navegar("presupuestos")
 
     def mostrar_ahorros(e=None) -> None:
-        content_area.content = ahorros_screen.build(
-            page,
-            savings_service,
-            accounts_service,
-            on_volver=mostrar_dashboard,
-        )
-        page.update()
+        _navegar("ahorros")
 
     def mostrar_cuentas(e=None) -> None:
-        content_area.content = cuentas_screen.build(
-            page,
-            accounts_service,
-            on_volver=mostrar_dashboard,
-            modo_onboarding=False,
-        )
-        page.update()
+        _navegar("cuentas")
 
     def mostrar_categorias(e=None) -> None:
-        content_area.content = categorias_screen.build(
-            page,
-            categorias_service,
-            on_volver=mostrar_dashboard,
-        )
-        page.update()
+        _navegar("categorias")
 
     def mostrar_onboarding() -> None:
-        content_area.content = cuentas_screen.build(
-            page,
-            accounts_service,
-            on_volver=None,
-            modo_onboarding=True,
-            on_primera_cuenta_creada=mostrar_dashboard,
-        )
-        page.update()
+        _navegar("onboarding")
 
     # ------------------------------------------------------------
     # SIDEBAR (colapsable — ver docstring del módulo)
@@ -191,9 +305,8 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     # "Configuración". "Compras en cuotas"/"Presupuestos"/"Estadísticas" sí
     # son de primer nivel (pantallas de feature, no de configuración).
 
-    # Colapsada por default (pedido explícito) — "fijado" es el estado
-    # persistente que alterna la flecha; el hover-to-peek de abajo es un
-    # preview temporal que nunca lo toca.
+    # Colapsada por default (pedido explícito) — solo el botón de flecha la
+    # expande/contrae.
     estado_sidebar = {"colapsado": True}
 
     def _item_nav(texto: str, icono: str, on_click, expandido: bool) -> ft.Control:
@@ -213,12 +326,10 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         _actualizar_sidebar()
 
     def _boton_toggle() -> ft.Control:
-        # Siempre refleja el estado FIJADO (estado_sidebar), nunca el
-        # preview de hover — ver docstring del módulo.
         colapsado = estado_sidebar["colapsado"]
         return ft.IconButton(
             icon=ft.Icons.CHEVRON_RIGHT if colapsado else ft.Icons.CHEVRON_LEFT,
-            tooltip="Expandir" if colapsado else "Colapsar",
+            tooltip="EXPANDIR" if colapsado else "CONTRAER",
             on_click=_toggle_sidebar,
         )
 
@@ -266,18 +377,7 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         colapsado = estado_sidebar["colapsado"]
         sidebar.width = SIDEBAR_ANCHO_COLAPSADO if colapsado else SIDEBAR_ANCHO_EXPANDIDO
         sidebar.content = _contenido_sidebar(expandido=not colapsado)
-        page.update()
-
-    def _on_hover_sidebar(e: ft.ControlEvent) -> None:
-        # Hover-to-peek: solo aplica mientras la sidebar está FIJADA
-        # colapsada — si ya está fijada expandida, no hay nada que espiar.
-        if not estado_sidebar["colapsado"]:
-            return
-        # Normalizado defensivamente — ver docstring del módulo.
-        hover_activo = str(e.data).lower() == "true"
-        sidebar.width = SIDEBAR_ANCHO_EXPANDIDO if hover_activo else SIDEBAR_ANCHO_COLAPSADO
-        sidebar.content = _contenido_sidebar(expandido=hover_activo)
-        page.update()
+        sidebar.update()
 
     sidebar = ft.Container(
         width=SIDEBAR_ANCHO_COLAPSADO,
@@ -285,7 +385,6 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         padding=ft.Padding.symmetric(
             vertical=SIDEBAR_PADDING_VERTICAL, horizontal=SIDEBAR_PADDING_HORIZONTAL,
         ),
-        on_hover=_on_hover_sidebar,
         content=None,
     )
     sidebar.content = _contenido_sidebar(expandido=not estado_sidebar["colapsado"])

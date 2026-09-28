@@ -1,15 +1,20 @@
 """
 DeltaBalance — ui/screens/dashboard.py
 
-Pantalla principal: patrimonio total (fila horizontal compacta) →
-movimientos por banco (desglose del mes/año seleccionado, ver
-_tarjeta_desglose_banco() — Tarea 4 de docs/PROXIMOS_PASOS.md, SOLO bancos
-con actividad real ese período, detección dinámica vía
-DashboardService.get_movimientos_por_cuenta()) → Registro de transacciones
-(tabla estilo planilla con su propia barra de herramientas — período
-navegable, filtros de banco/categoría, búsqueda — ver
+Pantalla principal: solo el Registro de transacciones (tabla estilo
+planilla con su propia barra de título — búsqueda, período navegable — y su
+propia barra de saldo por cuenta, ver
 ui/components/registro_transacciones.py). Siempre muestra todas las
 transacciones del período, sin selector de cantidad.
+
+Las tarjetas "Patrimonio total" (_tarjeta_patrimonio()) y "SALDO POR
+CUENTA" (_tarjeta_desglose_banco()) quedan definidas pero ya no se
+muestran: la barra de saldo del Registro las reemplaza y mostrarlas
+duplicaba la información.
+
+El Registro se refresca solo tras cada alta/edición/borrado (refresco
+parcial, ver su docstring) — _refrescar_datos() corre una vez al construir
+la pantalla.
 
 El gráfico de "Gasto del mes por categoría" que antes vivía acá se movió a
 ui/screens/estadisticas.py, con su propio selector de período independiente
@@ -64,13 +69,8 @@ def build(
     on_ir_a_cuentas: Callable[[], None],
 ) -> ft.Control:
     hoy = date.today()
-    # estado sobrevive entre refrescos (se define una sola vez acá, se muta
-    # in place) — mes/anio/modo/filtros/búsqueda los administra la barra de
-    # herramientas del Registro (ver ui/components/registro_transacciones.py).
-    # _refrescar_datos() reconstruye TODA la pantalla después de cualquier
-    # alta, edición, o cambio en la barra de herramientas del Registro — por
-    # eso todo ese estado vive acá y no dentro del componente, que se
-    # reconstruye entero cada vez.
+    # mes/anio los copia el Registro del período que el usuario eligió en su
+    # barra de título (ver ui/components/registro_transacciones.py).
     estado = {"mes": hoy.month, "anio": hoy.year}
 
     contenedor_datos = ft.Column(spacing=16, expand=True, scroll=ft.ScrollMode.AUTO)
@@ -150,7 +150,7 @@ def build(
         cuenta (elegido en vez de ocultar la tarjeta entera, para que el
         layout no salte al tocar el filtro).
         """
-        desglose = dashboard_service.get_movimientos_por_cuenta(estado["mes"], estado["anio"])
+        desglose = dashboard_service.get_saldo_por_cuenta()
         filtro_banco = estado.get("filtro_banco")
         if filtro_banco is not None:
             desglose = [d for d in desglose if d["cuenta_id"] == filtro_banco]
@@ -165,6 +165,9 @@ def build(
         else:
             filas = []
             for d in desglose:
+                # Saltar saldos insignificantes (centavos de cripto, etc.)
+                if abs(d["net_minor"]) < 1:
+                    continue
                 color_neto = ft.Colors.GREEN if d["net_minor"] >= 0 else ft.Colors.RED
                 filas.append(
                     ft.Row(
@@ -172,6 +175,7 @@ def build(
                             ft.Text(
                                 d["account_name"],
                                 size=TypographyTokens.TABLE_CONTENT_SIZE,
+                                color=ft.Colors.OUTLINE,
                             ),
                             ft.Text(
                                 amount_display(d["net_minor"], d["decimales"], d["currency_symbol"] or ""),
@@ -180,26 +184,25 @@ def build(
                                 color=color_neto,
                             ),
                         ],
-                        spacing=10,
+                        spacing=4,
                     )
                 )
-            contenido = ft.Row(filas, spacing=20, wrap=True)
+            contenido = ft.Row(filas, spacing=16, wrap=True)
 
         return ft.Container(
             padding=ft.Padding.symmetric(horizontal=16, vertical=12),
             border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=8,
-            content=ft.Row(
+            content=ft.Column(
                 [
                     ft.Text(
-                        "Movimientos por banco",
+                        "SALDO POR CUENTA",
                         size=TypographyTokens.SECTION_TITLE_SIZE,
                         weight=TypographyTokens.SECTION_TITLE_WEIGHT,
                     ),
                     contenido,
                 ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
             ),
         )
 
@@ -209,8 +212,6 @@ def build(
 
     def _refrescar_datos() -> None:
         contenedor_datos.controls = [
-            _tarjeta_patrimonio(),
-            _tarjeta_desglose_banco(),
             registro_transacciones.build(
                 page,
                 accounts_service,
@@ -227,12 +228,6 @@ def build(
 
     _refrescar_datos()
 
-    return ft.Column(
-        [
-            ft.Text("REGISTRO", size=TypographyTokens.PAGE_TITLE_SIZE, weight=TypographyTokens.PAGE_TITLE_WEIGHT),
-            ft.Container(height=8),
-            contenedor_datos,
-        ],
-        spacing=8,
-        expand=True,
-    )
+    # Sin título de página: "REGISTRO DE TRANSACCIONES" ya lo muestra el
+    # propio componente, y así el Registro arranca más arriba.
+    return ft.Column([contenedor_datos], expand=True)

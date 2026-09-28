@@ -224,7 +224,29 @@ class DashboardService:
         )
 
         return [dict(fila) for fila in filas]
-
+    def get_saldo_por_cuenta(self) -> list[dict]:
+        """
+        Saldo acumulado total por cuenta y moneda — usa la vista
+        vw_balance_cuentas que ya suma saldo_inicial_minor + todas las
+        transacciones históricas. Para el desglose de patrimonio por cuenta
+        en el dashboard (no filtrado por mes).
+        """
+        filas = self._db.fetchall(
+            """
+            SELECT
+                v.cuenta_id,
+                v.nombre        AS account_name,
+                v.moneda        AS currency_code,
+                m.simbolo       AS currency_symbol,
+                m.decimales,
+                v.saldo_minor   AS net_minor
+            FROM vw_balance_cuentas v
+            JOIN monedas m ON m.codigo = v.moneda
+            WHERE v.saldo_minor != 0
+            ORDER BY v.nombre, v.moneda;
+            """,
+        )
+        return [dict(fila) for fila in filas]
     # ----------------------------------------------------------
     # COMPARACIÓN ESTIMADO VS. REAL
     # ----------------------------------------------------------
