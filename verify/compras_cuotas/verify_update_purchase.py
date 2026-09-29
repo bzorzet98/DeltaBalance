@@ -35,6 +35,8 @@ Qué se prueba y por qué:
       borraría esa diferencia en silencio).
 - Cuando se bloquea, NADA queda escrito a medias (ni el monto ni otro campo
   pasado en la misma llamada).
+- Un total negativo (reintegro/devolución, ej. filas migradas del Excel) es
+  válido, para poder corregir un reintegro mal cargado; 0 no.
 
 Correlo con:
     python verify/compras_cuotas/verify_update_purchase.py
@@ -155,7 +157,14 @@ def main() -> None:
     caso_excepcion("concepto vacío → FeesError", FeesError, lambda: svc.update_purchase(compra_1, concepto="   "))
     caso_excepcion("categoria_id inexistente → FeesError", FeesError, lambda: svc.update_purchase(compra_1, categoria_id=999999))
     caso_excepcion("monto_total_minor = 0 → FeesError", FeesError, lambda: svc.update_purchase(compra_1, monto_total_minor=0))
-    caso_excepcion("monto_total_minor negativo → FeesError", FeesError, lambda: svc.update_purchase(compra_1, monto_total_minor=-500))
+
+    # ============================================================
+    print("\n--- Reintegro/devolución: el total puede ser negativo (nunca 0) ---")
+    # ============================================================
+    res = svc.update_purchase(compra_1, monto_total_minor=-90000)
+    caso("update_purchase(monto_total_minor negativo) devuelve success=True", True, res.success)
+    caso("monto_total_minor queda en -90000", -90000, svc.get_purchase(compra_1)["monto_total_minor"])
+    caso("las 3 cuotas quedan en -90000 / 3 = -30000", [-30000, -30000, -30000], montos_cuotas(compra_1))
     caso_excepcion("compra inexistente → PurchaseNotFoundError", PurchaseNotFoundError, lambda: svc.update_purchase(999999, concepto="X"))
 
     # ============================================================

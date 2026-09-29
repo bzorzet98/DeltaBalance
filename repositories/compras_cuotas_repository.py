@@ -9,7 +9,9 @@ moneda, no decide si una compra "se puede" cancelar.
 
 `compras_cuotas` NO tiene columna `deleted_at` ni `activa` — no existe hoy
 soft-delete genérico para esta tabla (el "borrado suave" real es la
-transición de estado a 'cancelada' vía cancelar()). Por eso
+transición de estado a 'cancelada' vía cancelar()). eliminar() es el
+DELETE físico, solo para la ventana de corrección temprana (lo decide
+FeesService.delete_purchase()). Por eso
 obtener_por_id()/listar()/obtener_enriquecida()/listar_enriquecida() usan
 QueryBuilder con include_deleted=True hardcodeado, igual que
 DeudasRepository — mismo motivo (evitar que QueryBuilder inyecte
@@ -324,3 +326,21 @@ class ComprasCuotasRepository:
             conn.execute(sql, params)
             return
         self._db.execute(sql, params)
+
+    # ----------------------------------------------------------
+    # DELETE
+    # ----------------------------------------------------------
+
+    def eliminar(self, compra_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+        """
+        DELETE físico de la compra (ventana de corrección temprana, CLAUDE.md
+        §4). No mira sus cuotas ni si está compartida: validar que se pueda
+        borrar es trabajo de FeesService.delete_purchase(), que además borra
+        antes las cuotas_credito (CuotasCreditoRepository.eliminar_por_compra())
+        con este mismo `conn`, en la misma transacción.
+        """
+        sql = "DELETE FROM compras_cuotas WHERE id = ?;"
+        if conn is not None:
+            conn.execute(sql, (compra_id,))
+            return
+        self._db.execute(sql, (compra_id,))
