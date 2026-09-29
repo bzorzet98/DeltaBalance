@@ -168,7 +168,6 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         ),
         "compras_cuotas": lambda: compras_cuotas_screen.build(
             page, accounts_service, categorias_service, fees_service, shared_expenses_service,
-            on_volver=mostrar_dashboard,
         ),
         "deudas_y_compartidos": lambda: deudas_y_compartidos_screen.build(
             page, debts_service, shared_expenses_service, accounts_service, on_volver=mostrar_dashboard,

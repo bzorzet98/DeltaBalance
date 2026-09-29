@@ -208,6 +208,20 @@ class DeudasRepository:
             .ejecutar(self._db.conn)
         )
 
+    def listar_por_origen(self, origen_tipo: str, origen_id: int) -> list[sqlite3.Row]:
+        """
+        Deudas generadas desde un registro puntual (ej. origen_tipo=
+        'compra_cuotas', origen_id=<compra>) — para que un service pueda
+        chequear si ese registro tiene una deuda que depende de él antes de
+        borrarlo (mismo rol que GastosCompartidosRepository.listar_por_origen()).
+        """
+        return (
+            QueryBuilder("deudas", include_deleted=True)
+            .where("origen_tipo", origen_tipo)
+            .where("origen_id", origen_id)
+            .ejecutar(self._db.conn)
+        )
+
     def listar_enriquecida(
         self,
         entidad_persona: Optional[str] = None,

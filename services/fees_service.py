@@ -19,7 +19,8 @@ Purpose:
     Reads (never writes) gastos_compartidos, only to know whether a purchase
     is already shared before letting update_purchase() change its total —
     same read-only cross-domain pattern SharedExpensesService already uses
-    over compras_cuotas/cuotas_credito.
+    over compras_cuotas/cuotas_credito. Also reads (never writes) deudas,
+    only so delete_purchase() never deletes a purchase a debt points to.
 
     Key workflows:
         1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito
@@ -30,6 +31,9 @@ Purpose:
                                     their own yet
            update_purchase_cuotas() → regenerates the fee schedule with another number
                                     of fees, same total, same §4 rule
+           delete_purchase()      → physical delete of a purchase + its fees while
+                                    nothing depends on them (§4); otherwise
+                                    cancel_purchase()
         2. open_statement()       → creates or fetches a resumenes_tarjeta for a month
         3. confirm_fee()          → marks a cuota as 'en_resumen', linking it to a statement
         4. close_statement()      → marks 'cerrado' AND consolidates real totals
@@ -54,6 +58,7 @@ from db.query_builder import QueryBuilder
 from utils.money import amount_display
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
 from repositories.cuotas_credito_repository import CuotasCreditoRepository
+from repositories.deudas_repository import DeudasRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
 from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
@@ -169,6 +174,8 @@ class FeesService:
         self._cargos_repo = ResumenCargosExtraRepository(db)
         # Read-only — see module docstring (update_purchase()).
         self._gastos_repo = GastosCompartidosRepository(db)
+        # Read-only — see module docstring (delete_purchase()).
+        self._deudas_repo = DeudasRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -1227,7 +1234,10 @@ class FeesService:
             purchase_id:       The purchase to modify.
             concepto:          New description. None = no change.
             categoria_id:      New category ID. None = no change.
-            monto_total_minor: New positive total, in minor units. None = no change.
+            monto_total_minor: New non-zero total, in minor units — negative for a
+                               refund/reintegro (e.g. rows migrated from the old
+                               spreadsheet), so a mistyped refund can be fixed
+                               too. None = no change.
             cuenta_id:         New credit card account ID. None = no change.
             fecha:             New purchase date 'YYYY-MM-DD'. None = no change.
             moneda_codigo:     New currency code, e.g. 'USD'. None = no change.
@@ -1239,7 +1249,7 @@ class FeesService:
             PurchaseNotFoundError if the purchase does not exist.
             ValueError for an invalid date format or an unknown currency.
             FeesError if concepto is empty, categoria_id / cuenta_id does not
-                exist (or the account is inactive), monto_total_minor <= 0,
+                exist (or the account is inactive), monto_total_minor == 0,
                 an amount would round to 0 in the new currency, or the field
                 can no longer be edited directly (see the early-correction
                 note above).
@@ -1286,8 +1296,9 @@ class FeesService:
 
         nuevo_monto_cuota_minor = None
         if monto_total_minor is not None:
-            if monto_total_minor <= 0:
-                raise FeesError(f"Total amount must be positive. Received: {monto_total_minor}.")
+            # Negative = refund/reintegro (see docstring); only 0 is invalid.
+            if monto_total_minor == 0:
+                raise FeesError("Total amount cannot be 0.")
             if monto_total_minor != purchase["monto_total_minor"]:
                 accion = "its total can no longer be edited directly"
                 self._require_fees_pending(
@@ -1317,7 +1328,7 @@ class FeesService:
                     if self._is_default_split(purchase)
                     else _reescalar(purchase["monto_por_cuota_minor"])
                 )
-                if nuevo_total <= 0 or nuevo_monto_cuota_minor <= 0:
+                if nuevo_total == 0 or nuevo_monto_cuota_minor == 0:
                     raise FeesError(
                         f"Purchase id={purchase_id}: its amount rounds to 0 in "
                         f"{nueva_moneda['codigo']} ({decimales_nuevos} decimals)."
@@ -1478,6 +1489,62 @@ class FeesService:
             conn=conn,
         )
         return len(ids)
+
+    # ----------------------------------------------------------
+    # DELETE PURCHASE (early-correction window, CLAUDE.md §4)
+    # ----------------------------------------------------------
+
+    def delete_purchase(self, purchase_id: int) -> FeesResult:
+        """
+        Physically deletes a purchase and every one of its fees — only while
+        nothing generated from it has state of its own (CLAUDE.md §4): the
+        typical case is a purchase loaded by mistake a few days ago. Fees
+        'pendiente' or 'omitido' don't block it (a purchase cancelled by
+        mistake can still be deleted afterwards); a fee already
+        'en_resumen' or 'pagado' does — that purchase belongs to a
+        statement and has to go through cancel_purchase() instead.
+
+        Also blocked while a shared expense points to the purchase (as a
+        whole or to any fee) or a debt was generated from it
+        (deudas.origen_tipo='compra_cuotas'): those rows depend on it.
+
+        Args:
+            purchase_id: The purchase to delete.
+
+        Returns:
+            FeesResult with the count of fees deleted.
+
+        Raises:
+            PurchaseNotFoundError if not found.
+            FeesError if a fee is already in a statement or paid, the
+                purchase or a fee is shared, or a debt points to it.
+        """
+        self._get_purchase(purchase_id)
+        cuotas = self._cuotas_repo.listar_por_compra(purchase_id)
+        accion = "it cannot be deleted; cancel it instead"
+
+        procesadas = [c for c in cuotas if c["estado"] in ("en_resumen", "pagado")]
+        if procesadas:
+            raise FeesError(
+                f"Purchase id={purchase_id} has {len(procesadas)} fee(s) already in a "
+                f"statement or paid — {accion}."
+            )
+        self._require_purchase_not_shared(purchase_id, accion)
+        self._require_fees_not_shared(purchase_id, cuotas, accion)
+        if self._deudas_repo.listar_por_origen("compra_cuotas", purchase_id):
+            raise FeesError(f"Purchase id={purchase_id} has a debt linked to it — {accion}.")
+
+        conn = self._db.conn
+        with self._db.transaction():
+            fees_deleted = self._cuotas_repo.eliminar_por_compra(purchase_id, conn=conn)
+            self._compras_repo.eliminar(purchase_id, conn=conn)
+
+        return FeesResult(
+            success=True,
+            entity_id=purchase_id,
+            data={"fees_deleted": fees_deleted},
+            message=f"Purchase #{purchase_id} deleted ({fees_deleted} fee(s)).",
+        )
 
     # ----------------------------------------------------------
     # CANCEL PURCHASE
