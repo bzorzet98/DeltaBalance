@@ -124,7 +124,8 @@ def build(
             width=ANCHO_DIALOGO,
             autofocus=True,
             text_size=TypographyTokens.TABLE_CONTENT_SIZE,
-            on_submit=lambda e: campo_monto.focus(),
+            # focus() es async en Flet 0.86.5: sin run_task no hacía nada.
+            on_submit=lambda e: page.run_task(campo_monto.control.focus),
         )
         campo_monto = CampoMonto(
             page,
@@ -133,6 +134,8 @@ def build(
             hint_text="Monto esperado (podés usar =950000+50000)",
             decimales=moneda_sel["moneda"]["decimales"],
             persistir_formula=True,
+            # Enter resuelve la fórmula y pasa al botón, sin guardar (ahí Enter o click guardan).
+            on_avanzar=lambda: page.run_task(boton_agregar.focus),
         )
 
         def _confirmar(e=None) -> None:
@@ -167,6 +170,7 @@ def build(
             _mostrar_mensaje("Ingreso agregado.")
             _refrescar()
 
+        boton_agregar = ft.ElevatedButton(content=ft.Text("Agregar"), on_click=_confirmar)
         page.show_dialog(ft.AlertDialog(
             modal=True,
             title=ft.Text("AGREGAR INGRESO ESPERADO"),
@@ -179,7 +183,7 @@ def build(
             ),
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Agregar"), on_click=_confirmar),
+                boton_agregar,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         ))
@@ -212,7 +216,8 @@ def build(
             width=ANCHO_DIALOGO,
             autofocus=True,
             text_size=TypographyTokens.TABLE_CONTENT_SIZE,
-            on_submit=lambda e: campo_monto.focus(),
+            # focus() es async en Flet 0.86.5: sin run_task no hacía nada.
+            on_submit=lambda e: page.run_task(campo_monto.control.focus),
         )
         campo_monto = CampoMonto(
             page,
@@ -222,6 +227,8 @@ def build(
             decimales=moneda_sel["moneda"]["decimales"],
             valor_inicial_minor=ingreso["monto_estimado_minor"],
             persistir_formula=True,
+            # Enter resuelve la fórmula y pasa al botón, sin guardar (ahí Enter o click guardan).
+            on_avanzar=lambda: page.run_task(boton_guardar.focus),
         )
 
         def _confirmar(e=None) -> None:
@@ -255,6 +262,7 @@ def build(
             _mostrar_mensaje("Ingreso actualizado.")
             _refrescar()
 
+        boton_guardar = ft.ElevatedButton(content=ft.Text("Guardar"), on_click=_confirmar)
         page.show_dialog(ft.AlertDialog(
             modal=True,
             title=ft.Text("EDITAR INGRESO"),
@@ -267,7 +275,7 @@ def build(
             ),
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Guardar"), on_click=_confirmar),
+                boton_guardar,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         ))

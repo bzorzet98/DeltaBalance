@@ -34,8 +34,9 @@ sesiones — se reemplazó.
 
 obtener_usuario_local()/guardar_usuario_local() siguen siendo `async def`
 aunque la lectura/escritura del archivo es síncrona: así no cambia ningún
-caller (compartir_gasto.py, compartir_compra.py,
-ui/screens/deudas_y_compartidos.py los `await`ean). `on_listo` es
+caller (compartir_gasto.py, compartir_compra.py y compartir_varios.py los
+`await`ean). leer_usuario_local() es la misma lectura, síncrona, para el
+build() de ui/screens/gastos_compartidos.py. `on_listo` es
 `Callable[[], Awaitable[None]]`: todo caller pasa una función async y este
 módulo la `await`ea antes de devolver el control — si un caller le pasara
 una función sync, on_listo() devolvería un coroutine sin ejecutar y
@@ -59,9 +60,14 @@ ANCHO_DIALOGO_HOGAR = 360
 CLAVE_USUARIO_LOCAL = "usuario_local"
 
 
-async def obtener_usuario_local(page: ft.Page) -> Optional[str]:
+def leer_usuario_local() -> Optional[str]:
+    """Versión síncrona (la lectura del archivo lo es): para un build() de pantalla, que no puede `await`."""
     nombre = leer_prefs().get(CLAVE_USUARIO_LOCAL)
     return nombre if isinstance(nombre, str) and nombre else None
+
+
+async def obtener_usuario_local(page: ft.Page) -> Optional[str]:
+    return leer_usuario_local()
 
 
 async def guardar_usuario_local(page: ft.Page, nombre: str) -> None:
@@ -78,7 +84,8 @@ def abrir_dialogo_sin_hogar(
 ) -> None:
     """
     Diálogo de onboarding compartido por compartir_gasto.py,
-    compartir_compra.py y ui/screens/deudas_y_compartidos.py: "todavía no
+    compartir_compra.py, compartir_varios.py y
+    ui/screens/gastos_compartidos.py: "todavía no
     pertenecés a ningún hogar compartido" — crear uno nuevo o unirse a uno
     existente por código.
 

@@ -438,6 +438,8 @@ def build(
             placeholder="Categoría",
             width=ANCHO_DIALOGO_AGREGAR_CATEGORIA,
             autofocus=True,
+            # Enter elige la sugerencia y pasa al botón, sin agregar (ahí Enter o click agregan).
+            on_avanzar=lambda: page.run_task(boton_agregar.focus),
         )
 
         def _confirmar(e=None) -> None:
@@ -452,13 +454,14 @@ def build(
             _cerrar_dialogo()
             _refrescar()
 
+        boton_agregar = ft.ElevatedButton(content=ft.Text("Agregar"), on_click=_confirmar)
         dialogo = ft.AlertDialog(
             modal=True,
             title=ft.Text("Agregar presupuesto a presupuestar"),
             content=ft.Container(width=ANCHO_DIALOGO_AGREGAR_CATEGORIA, content=campo_nueva_categoria.control),
             actions=[
                 ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Agregar"), on_click=_confirmar),
+                boton_agregar,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )

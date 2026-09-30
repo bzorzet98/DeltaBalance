@@ -1,76 +1,55 @@
 """
 DeltaBalance — repositories/deudas_repository.py
 
-Acceso a datos para las tablas `deudas` y `deuda_pagos`. Sin lógica de
-negocio: no valida tipo, no decide si una deuda está "activa" antes de
-tocarla, no calcula el nuevo saldo pendiente — todo eso vive en
-services/debts_service.py (DebtsService), que sigue siendo la fuente de
-verdad de esas reglas hoy y que en un paso posterior va a migrar para usar
-este repositorio en vez de escribir SQL directo.
+Acceso a datos para la tabla `deudas`, reestructurada como LIBRO DE
+MOVIMIENTOS (db/schema_migrations.py reestructurar_deudas(),
+docs/DATA_MODEL_DECISIONS.md sección 22): cada fila es un monto con
+dirección — tipo 'a_favor' (te deben más) o 'en_contra' (debés más, o te
+pagaron) — y el saldo con una persona es la suma con signo de sus filas.
+No hay pendiente, ni estado, ni deuda_pagos: un pago es una fila más, de
+tipo opuesto. La tabla vieja quedó como `deudas_old`.
 
-Por el mismo motivo, crear()/registrar_pago() reciben moneda_id y montos ya
-resueltos en minor units (no moneda_codigo ni montos en float) — resolver
-un código de moneda a id, convertir a minor units, y calcular el nuevo
-monto_pendiente_minor/estado es responsabilidad de quien llama.
+Sin lógica de negocio: no valida el tipo, no normaliza el nombre de la
+persona, no decide el signo de un monto — eso vive en
+services/debts_service.py. Recibe moneda_id y montos ya resueltos en minor
+units (siempre positivos: la dirección es `tipo`).
 
-`deudas` NO tiene columna `deleted_at` (a diferencia de `transacciones`) ni
-columna `activa` (a diferencia de `cuentas`/`categorias`) — no existe hoy
-ningún soft-delete para deudas. Por eso obtener_por_id()/listar()/
-obtener_enriquecida()/listar_enriquecida() usan QueryBuilder con
-include_deleted=True hardcodeado (nunca parametrizado): pasar False haría
-que QueryBuilder inyecte `deleted_at IS NULL` en el WHERE, y esa columna no
-existe en esta tabla — explotaría con "no such column: deleted_at". Mismo
-motivo por el que CuentasRepository/CategoriasRepository evitan el default
-de QueryBuilder.
+Las lecturas traen la fila enriquecida con la moneda (currency_code,
+currency_symbol, decimales — JOIN a monedas), para que las pantallas
+muestren el monto sin otra consulta. `deudas` no tiene `deleted_at`:
+QueryBuilder no se usa acá para no inyectar ese filtro; las consultas son
+SQL explícito.
 
-Lecciones aplicadas desde el arranque (post mortem del bloque TRANSACCIONES,
-Fase 2 paso 3, para no repetir dejar cosas a medias):
-- registrar_pago() y write_off() aceptan un `conn` opcional desde el
-  arranque, para poder participar de una transacción externa cuando el
-  service lo necesite.
-- actualizar() usa el sentinel NO_CAMBIAR (repositories/_sentinels.py) desde
-  el arranque, para distinguir "no tocar" de "escribir NULL a propósito".
-- obtener_enriquecida()/listar_enriquecida() existen desde el arranque,
-  replicando exactamente los JOINs que DebtsService.get()/list_debts() usan
-  hoy (JOIN a monedas para currency_code/currency_symbol/decimales) — no se
-  dejan para un paso 2.
+listar_por_origen() se conserva (no estaba en el pedido de la
+reestructuración): FeesService.delete_purchase() lo usa para no borrar una
+compra de la que depende una deuda.
 
-Fuera de alcance a propósito (no son CRUD de una sola tabla/agregado):
-- `summary_by_person`: reporte agregado (GROUP BY persona+tipo), no un
-  listado de filas — se deja en DebtsService.
-- `get_payments`: hace LEFT JOIN con `transacciones` para traer
-  transaction_date; no se pidió en este paso — si se necesita, se agrega en
-  un paso posterior con su propio método (ej. listar_pagos()).
-
-Fix del bug concept/notes (Fase 2, DEUDAS paso 2): `deudas` no tenía columna
-`concepto` — DebtsService.update() mapeaba tanto `concept` como `notes` a la
-misma columna `notas`, así que pasar ambos en la misma llamada hacía que uno
-pisara al otro. La migración en db/schema_migrations.py agrega la columna
-`concepto` (ver MIGRACIONES_COLUMNA); crear()/actualizar() acá ya la tratan
-como una columna independiente de `notas`. obtener_por_id()/listar() hacen
-`SELECT *`/`d.*` así que ya la traen sin cambios de código.
+Chequeo de duplicados (DeudaDuplicadaError): mismo mecanismo que
+TransaccionesRepository.crear() — seguridad contra doble-click/doble-Enter,
+no una regla de negocio.
 """
 
 import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
-from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
-# Ver mismo mecanismo/motivo en repositories/transacciones_repository.py
-# (VENTANA_DUPLICADO_SEGUNDOS / TransaccionDuplicadaError) — chequeo de
-# seguridad contra doble-click/doble-Enter, no una regla de negocio.
 VENTANA_DUPLICADO_SEGUNDOS = 5
+
+# Lectura enriquecida: columnas propias + la moneda.
+_SELECT = """
+    SELECT d.*, m.codigo AS currency_code, m.simbolo AS currency_symbol, m.decimales
+    FROM deudas d
+    JOIN monedas m ON m.id = d.moneda_id
+"""
+_ORDEN = " ORDER BY d.fecha DESC, d.id DESC;"
 
 
 class DeudaDuplicadaError(Exception):
     """
-    Se lanza cuando crear() detecta una deuda con los mismos campos
-    relevantes (entidad_persona, tipo, monto_original_minor, fecha_inicio)
-    insertada hace menos de VENTANA_DUPLICADO_SEGUNDOS. Ver
-    TransaccionDuplicadaError en transacciones_repository.py — mismo
-    criterio exacto (Tarea 9, Parte B).
+    crear() encontró una fila con la misma entidad_persona/tipo/monto_minor/
+    fecha creada hace menos de VENTANA_DUPLICADO_SEGUNDOS (doble-click).
     """
 
 
@@ -78,183 +57,111 @@ class DeudasRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
 
-    def _existe_duplicado_reciente(
-        self,
-        entidad_persona: str,
-        tipo: str,
-        monto_minor: int,
-        fecha_inicio: str,
-    ) -> bool:
-        sql = """
-            SELECT 1 FROM deudas
-            WHERE entidad_persona = ? AND tipo = ? AND monto_original_minor = ?
-              AND fecha_inicio = ?
-              AND (strftime('%s', 'now') - strftime('%s', creada_en)) < ?
-            LIMIT 1;
-        """
-        params = (entidad_persona, tipo, monto_minor, fecha_inicio, VENTANA_DUPLICADO_SEGUNDOS)
-        return self._db.conn.execute(sql, params).fetchone() is not None
-
     # ----------------------------------------------------------
     # CREATE
     # ----------------------------------------------------------
 
+    def _existe_duplicado_reciente(self, entidad_persona: str, tipo: str, monto_minor: int, fecha: str) -> bool:
+        sql = """
+            SELECT 1 FROM deudas
+            WHERE entidad_persona = ? AND tipo = ? AND monto_minor = ? AND fecha = ?
+              AND (strftime('%s', 'now') - strftime('%s', creada_en)) < ?
+            LIMIT 1;
+        """
+        params = (entidad_persona, tipo, monto_minor, fecha, VENTANA_DUPLICADO_SEGUNDOS)
+        return self._db.conn.execute(sql, params).fetchone() is not None
+
     def crear(
         self,
         entidad_persona: str,
+        concepto: Optional[str],
         tipo: str,
         monto_minor: int,
         moneda_id: int,
-        fecha_inicio: str,
-        fecha_vencimiento: Optional[str] = None,
+        fecha: str,
+        notas: Optional[str] = None,
         origen_tipo: str = "manual",
         origen_id: Optional[int] = None,
-        notas: Optional[str] = None,
-        concepto: Optional[str] = None,
+        conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
-        Inserta una deuda. monto_original_minor y monto_pendiente_minor
-        arrancan iguales (recién creada, nada pagado todavía).
-
-        concepto y notas son columnas separadas (Fase 2, DEUDAS paso 2 — fix
-        del bug donde antes se pisaban en actualizar()): concepto es la
-        descripción corta de la deuda (equivalente a
-        transacciones.concepto), notas es memo/motivo libre.
-
-        Antes del INSERT, rechaza la operación con DeudaDuplicadaError si ya
-        existe una deuda con la misma entidad_persona/tipo/
-        monto_original_minor/fecha_inicio creada hace menos de
-        VENTANA_DUPLICADO_SEGUNDOS (Tarea 9, Parte B) — mismo criterio que
-        TransaccionesRepository.crear()/ComprasCuotasRepository.crear().
+        Inserta una fila y devuelve su id. DeudaDuplicadaError si es idéntica
+        a una creada hace menos de VENTANA_DUPLICADO_SEGUNDOS.
         """
-        if self._existe_duplicado_reciente(entidad_persona, tipo, monto_minor, fecha_inicio):
+        if self._existe_duplicado_reciente(entidad_persona, tipo, monto_minor, fecha):
             raise DeudaDuplicadaError(
-                f"Ya existe una deuda idéntica (entidad_persona='{entidad_persona}', "
-                f"tipo='{tipo}', monto_original_minor={monto_minor}, "
-                f"fecha_inicio={fecha_inicio}) creada hace menos de "
+                f"Ya existe una deuda idéntica (entidad_persona='{entidad_persona}', tipo='{tipo}', "
+                f"monto_minor={monto_minor}, fecha={fecha}) creada hace menos de "
                 f"{VENTANA_DUPLICADO_SEGUNDOS} segundos."
             )
-
-        return self._db.execute(
-            """
+        sql = """
             INSERT INTO deudas
-                (entidad_persona, tipo, monto_original_minor, monto_pendiente_minor,
-                 moneda_id, fecha_inicio, fecha_vencimiento, origen_tipo, origen_id,
-                 notas, concepto)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            (
-                entidad_persona, tipo, monto_minor, monto_minor,
-                moneda_id, fecha_inicio, fecha_vencimiento, origen_tipo, origen_id,
-                notas, concepto,
-            ),
-        )
+                (entidad_persona, concepto, tipo, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        params = (entidad_persona, concepto, tipo, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
+        if conn is not None:
+            return conn.execute(sql, params).lastrowid
+        return self._db.execute(sql, params)
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
     def obtener_por_id(self, deuda_id: int) -> Optional[sqlite3.Row]:
-        return (
-            QueryBuilder("deudas", include_deleted=True)
-            .where("id", deuda_id)
-            .ejecutar_uno(self._db.conn)
-        )
+        return self._db.fetchone(_SELECT + " WHERE d.id = ?;", (deuda_id,))
 
-    def obtener_enriquecida(self, deuda_id: int) -> Optional[sqlite3.Row]:
-        """
-        Igual que obtener_por_id(), pero con el shape enriquecido que usa
-        DebtsService.get(): columnas propias de deudas más currency_code,
-        currency_symbol y decimales vía JOIN a monedas. Réplica exacta de
-        esa query.
-        """
-        return (
-            QueryBuilder("deudas d", include_deleted=True)
-            .select(
-                "d.*",
-                "m.codigo AS currency_code",
-                "m.simbolo AS currency_symbol",
-                "m.decimales",
-            )
-            .join("monedas m", "m.id = d.moneda_id")
-            .where("d.id", deuda_id)
-            .ejecutar_uno(self._db.conn)
-        )
+    def listar_por_persona(self, entidad_persona: str, moneda_id: Optional[int] = None) -> list[sqlite3.Row]:
+        """Filas de una persona (nombre exacto), opcionalmente de una moneda; la más nueva primero."""
+        sql = _SELECT + " WHERE d.entidad_persona = ?"
+        params: list[Any] = [entidad_persona]
+        if moneda_id is not None:
+            sql += " AND d.moneda_id = ?"
+            params.append(moneda_id)
+        return self._db.fetchall(sql + _ORDEN, tuple(params))
 
-    def listar(
-        self,
-        entidad_persona: Optional[str] = None,
-        tipo: Optional[str] = None,
-        estado: Optional[str] = None,
-        moneda_id: Optional[int] = None,
-        origen_tipo: Optional[str] = None,
-        pagina: int = 1,
-        por_pagina: int = 50,
-    ) -> list[sqlite3.Row]:
-        """
-        Filtros AND-combinados, todos opcionales. Mismo set de filtros que
-        DebtsService.list_debts() (la fuente de verdad actual). Ordena por
-        fecha_inicio DESC — igual que hoy.
-        """
-        return (
-            QueryBuilder("deudas", include_deleted=True)
-            .where("entidad_persona", entidad_persona)
-            .where("tipo", tipo)
-            .where("estado", estado)
-            .where("moneda_id", moneda_id)
-            .where("origen_tipo", origen_tipo)
-            .order("fecha_inicio", "DESC")
-            .paginar(pagina, por_pagina)
-            .ejecutar(self._db.conn)
-        )
+    def listar_por_periodo(self, fecha_desde: str, fecha_hasta: str) -> list[sqlite3.Row]:
+        """Filas con fecha_desde <= fecha <= fecha_hasta ('YYYY-MM-DD'); la más nueva primero."""
+        return self._db.fetchall(_SELECT + " WHERE d.fecha >= ? AND d.fecha <= ?" + _ORDEN, (fecha_desde, fecha_hasta))
+
+    def listar_todo(self) -> list[sqlite3.Row]:
+        return self._db.fetchall(_SELECT + _ORDEN)
 
     def listar_por_origen(self, origen_tipo: str, origen_id: int) -> list[sqlite3.Row]:
-        """
-        Deudas generadas desde un registro puntual (ej. origen_tipo=
-        'compra_cuotas', origen_id=<compra>) — para que un service pueda
-        chequear si ese registro tiene una deuda que depende de él antes de
-        borrarlo (mismo rol que GastosCompartidosRepository.listar_por_origen()).
-        """
-        return (
-            QueryBuilder("deudas", include_deleted=True)
-            .where("origen_tipo", origen_tipo)
-            .where("origen_id", origen_id)
-            .ejecutar(self._db.conn)
+        """Filas generadas desde un registro puntual (ej. 'compra_cuotas', <compra>) — ver docstring del módulo."""
+        return self._db.fetchall(
+            _SELECT + " WHERE d.origen_tipo = ? AND d.origen_id = ?" + _ORDEN, (origen_tipo, origen_id),
         )
 
-    def listar_enriquecida(
-        self,
-        entidad_persona: Optional[str] = None,
-        tipo: Optional[str] = None,
-        estado: Optional[str] = None,
-        moneda_id: Optional[int] = None,
-        origen_tipo: Optional[str] = None,
-        pagina: int = 1,
-        por_pagina: int = 50,
-    ) -> list[sqlite3.Row]:
-        """
-        Misma firma de filtros y paginación que listar(), pero con el shape
-        enriquecido (JOIN a monedas) que usa DebtsService.list_debts()/
-        list_active(). Réplica exacta de esa query.
-        """
-        return (
-            QueryBuilder("deudas d", include_deleted=True)
-            .select(
-                "d.*",
-                "m.codigo AS currency_code",
-                "m.simbolo AS currency_symbol",
-                "m.decimales",
-            )
-            .join("monedas m", "m.id = d.moneda_id")
-            .where("d.entidad_persona", entidad_persona)
-            .where("d.tipo", tipo)
-            .where("d.estado", estado)
-            .where("d.moneda_id", moneda_id)
-            .where("d.origen_tipo", origen_tipo)
-            .order("d.fecha_inicio", "DESC")
-            .paginar(pagina, por_pagina)
-            .ejecutar(self._db.conn)
+    # ----------------------------------------------------------
+    # SALDOS (suma con signo: a_favor suma, en_contra resta)
+    # ----------------------------------------------------------
+
+    def get_saldo_neto_por_persona(self, hasta_fecha: str) -> list[sqlite3.Row]:
+        """(entidad_persona, moneda_id, saldo) de todas las filas con fecha <= hasta_fecha."""
+        return self._db.fetchall(
+            """
+            SELECT entidad_persona, moneda_id,
+                   SUM(CASE WHEN tipo = 'a_favor' THEN monto_minor ELSE -monto_minor END) AS saldo
+            FROM deudas
+            WHERE fecha <= ?
+            GROUP BY entidad_persona, moneda_id
+            ORDER BY entidad_persona;
+            """,
+            (hasta_fecha,),
         )
+
+    def get_saldo_persona(self, entidad_persona: str, moneda_id: int, hasta_fecha: str) -> int:
+        """Saldo con signo de una persona (nombre exacto) en una moneda, con fecha <= hasta_fecha (0 si no hay filas)."""
+        fila = self._db.fetchone(
+            """
+            SELECT COALESCE(SUM(CASE WHEN tipo = 'a_favor' THEN monto_minor ELSE -monto_minor END), 0) AS saldo
+            FROM deudas
+            WHERE entidad_persona = ? AND moneda_id = ? AND fecha <= ?;
+            """,
+            (entidad_persona, moneda_id, hasta_fecha),
+        )
+        return fila["saldo"]
 
     # ----------------------------------------------------------
     # UPDATE
@@ -264,149 +171,41 @@ class DeudasRepository:
         self,
         deuda_id: int,
         entidad_persona: Any = NO_CAMBIAR,
-        tipo: Any = NO_CAMBIAR,
-        monto_original_minor: Any = NO_CAMBIAR,
-        monto_pendiente_minor: Any = NO_CAMBIAR,
-        moneda_id: Any = NO_CAMBIAR,
-        fecha_inicio: Any = NO_CAMBIAR,
-        fecha_vencimiento: Any = NO_CAMBIAR,
-        estado: Any = NO_CAMBIAR,
-        origen_tipo: Any = NO_CAMBIAR,
-        origen_id: Any = NO_CAMBIAR,
-        notas: Any = NO_CAMBIAR,
         concepto: Any = NO_CAMBIAR,
+        tipo: Any = NO_CAMBIAR,
+        monto_minor: Any = NO_CAMBIAR,
+        moneda_id: Any = NO_CAMBIAR,
+        fecha: Any = NO_CAMBIAR,
+        notas: Any = NO_CAMBIAR,
     ) -> bool:
         """
-        Update parcial. Default NO_CAMBIAR = no tocar ese campo (se omite
-        del UPDATE). Pasar None explícito escribe NULL a propósito en ese
-        campo (ej. fecha_vencimiento=None para quitar un vencimiento, o
-        notas=None para borrarlas) — igual que
-        TransaccionesRepository.actualizar().
-
-        concepto y notas son parámetros separados que escriben a columnas
-        separadas (Fase 2, DEUDAS paso 2): antes de este fix, DebtsService.
-        update() mapeaba ambos a la columna `notas`, así que pasar los dos
-        en la misma llamada hacía que uno pisara al otro. Acá cada uno tiene
-        su propio NO_CAMBIAR independiente — no hay forma de que se pisen.
+        Update parcial: NO_CAMBIAR = no tocar ese campo; None explícito
+        escribe NULL (concepto/notas). entidad_persona y moneda_id no estaban
+        en el pedido original, pero la pantalla edita todas las celdas.
+        Devuelve True si actualizó una fila.
         """
         campos, valores = [], []
-        if entidad_persona       is not NO_CAMBIAR: campos.append("entidad_persona = ?");       valores.append(entidad_persona)
-        if tipo                  is not NO_CAMBIAR: campos.append("tipo = ?");                  valores.append(tipo)
-        if monto_original_minor  is not NO_CAMBIAR: campos.append("monto_original_minor = ?");  valores.append(monto_original_minor)
-        if monto_pendiente_minor is not NO_CAMBIAR: campos.append("monto_pendiente_minor = ?"); valores.append(monto_pendiente_minor)
-        if moneda_id              is not NO_CAMBIAR: campos.append("moneda_id = ?");             valores.append(moneda_id)
-        if fecha_inicio           is not NO_CAMBIAR: campos.append("fecha_inicio = ?");          valores.append(fecha_inicio)
-        if fecha_vencimiento      is not NO_CAMBIAR: campos.append("fecha_vencimiento = ?");     valores.append(fecha_vencimiento)
-        if estado                 is not NO_CAMBIAR: campos.append("estado = ?");                valores.append(estado)
-        if origen_tipo            is not NO_CAMBIAR: campos.append("origen_tipo = ?");           valores.append(origen_tipo)
-        if origen_id              is not NO_CAMBIAR: campos.append("origen_id = ?");             valores.append(origen_id)
-        if notas                  is not NO_CAMBIAR: campos.append("notas = ?");                 valores.append(notas)
-        if concepto               is not NO_CAMBIAR: campos.append("concepto = ?");              valores.append(concepto)
+        for columna, valor in (
+            ("entidad_persona", entidad_persona), ("concepto", concepto), ("tipo", tipo),
+            ("monto_minor", monto_minor), ("moneda_id", moneda_id), ("fecha", fecha), ("notas", notas),
+        ):
+            if valor is not NO_CAMBIAR:
+                campos.append(f"{columna} = ?")
+                valores.append(valor)
         if not campos:
             return False
-        valores.append(deuda_id)
-        self._db.execute(f"UPDATE deudas SET {', '.join(campos)} WHERE id = ?;", tuple(valores))
-        return True
-
-    # ----------------------------------------------------------
-    # REGISTRAR PAGO
-    # ----------------------------------------------------------
-
-    def registrar_pago(
-        self,
-        deuda_id: int,
-        monto_applied_minor: int,
-        tipo_pago: str,
-        fecha: str,
-        nuevo_monto_pendiente_minor: int,
-        nuevo_estado: str,
-        transaccion_id: Optional[int] = None,
-        concepto: Optional[str] = None,
-        notas: Optional[str] = None,
-        conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
-        """
-        Inserta un pago en deuda_pagos y actualiza monto_pendiente_minor +
-        estado en deudas de forma atómica. Devuelve el id del pago
-        insertado. nuevo_monto_pendiente_minor y nuevo_estado ya vienen
-        calculados por quien llama (la resta y la decisión de si la deuda
-        queda 'saldada' son regla de negocio, no de este repositorio).
-
-        Si se pasa `conn`, participa de una transacción externa: ni el
-        INSERT ni el UPDATE comitean acá, el caller es responsable de
-        comitear/rollback (ver TransaccionesRepository.crear(conn=...)). Si
-        no se pasa, este método abre su propia transacción vía
-        self._db.transaction() para garantizar que el INSERT + UPDATE sean
-        atómicos incluso en uso standalone — nunca se ejecutan como dos
-        escrituras independientes, porque un fallo entre medio dejaría el
-        pago insertado sin reflejarse en el saldo pendiente.
-        """
-        sql_insert = """
-            INSERT INTO deuda_pagos
-                (deuda_id, transaccion_id, concepto, monto_applied_minor,
-                 tipo_pago, notas, fecha)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
-        """
-        params_insert = (
-            deuda_id, transaccion_id, concepto, monto_applied_minor,
-            tipo_pago, notas, fecha,
+        cursor = self._db.conn.execute(
+            f"UPDATE deudas SET {', '.join(campos)} WHERE id = ?;", (*valores, deuda_id),
         )
-
-        sql_update = """
-            UPDATE deudas SET monto_pendiente_minor = ?, estado = ? WHERE id = ?;
-        """
-        params_update = (nuevo_monto_pendiente_minor, nuevo_estado, deuda_id)
-
-        if conn is not None:
-            pago_id = conn.execute(sql_insert, params_insert).lastrowid
-            conn.execute(sql_update, params_update)
-            return pago_id
-
-        with self._db.transaction() as tx_conn:
-            pago_id = tx_conn.execute(sql_insert, params_insert).lastrowid
-            tx_conn.execute(sql_update, params_update)
-        return pago_id
+        self._db.conn.commit()
+        return cursor.rowcount > 0
 
     # ----------------------------------------------------------
-    # WRITE OFF
+    # DELETE
     # ----------------------------------------------------------
 
-    def write_off(
-        self,
-        deuda_id: int,
-        notas: Optional[str] = None,
-        conn: Optional[sqlite3.Connection] = None,
-    ) -> None:
-        """
-        Marca una deuda como 'incobrable' y escribe `notas` (reemplaza el
-        valor existente por completo, igual que DebtsService.write_off()
-        hoy — no es un NO_CAMBIAR condicional, siempre escribe lo que se le
-        pasa, incluido None).
-
-        Acepta `conn` opcional para participar de una transacción externa,
-        igual que registrar_pago(). Si no se pasa, comitea normalmente vía
-        self._db.execute().
-        """
-        sql = "UPDATE deudas SET estado = 'incobrable', notas = ? WHERE id = ?;"
-        params = (notas, deuda_id)
-        if conn is not None:
-            conn.execute(sql, params)
-            return
-        self._db.execute(sql, params)
-
-    # ----------------------------------------------------------
-    # ELIMINAR
-    # ----------------------------------------------------------
-
-    def eliminar(self, deuda_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
-        """
-        DELETE físico de la deuda (Tarea 9, Parte B — ventana de corrección
-        temprana, CLAUDE.md §4). No valida si tiene pagos asociados en
-        deuda_pagos — esa es responsabilidad de DebtsService.delete_debt()
-        (regla de negocio, no de este repositorio).
-        """
-        sql = "DELETE FROM deudas WHERE id = ?;"
-        if conn is not None:
-            conn.execute(sql, (deuda_id,))
-            return
-        self._db.execute(sql, (deuda_id,))
+    def eliminar(self, deuda_id: int) -> bool:
+        """DELETE físico. Devuelve True si borró una fila."""
+        cursor = self._db.conn.execute("DELETE FROM deudas WHERE id = ?;", (deuda_id,))
+        self._db.conn.commit()
+        return cursor.rowcount > 0

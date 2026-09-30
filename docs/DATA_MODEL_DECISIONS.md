@@ -584,3 +584,104 @@ tarea: "ella compra tomate y yo lo descuento").
   `GastosCompartidosRepository.marcar_saldado()` queda sin caller desde
   `SharedExpensesService` (se deja en el repositorio por si algún llamador
   externo lo necesitara, no se borró en esta tarea).
+
+## 21. Snapshots mensuales de saldos — ✅ implementado (vía `db/schema_migrations.py`)
+
+Tres tablas **derivadas** — un caché recalculable, no datos propios: todo lo
+que guardan sale de otras tablas y se puede regenerar en cualquier momento
+(`SnapshotsService.recalcular_todo()` / `recalcular_desde()`,
+`services/snapshots_service.py`). Sirven para la fila "SALDO ANTERIOR" del
+Registro, Deudas y Gastos compartidos sin recorrer toda la historia cada vez.
+
+- `saldos_mensuales(cuenta_id, moneda_id, mes, anio, saldo_minor)`: saldo de
+  cada fila de `cuentas_saldos` al cierre del mes = `saldo_inicial_minor` +
+  transacciones no eliminadas hasta el último día del mes, con el MISMO
+  signo que `vw_balance_cuentas` (ingreso suma, egreso resta, `movimiento`
+  suma). Snapshot del mes anterior + movimientos del mes en curso = el saldo
+  que muestra la app.
+- `deudas_mensuales(entidad_persona, moneda_id, mes, anio, monto_minor)`:
+  suma con signo de todas las filas de `deudas` (libro de movimientos,
+  sección 22) con `fecha` <= fin de mes, por persona y moneda (`a_favor`
+  suma, `en_contra` resta — el neto de la barra de Deudas). Antes de la
+  reestructuración era el pendiente ACTUAL de las deudas `activa`. La
+  persona se guarda normalizada (sin espacios de más, en mayúsculas): "Noe"
+  y "NOE" son la misma fila.
+- `compartidos_mensuales(hogar_id, pagador, moneda_id, mes, anio,
+  monto_minor)`: pendiente ACTUAL de los gastos `pendiente` con `fecha` <=
+  fin de mes, por hogar, pagador y moneda. `gastos_compartidos` no tiene
+  moneda: sale del origen (transacción, compra en cuotas o la compra de la
+  cuota).
+
+Decisiones:
+
+- Van en `MIGRACIONES_TABLA` de `db/schema_migrations.py` (pedido explícito),
+  no en `schema.sql`: se agregan sobre bases existentes. Son `CREATE TABLE IF
+  NOT EXISTS`, así que reaplicarlas en cada `inicializar()` no hace nada.
+  `UNIQUE(clave, mes, anio)` + `INSERT OR REPLACE` como upsert.
+- El mes en curso **nunca** se guarda: siempre se calcula en vivo. Rango:
+  del primer mes con datos al mes anterior al actual.
+- Lecturas: snapshot del mes anterior si existe; si falta (nunca se
+  recalculó, o empezó un mes nuevo) se calcula en vivo con la misma regla —
+  en el primer mes de la app eso da `saldo_inicial_minor`.
+- **Límite conocido**: compartidos usa el pendiente de HOY (regla pedida), así
+  que un pago registrado hoy sobre un gasto viejo deja el snapshot
+  desactualizado hasta el próximo recálculo (↻ de las pantallas). Deudas ya
+  no: desde la sección 22 un pago es una fila con su propia fecha. Lo mismo con los saldos si se carga o edita una transacción de
+  un mes cerrado. Alternativa posible (no implementada): reconstruir el
+  pendiente al cierre de cada mes con las fechas de `deuda_pagos` /
+  `gasto_compartido_pagos`, que deja los meses cerrados fijos.
+- Sin `deleted_at` ni reglas de edición (sección 9): se borran y se
+  reescriben enteras al recalcular.
+
+## 22. Deudas como libro de movimientos — ✅ implementado (vía `db/schema_migrations.py`)
+
+`deudas` deja de ser "una deuda con su pendiente, su estado y sus pagos en
+`deuda_pagos`" y pasa a ser un **libro de movimientos**: cada fila es un
+monto (siempre positivo) con dirección —
+
+- `tipo = 'a_favor'`: te deben más (le prestaste, pagaste algo por esa persona);
+- `tipo = 'en_contra'`: debés más, o te pagaron (un pago que recibiste).
+
+El saldo con una persona es la suma con signo de sus filas (`a_favor` suma,
+`en_contra` resta): positivo = te debe, negativo = le debés. No hay
+`monto_pendiente_minor`, ni `estado`, ni pagos aparte: registrar un pago es
+crear una fila de tipo opuesto. `DebtsService.register_payment()` /
+`write_off()` ya no existen.
+
+Columnas: `id, entidad_persona, concepto, tipo, monto_minor, moneda_id,
+fecha, notas, origen_tipo, origen_id, sincronizado_en, creada_en`
+(`sincronizado_en` reservado para la sincronización futura).
+
+Migración (`reestructurar_deudas()`, corre sola en `inicializar()`):
+
+- Condición: la tabla todavía tiene la estructura vieja (columna
+  `monto_original_minor`), haya datos o no — `db/schema.sql` **sigue
+  teniendo la definición vieja** de `deudas` (no se tocó en esta tarea), así
+  que una base nueva nace vieja y se convierte en su primera
+  `inicializar()`. Pendiente: actualizar `schema.sql` a la estructura nueva.
+- Si hay datos, antes copia el archivo (`deltabalance_backup_antes_deudas_<fecha>.db`,
+  al lado de la base).
+- Todo en una transacción: crea `deudas_v2`; copia cada deuda con su monto
+  ORIGINAL, su `fecha_inicio` y su mismo id; copia cada pago de
+  `deuda_pagos` como fila de tipo opuesto (`origen_tipo='pago_migrado'`,
+  `origen_id` = id del pago, fecha recortada a `AAAA-MM-DD`); normaliza la
+  persona (`utils/personas.py`); renombra `deudas` → `deudas_old` y
+  `deudas_v2` → `deudas`. Si algo falla, rollback: `deudas` queda intacta.
+- `deudas_old` (con su índice, su trigger `updated_en`, la vista
+  `vw_deudas_activas` y la FK de `deuda_pagos`, que el `RENAME` se lleva)
+  queda como archivo histórico; nada la lee.
+- Las deudas `incobrable` se migran tal cual (decisión explícita): vuelven a
+  sumar su monto completo — el write-off no tenía contrapartida en filas.
+  Las `saldada` quedan en 0 (deuda + pagos).
+
+Reglas de dominio (`DebtsService`): la persona se normaliza (sin espacios de
+más, en mayúsculas); un monto negativo es la dirección contraria (se guarda
+positivo con el tipo invertido); edición y borrado directos (una fila no
+tiene dependencias con estado propio — sección 9). La tabla ya no tiene
+fecha de vencimiento: el routing "Deuda" del Registro la guarda en `notas`.
+
+Snapshots (sección 21): `deudas_mensuales` suma estas filas al cierre de
+cada mes, así que un mes cerrado solo cambia si se carga, edita o borra una
+fila con fecha de ese mes — un pago de hoy ya no lo desactualiza.
+
+Importación del Excel: `migration/migrar_deudas.py` (TABLA DEUDAS en CSV).

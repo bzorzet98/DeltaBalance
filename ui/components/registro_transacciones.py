@@ -27,10 +27,11 @@ on_cambio() (queda en la firma para no romper al dashboard).
 
 --- Fila de alta ---
 
-Signo del monto: negativo = egreso, positivo = ingreso. Tab avanza; Enter
-en Concepto, Monto o Fecha confirma y guarda; en Banco/Categoría Enter
-elige la sugerencia y pasa al campo siguiente; en Moneda (el último campo)
-Tab lleva el foco al ✓ y ahí Enter confirma (TablaPlanilla.
+Signo del monto: negativo = egreso, positivo = ingreso. Enter nunca guarda
+la fila salvo con el foco en el ✓: Concepto → Banco → Categoría → Monto →
+Fecha → Moneda (en Banco/Categoría Enter elige la sugerencia; en Monto
+resuelve la fórmula) y en Moneda, el último campo, Enter o Tab llevan el
+foco al ✓ sin activarlo; ahí Enter o un click confirman (TablaPlanilla.
 tab_a_confirmar()). Al guardar, la fila se reconstruye vacía con el foco en
 Concepto.
 
@@ -46,27 +47,53 @@ comportamiento:
   ignorado.
 - "Deuda": crea la transacción normal primero y después pide persona/
   vencimiento para vincularle una deuda (DebtsService.create(origen_tipo=
-  'transaccion')); debt_type sale del signo (egreso → 'a_favor').
+  'transaccion')); debt_type sale del signo (egreso → 'a_favor'). La tabla
+  de deudas (libro de movimientos) ya no tiene fecha de vencimiento: si se
+  carga, va en las notas ("VENCE: AAAA-MM-DD").
 
 --- Filas ---
 
 Edición inline (CLAUDE.md §10): todas las columnas — Concepto, Banco,
-Categoría, Monto (valor absoluto — el signo no cambia desde acá), Fecha y
+Categoría, Monto (con el signo que se ve, − gasto / + ingreso: un negativo
+es válido; lo que todavía no se puede es dar vuelta el signo, porque
+TransactionService.update() no cambia tipo_movimiento), Fecha y
 Moneda (entre las monedas de la cuenta de la fila; mantiene el importe
 mostrado, TransactionService.update() recibe monto + moneda juntos). Banco
 y Categoría excluyen tarjetas de crédito / usan las mismas categorías que
-la fila de alta. Un ícono de personas en la columna de acción marca las
-transacciones ya compartidas.
+la fila de alta.
+
+Columna de acción (TablaPlanilla.icono_accion(), azul si ya hay algo
+vinculado, si no gris y solo al hover):
+- Casita: compartir con el hogar — el flujo de ui/components/
+  compartir_gasto.py (si ya está compartida, muestra el detalle).
+- Handshake: registrar como deuda — diálogo con persona, ME DEBEN / DEBO y
+  el monto como $ / 0.XX / % de "¿DE CUÁNTO?" (ui/components/
+  tipo_valor.py, precargado con el monto del movimiento). Llama a
+  DebtsService.create(origen_tipo='transaccion', origen_id=id); moneda,
+  fecha y concepto salen del movimiento. Con deudas ya vinculadas (de acá
+  o del routing "Deuda" de la fila de alta), el diálogo las lista y deja
+  agregar otra (ej. una cena que te deben dos personas).
 
 Eliminar (barra flotante): confirmación inline en la misma barra. Si
 alguna fila es parte de una autotransferencia o el origen de un movimiento
 de ahorro, el aviso lo dice ahí mismo
-(TransactionService.get_delete_warnings()). Compartir: con UNA fila, el
-flujo de siempre de ui/components/compartir_gasto.py; con varias,
-ui/components/compartir_varios.py — mismo hogar y mismo coeficiente para
-todas, salteando las ya compartidas; los ingresos se registran como pago
+(TransactionService.get_delete_warnings()). Compartir: todas las filas
+seleccionadas tienen que ser de la misma moneda (si no, error inline en la
+barra). Con UNA fila, el flujo de siempre de compartir_gasto.py; con
+varias, ui/components/compartir_varios.py con los mismos campos (hogar +
+coeficiente de 0 a 1) — mismo hogar y mismo coeficiente para todas,
+salteando las ya compartidas; los ingresos se registran como pago
 recibido (coeficiente 100%, monto base negativo), igual que en el flujo de
 una fila.
+
+--- Saldo anterior (snapshots de cierre de mes) ---
+
+Al final de la tabla, una fila "SALDO ANTERIOR" (FilaPie) por cada (cuenta,
+moneda) con saldo al cierre del mes anterior distinto de cero
+(SnapshotsService.get_saldos_anteriores_cuentas(): snapshot, o en vivo si
+falta). Respeta el filtro de Banco (y el de Moneda) de la tabla. Se
+cachea por período. El botón ↻ al extremo derecho de la barra de saldo
+recalcula todos los snapshots (ui/components/saldo_anterior.py).
 
 --- Sin confirmar corriendo la app ---
 
@@ -86,16 +113,20 @@ from services.categorias_service import CategoriasService
 from services.debts_service import DebtError, DebtsService
 from services.savings_service import SavingsError, SavingsService
 from services.shared_expenses_service import SharedExpensesService
+from services.snapshots_service import SnapshotsService
 from services.transaction_service import TransactionError, TransactionService
 from ui.components import compartir_gasto, dialogo_compra_ahorro
+from ui.components.saldo_anterior import TEXTO_SALDO_ANTERIOR, TOOLTIP_SALDO_ANTERIOR, boton_recalcular
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
-from ui.components.compartir_varios import abrir_compartir_varios
+from ui.components.compartir_varios import FORMATO_UNIDAD, abrir_compartir_varios
+from ui.components.tipo_valor import TIPO_COEFICIENTE, TIPO_MONTO, TIPO_PORCENTAJE, CampoTipoValor
 from ui.components.tabla_planilla import (
     EXTRA_AJUSTE_DOT,
     ChipResumen,
     Columna,
     FilaAlta,
+    FilaPie,
     TablaPlanilla,
     banco_con_dot,
     barra_resumen,
@@ -129,12 +160,16 @@ COLUMNAS = [
     Columna("moneda", "MONEDA", 80, ancho_min=60),
 ]
 PREF_ANCHOS_COLUMNAS = "registro_anchos_columnas"
-ICONO_COMPARTIDO = 14
 ESPACIADO = 8
 LIMITE_TRANSACCIONES_DEL_MES = 500
+ANCHO_TIPO_DEUDA = 160
 ANCHO_DIALOGO_ROUTING = 320
 MONEDA_DEFAULT = "ARS"
 HINT_MONTO_ALTA = "± MONTO"
+MENSAJE_SIGNO_NO_EDITABLE = (
+    "CAMBIAR UN GASTO A INGRESO (O AL REVÉS) TODAVÍA NO SE PUEDE DESDE LA TABLA: "
+    "BORRALO Y CARGALO DE NUEVO CON EL SIGNO CORRECTO."
+)
 
 # Categorías especiales de routing de la fila de alta — clave:
 # (categoria_principal, subcategoria), mismo criterio que
@@ -188,6 +223,7 @@ def build(
     debts_service: DebtsService,
     estado: dict,
     on_cambio: Callable[[], None],
+    snapshots_service: SnapshotsService,
 ) -> ft.Control:
     """
     Args:
@@ -196,6 +232,8 @@ def build(
         on_cambio: Ya no se llama: el Registro se refresca solo tras cada
                    cambio de datos (ver docstring del módulo). Queda para no
                    cambiar la firma.
+        snapshots_service: Fila SALDO ANTERIOR y botón ↻ (ver docstring
+                   del módulo).
     """
     ui = _estado_ui(page)
     estado["mes"], estado["anio"] = ui["mes"], ui["anio"]
@@ -252,7 +290,16 @@ def build(
             t["id"] for t in transacciones
             if shared_expenses_service.get_shared_expense_by_origin("transaccion", t["id"]) is not None
         }
+        _cargar_deudas_vinculadas()
         return transacciones
+
+    def _cargar_deudas_vinculadas() -> None:
+        """transacción id → deudas con origen_tipo='transaccion' que la apuntan (ícono handshake)."""
+        vinculadas: dict[int, list[dict]] = {}
+        for deuda in debts_service.list_all():
+            if deuda["origen_tipo"] == "transaccion" and deuda["origen_id"] is not None:
+                vinculadas.setdefault(deuda["origen_id"], []).append(dict(deuda))
+        datos["deudas"] = vinculadas
 
     def _es_egreso(t: dict) -> bool:
         return t["tipo_movimiento"] == "egreso"
@@ -287,6 +334,7 @@ def build(
             t["concepto"], t["cuenta_id"], t["account_name"], t["categoria_id"], t["category_name"],
             t["monto_minor"], t["tipo_movimiento"], t["fecha"], t["currency_code"], t["decimales"],
             t["currency_symbol"], t["id"] in datos["compartidos"],
+            tuple(d["id"] for d in datos["deudas"].get(t["id"], [])),
         )
 
     # ------------------------------------------------------------
@@ -318,6 +366,7 @@ def build(
         return barra_resumen(
             "SALDO POR CUENTA", ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED, chips, monedas, codigo_sel,
             on_moneda=_elegir_moneda_saldo, texto_vacio=f"SIN SALDOS EN {codigo_sel}",
+            acciones=[boton_recalculo],
         )
 
     def _elegir_moneda_saldo(codigo: str) -> None:
@@ -330,6 +379,55 @@ def build(
         _cargar_cuentas()
         contenedor_saldos.content = _barra_saldos()
         return [contenedor_saldos]
+
+    # ------------------------------------------------------------
+    # FILA "SALDO ANTERIOR" (snapshots de cierre de mes)
+    # ------------------------------------------------------------
+
+    pie: dict[str, Any] = {"periodo": None, "filas": []}
+
+    def _filas_pie() -> list[FilaPie]:
+        # Cacheadas por período (TablaPlanilla las pide en cada redibujo):
+        # editar el mes mostrado no cambia el cierre del anterior. Se
+        # recalculan al cambiar de mes, con ↻, o si ui/app.py reconstruye
+        # la pantalla.
+        periodo = (ui["mes"], ui["anio"])
+        if pie["periodo"] != periodo:
+            pie["filas"] = _calcular_filas_pie()
+            pie["periodo"] = periodo
+        return pie["filas"]
+
+    def _calcular_filas_pie() -> list[FilaPie]:
+        """Una fila por (cuenta, moneda) con saldo al cierre del mes anterior distinto de cero."""
+        filas: list[FilaPie] = []
+        cuentas_por_id = datos["cuentas_por_id"]
+        entradas = [
+            e for e in snapshots_service.get_saldos_anteriores_cuentas(ui["mes"], ui["anio"])
+            if e["saldo_minor"] and e["cuenta_id"] in cuentas_por_id
+        ]
+        for entrada in sorted(entradas, key=lambda e: (cuentas_por_id[e["cuenta_id"]]["nombre"], e["moneda_codigo"])):
+            saldo = entrada["saldo_minor"]
+            nombre = cuentas_por_id[entrada["cuenta_id"]]["nombre"]
+            signo = "-" if saldo < 0 else "+"
+            filas.append(FilaPie(
+                textos={
+                    "concepto": TEXTO_SALDO_ANTERIOR,
+                    "banco": nombre,
+                    "monto": f"{signo} {amount_display(abs(saldo), entrada['decimales'], entrada['moneda_simbolo'])}",
+                    "moneda": entrada["moneda_codigo"],
+                },
+                positiva=saldo > 0,
+                # Mismo valor que la columna: el filtro de Banco (y el de Moneda) las filtra.
+                valores_filtro={"banco": nombre, "moneda": entrada["moneda_codigo"]},
+                tooltip=TOOLTIP_SALDO_ANTERIOR,
+            ))
+        return filas
+
+    def _tras_recalcular() -> None:
+        pie["periodo"] = None
+        tabla.recargar()
+
+    boton_recalculo = boton_recalcular(page, snapshots_service, _tras_recalcular)
 
     # ------------------------------------------------------------
     # FILA DE ALTA
@@ -401,7 +499,7 @@ def build(
             persistir_formula=True,
             hint_text=HINT_MONTO_ALTA,
             text_size=TypographyTokens.REGISTRO_FONT_CELDA,
-            on_avanzar=lambda: _confirmar_alta(),
+            on_avanzar=lambda: tabla.enfocar(campo_fecha),
         )
         sin_borde(campo_monto.control)
         campo_monto.control.text_align = ft.TextAlign.RIGHT
@@ -410,7 +508,7 @@ def build(
 
         celda_fecha, campo_fecha = tabla.campo_fecha_alta(
             borrador["fecha"] or date.today().isoformat(),
-            on_cambio=_guardar_borrador_alta, on_submit=_confirmar_alta,
+            on_cambio=_guardar_borrador_alta, on_submit=lambda: tabla.enfocar(dropdown_moneda),
         )
         _refrescar_monedas(cuenta_inicial, preferida=borrador["moneda"])
         boton_confirmar = tabla.boton_confirmar_alta("AGREGAR MOVIMIENTO", _confirmar_alta)
@@ -420,9 +518,11 @@ def build(
             monto=campo_monto, fecha=campo_fecha, moneda=dropdown_moneda, boton=boton_confirmar,
         )
 
-        # Enter confirma (Concepto, Fecha; Monto vía on_avanzar). Tab es
-        # nativo, salvo en Moneda: lleva el foco al ✓ (ahí Enter confirma).
-        campo_concepto.on_submit = lambda e: _confirmar_alta()
+        # Enter nunca guarda la fila: cada campo pasa al siguiente (Banco/
+        # Categoría vía on_avanzar de CampoFiltrable, Monto vía el de
+        # CampoMonto) y en Moneda, el último, Enter o Tab llevan el foco al ✓
+        # sin activarlo — ahí Enter (o un click) confirma.
+        campo_concepto.on_submit = lambda e: tabla.enfocar(campo_cuenta.campo_texto)
         campo_concepto.on_change = _on_cambio_borrador
         dropdown_moneda.on_select = _on_cambio_borrador
         tabla.tab_a_confirmar(dropdown_moneda)
@@ -617,14 +717,17 @@ def build(
                     _mostrar_error("LA FECHA DE VENCIMIENTO DEBE TENER EL FORMATO AAAA-MM-DD.")
                     return
             try:
+                moneda = monedas_por_codigo[moneda_codigo]
                 resultado_deuda = debts_service.create(
-                    person=persona,
-                    debt_type=debt_type,
-                    amount=abs(monto),  # create() lo exige positivo; el sentido lo da debt_type
-                    currency_code=moneda_codigo,
-                    date_str=fecha_str,
-                    concept=concepto,
-                    due_date=due_date,
+                    entidad_persona=persona,
+                    concepto=concepto,
+                    tipo=debt_type,
+                    # Positivo: el sentido lo da el tipo (libro de deudas, DebtsService).
+                    monto_minor=amount_to_minor(abs(monto), moneda["decimales"]),
+                    moneda_id=moneda["id"],
+                    fecha=fecha_str,
+                    # La tabla de deudas ya no tiene fecha de vencimiento: va en las notas.
+                    notas=f"VENCE: {due_date}" if due_date else None,
                     origen_tipo="transaccion",
                     origen_id=transaction_id,
                 )
@@ -635,7 +738,7 @@ def build(
             _alta_ok()
             _mostrar_ok(
                 f"MOVIMIENTO #{transaction_id} REGISTRADO Y VINCULADO A UNA DEUDA CON "
-                f"'{persona}' (#{resultado_deuda.debt_id}) — {texto_direccion}."
+                f"'{persona}' (#{resultado_deuda.entity_id}) — {texto_direccion}."
             )
 
         page.show_dialog(ft.AlertDialog(
@@ -775,10 +878,16 @@ def build(
             return _guardar(t, date_str=nuevo.strip())
 
         def _guardar_monto(monto_minor: int) -> str:
-            if monto_minor <= 0:
-                raise ValueError("EL MONTO DEBE SER MAYOR A 0 (EL SIGNO NO SE CAMBIA DESDE ACÁ).")
-            # update() recibe el monto como float y moneda junto con él.
-            return _guardar(t, amount=monto_minor / (10 ** decimales), currency_code=t["currency_code"])
+            # Se edita con el signo que se ve (− gasto, + ingreso), igual que
+            # la fila de alta: un negativo es válido. Lo que todavía no se
+            # puede es DAR VUELTA el signo: TransactionService.update() no
+            # cambia tipo_movimiento.
+            if monto_minor == 0:
+                raise ValueError("EL MONTO NO PUEDE SER 0.")
+            if (monto_minor < 0) != _es_egreso(t):
+                raise ValueError(MENSAJE_SIGNO_NO_EDITABLE)
+            # update() recibe el monto (positivo) como float y la moneda junto con él.
+            return _guardar(t, amount=abs(monto_minor) / (10 ** decimales), currency_code=t["currency_code"])
 
         def _guardar_moneda(nuevo_codigo: str) -> str:
             # Mismo importe mostrado en la moneda nueva (monto + moneda juntos).
@@ -805,7 +914,7 @@ def build(
             ),
             "monto": tabla.celda_monto(
                 t, "monto", _monto_con_signo(t), TEXT_NEGATIVO if _es_egreso(t) else TEXT_POSITIVO,
-                t["monto_minor"], decimales, _guardar_monto,
+                -t["monto_minor"] if _es_egreso(t) else t["monto_minor"], decimales, _guardar_monto,
             ),
             "fecha": tabla.celda_texto(t, "fecha", t["fecha"], _guardar_fecha),
             "moneda": tabla.celda_dropdown(
@@ -815,9 +924,111 @@ def build(
         }
 
     def _accion_fila(t: dict) -> Optional[ft.Control]:
-        if t["id"] not in datos["compartidos"]:
-            return None
-        return ft.Icon(ft.Icons.PEOPLE, size=ICONO_COMPARTIDO, color=TEXT_ACCENT, tooltip="GASTO COMPARTIDO")
+        compartido = t["id"] in datos["compartidos"]
+        deudas = datos["deudas"].get(t["id"], [])
+        tooltip_deuda = (
+            "DEUDA VINCULADA: " + ", ".join(d["entidad_persona"].upper() for d in deudas)
+            if deudas else "REGISTRAR COMO DEUDA"
+        )
+        return ft.Row(
+            [
+                tabla.icono_accion(
+                    ft.Icons.HOME, "GASTO COMPARTIDO CON EL HOGAR" if compartido else "COMPARTIR CON EL HOGAR",
+                    compartido, lambda: _compartir_con_hogar(t),
+                ),
+                tabla.icono_accion(ft.Icons.HANDSHAKE, tooltip_deuda, bool(deudas), lambda: _abrir_registrar_deuda(t)),
+            ],
+            spacing=0,
+            tight=True,
+        )
+
+    # --- Registrar como deuda (ícono handshake) ---
+
+    def _abrir_registrar_deuda(t: dict) -> None:
+        existentes = datos["deudas"].get(t["id"], [])
+        decimales = t["decimales"]
+        # $ y "¿DE CUÁNTO?" arrancan con el monto del movimiento.
+        monto_movimiento = f"{t['monto_minor'] / 10 ** decimales:.2f}"
+        campo_persona = ft.TextField(label="PERSONA", width=ANCHO_DIALOGO_ROUTING, autofocus=True)
+        dropdown_tipo = ft.Dropdown(
+            label="TIPO", width=ANCHO_TIPO_DEUDA,
+            options=[
+                ft.dropdown.Option(key="a_favor", text="ME DEBEN"),
+                ft.dropdown.Option(key="en_contra", text="DEBO"),
+            ],
+            # Mismo criterio que el routing "Deuda": egreso (pusiste vos) → te deben.
+            value="a_favor" if _es_egreso(t) else "en_contra",
+        )
+        campo_valor = CampoTipoValor(
+            page, orden=(TIPO_MONTO, TIPO_COEFICIENTE, TIPO_PORCENTAJE), decimales=decimales, con_base=True,
+            disposicion="dialogo", valor_inicial=monto_movimiento, base_inicial=monto_movimiento,
+            # Enter no registra: del último campo pasa al botón (ahí Enter o click registran).
+            on_enter=lambda: page.run_task(boton_registrar.focus),
+        )
+
+        def _confirmar(e=None) -> None:
+            persona = (campo_persona.value or "").strip()
+            if not persona:
+                _mostrar_error("INGRESÁ LA PERSONA.")
+                return
+            try:
+                monto_minor = campo_valor.monto_minor()
+            except ValueError as err:
+                _mostrar_error(str(err))
+                return
+            try:
+                resultado = debts_service.create(
+                    entidad_persona=persona,
+                    concepto=t["concepto"],
+                    tipo=dropdown_tipo.value,
+                    monto_minor=monto_minor,
+                    moneda_id=t["moneda_id"],
+                    fecha=t["fecha"],
+                    origen_tipo="transaccion",
+                    origen_id=t["id"],
+                )
+            except (DebtError, ValueError) as err:
+                _mostrar_error(str(err))
+                return
+            except Exception as err:
+                # Red de contención para DeudaDuplicadaError (repositories/
+                # deudas_repository.py): no se importa desde ui/ (CLAUDE.md
+                # §2/§3); su mensaje ya es legible.
+                _mostrar_error(str(err))
+                return
+            _cerrar_dialogo()
+            texto_monto = amount_display(monto_minor, decimales, t["currency_symbol"] or "")
+            _mostrar_ok(f"DEUDA #{resultado.entity_id} CON '{persona.upper()}' POR {texto_monto} REGISTRADA.")
+            tabla.recargar()
+
+        campo_persona.on_submit = lambda e: page.run_task(campo_valor.campo_foco.focus)
+        boton_registrar = ft.ElevatedButton(content=ft.Text("REGISTRAR"), on_click=_confirmar)
+        controles: list[ft.Control] = [
+            ft.Text(f"MOVIMIENTO: {(t['concepto'] or '').upper()} — {_monto_con_signo(t)} {t['currency_code']}",
+                    color=TEXT_SECONDARY),
+        ]
+        for deuda in existentes:
+            direccion = "TE DEBE" if deuda["tipo"] == "a_favor" else "LE DEBÉS"
+            monto_deuda = amount_display(deuda["monto_minor"], deuda["decimales"], deuda["currency_symbol"] or "")
+            controles.append(ft.Text(
+                f"YA VINCULADA: {deuda['entidad_persona'].upper()} — {direccion} {monto_deuda}",
+                color=TEXT_ACCENT,
+            ))
+        controles += [campo_persona, dropdown_tipo, campo_valor.control]
+
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("REGISTRAR COMO DEUDA"),
+            content=ft.Container(
+                width=ANCHO_DIALOGO_ROUTING,
+                content=ft.Column(controles, tight=True, spacing=ESPACIADO, scroll=ft.ScrollMode.AUTO),
+            ),
+            actions=[
+                ft.TextButton(content=ft.Text("CANCELAR"), on_click=_cerrar_dialogo),
+                boton_registrar,
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
 
     # ------------------------------------------------------------
     # ELIMINAR / COMPARTIR (barra flotante)
@@ -869,16 +1080,22 @@ def build(
             fecha=t["fecha"],
         )
 
+    def _compartir_con_hogar(t: dict) -> None:
+        # El flujo existente (compartir_gasto.py) es un diálogo por
+        # transacción: se dispara el on_click (async) de su propio ícono.
+        icono, _ = compartir_gasto.build_icon(page, shared_expenses_service, t, tabla.recargar)
+        page.run_task(icono.on_click, None)
+
     def _compartir(filas: list[dict]) -> None:
+        if len({t["currency_code"] for t in filas}) > 1:
+            tabla.aviso_barra("SELECCIONÁ SOLO TRANSACCIONES DE LA MISMA MONEDA PARA COMPARTIR EN LOTE.")
+            return
         if len(filas) == 1:
-            # El flujo existente (compartir_gasto.py) es un diálogo por
-            # transacción: se dispara el on_click (async) de su propio ícono.
-            icono, _ = compartir_gasto.build_icon(page, shared_expenses_service, filas[0], tabla.recargar)
-            page.run_task(icono.on_click, None)
+            _compartir_con_hogar(filas[0])
             return
         pendientes = [t for t in filas if t["id"] not in datos["compartidos"]]
         if not pendientes:
-            _mostrar_error("LOS MOVIMIENTOS SELECCIONADOS YA ESTÁN COMPARTIDOS.")
+            tabla.aviso_barra("LOS MOVIMIENTOS SELECCIONADOS YA ESTÁN COMPARTIDOS.")
             return
         avisos = []
         ya_compartidos = len(filas) - len(pendientes)
@@ -890,6 +1107,7 @@ def build(
         page.run_task(
             abrir_compartir_varios, page, shared_expenses_service,
             f"COMPARTIR {len(pendientes)} MOVIMIENTOS", pendientes, _compartir_una, avisos, tabla.recargar,
+            (), FORMATO_UNIDAD, ingresos < len(pendientes),  # coeficiente 0-1, como compartir_gasto.py
         )
 
     # ------------------------------------------------------------
@@ -913,6 +1131,7 @@ def build(
         avisos_eliminar=_avisos_eliminar,
         on_compartir=_compartir,
         al_recargar=_al_recargar,
+        filas_pie=_filas_pie,
         errores_esperados=(TransactionError,),
         texto_vacio="NO HAY MOVIMIENTOS PARA MOSTRAR.",
     )
