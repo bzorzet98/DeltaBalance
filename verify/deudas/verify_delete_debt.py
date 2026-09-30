@@ -1,14 +1,15 @@
 """
 verify/deudas/verify_delete_debt.py
 
-Verifica DebtsService.delete() / DeudasRepository.eliminar() sobre el libro
-de movimientos: una fila no tiene dependencias con estado propio (un pago
-ya no es un registro colgado de la deuda, es otra fila), así que cualquier
-fila se borra directo (ventana de corrección temprana, CLAUDE.md §4). Borrar
-el pago vuelve a dejar el saldo como antes del pago.
+Verifica DebtsService.delete() / DeudasRepository.eliminar() sobre la
+estructura final de deudas (tabs + monto con signo): una fila no tiene
+dependencias con estado propio (un pago ya no es un registro colgado de la
+deuda, es otra fila negativa en el mismo tab), así que cualquier fila se
+borra directo (ventana de corrección temprana, CLAUDE.md §4). Borrar el
+pago vuelve a dejar el saldo como antes del pago.
 
 Cubre:
-  - delete() de una deuda con un "pago" (fila opuesta) registrado: se borra
+  - delete() de una deuda con un pago (fila negativa) registrado: se borra
     igual, y el pago sigue ahí (son independientes).
   - delete() del pago: el saldo vuelve a lo de antes.
   - delete() de un id inexistente: DebtNotFoundError.
@@ -63,18 +64,22 @@ def main() -> None:
     ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
 
     def saldo_noe() -> int:
-        return repo.get_saldo_persona("NOE", ars, "2026-12-31")
+        return next(
+            (e["saldo_minor"] for e in svc.summary_by_person("me_deben", "2026-12-31")
+             if e["entidad_persona"] == "NOE" and e["moneda_id"] == ars),
+            0,
+        )
 
-    prestamo = svc.create("Noe", "Préstamo", "a_favor", 40000, ars, "2026-03-01").entity_id
-    pago = svc.create("Noe", "Devolvió una parte", "en_contra", 10000, ars, "2026-03-20").entity_id
-    otra = svc.create("Noe", "Otra", "a_favor", 2000, ars, "2026-04-01").entity_id
+    prestamo = svc.create("Noe", "Préstamo", "me_deben", 40000, ars, "2026-03-01").entity_id
+    pago = svc.create("Noe", "Devolvió una parte", "me_deben", -10000, ars, "2026-03-20").entity_id
+    otra = svc.create("Noe", "Otra", "me_deben", 2000, ars, "2026-04-01").entity_id
     caso("saldo inicial de NOE: 400 − 100 + 20", 32000, saldo_noe())
 
     print("--- delete() ---")
     caso("borrar el pago → success=True", True, svc.delete(pago).success)
     caso("sin el pago, el saldo vuelve a 400 + 20", 42000, saldo_noe())
     caso("borrar el préstamo (tenía un pago registrado antes): se puede", True, svc.delete(prestamo).success)
-    caso("queda solo la otra fila", [otra], [f["id"] for f in svc.list_all()])
+    caso("queda solo la otra fila", [otra], [f["id"] for f in svc.list_by_tab("me_deben")])
     caso_excepcion("delete() de un id inexistente → DebtNotFoundError", DebtNotFoundError, lambda: svc.delete(prestamo))
 
     print("\n--- DeudasRepository.eliminar() ---")

@@ -1,23 +1,23 @@
 """
 DeltaBalance — services/debts_service.py
 
-Deudas informales como LIBRO DE MOVIMIENTOS (reestructuración de deudas,
-docs/DATA_MODEL_DECISIONS.md sección 22): cada fila de `deudas` es un monto
-con dirección —
-    'a_favor'   te deben más (le prestaste, pagaste algo por esa persona)
-    'en_contra' debés más, o te pagaron (un pago que recibiste)
-— y el saldo con una persona es la suma con signo de sus filas (a_favor
-suma, en_contra resta): positivo = te debe, negativo = le debés. No hay
-pendiente, ni estado, ni pagos aparte: registrar un pago es crear una fila
-de tipo opuesto. register_payment()/write_off()/mark_uncollectable() ya no
+Deudas informales como LIBRO DE MOVIMIENTOS en dos tabs (estructura final,
+docs/DATA_MODEL_DECISIONS.md sección 22):
+    'me_deben'  lo que te deben (le prestaste, pagaste algo por esa persona)
+    'debo'      lo que debés (te prestaron, alguien pagó algo por vos)
+Cada fila tiene monto_minor CON SIGNO: positivo = entrada (la deuda
+crece), negativo = salida (un pago que la baja). El saldo de una persona en
+un tab es la suma de sus filas: en 'me_deben', positivo = todavía te debe y
+negativo = te pagó de más; en 'debo', positivo = todavía le debés y
+negativo = le pagaste de más. No hay pendiente, estado ni pagos aparte:
+registrar un pago es crear una fila negativa en el mismo tab.
+register_payment()/write_off()/mark_uncollectable()/apply_payment() ya no
 existen.
 
 Reglas de dominio (acá, no en el repositorio):
 - La persona se normaliza (utils/personas.py): "Noe" y "NOE" son la misma.
-- monto_minor distinto de 0. Negativo = la dirección contraria: se guarda
-  en positivo y se invierte `tipo` (así "acepta negativos" sin tener dos
-  formas de guardar lo mismo).
-- fecha 'YYYY-MM-DD'; moneda_id tiene que existir.
+- tab 'me_deben' o 'debo'; monto_minor entero distinto de 0 (el signo se
+  guarda tal cual); fecha 'YYYY-MM-DD'; moneda_id tiene que existir.
 - Edición y borrado directos: una fila no tiene dependencias con estado
   propio (ventana de corrección temprana, CLAUDE.md §4 — sin dependencias,
   sin fricción).
@@ -36,13 +36,12 @@ from typing import Any, Optional
 
 from db.database import DatabaseManager
 from repositories._sentinels import NO_CAMBIAR
-from repositories.deudas_repository import DeudaDuplicadaError, DeudasRepository
+# TABS también lo importan las pantallas desde acá (ui/ no importa de repositories/).
+from repositories.deudas_repository import TABS, DeudaDuplicadaError, DeudasRepository
 from utils.personas import normalizar_persona
 
-TIPOS = ("a_favor", "en_contra")
-OPUESTO = {"a_favor": "en_contra", "en_contra": "a_favor"}
 # update(): campos que se pueden cambiar.
-CAMPOS_EDITABLES = ("entidad_persona", "concepto", "tipo", "monto_minor", "moneda_id", "fecha", "notas")
+CAMPOS_EDITABLES = ("entidad_persona", "concepto", "tab", "monto_minor", "moneda_id", "fecha", "notas")
 
 
 # =============================================================
@@ -76,9 +75,9 @@ class DebtsService:
     """
     Usage:
         svc = DebtsService(db)
-        svc.create("Noe", "Préstamo", "a_favor", 4000000, moneda_id=1, fecha="2026-03-01")
-        svc.create("Noe", "Me devolvió una parte", "en_contra", 1000000, moneda_id=1, fecha="2026-03-15")
-        svc.get_saldo_neto()   # [{"entidad_persona": "NOE", "moneda_id": 1, "saldo_minor": 3000000}]
+        svc.create("Noe", "Préstamo", "me_deben", 4000000, moneda_id=1, fecha="2026-03-01")
+        svc.create("Noe", "Me devolvió una parte", "me_deben", -1000000, moneda_id=1, fecha="2026-03-15")
+        svc.summary_by_person("me_deben")   # [{"entidad_persona": "NOE", "saldo_minor": 3000000, ...}]
     """
 
     def __init__(self, db: DatabaseManager):
@@ -97,19 +96,19 @@ class DebtsService:
         return persona
 
     @staticmethod
-    def _tipo(tipo: str) -> str:
-        if tipo not in TIPOS:
-            raise DebtError(f"Invalid debt type '{tipo}'. Must be 'a_favor' or 'en_contra'.")
-        return tipo
+    def _tab(tab: str) -> str:
+        if tab not in TABS:
+            raise DebtError(f"Invalid tab '{tab}'. Must be 'me_deben' or 'debo'.")
+        return tab
 
     @staticmethod
-    def _monto_y_tipo(monto_minor: int, tipo: str) -> tuple[int, str]:
-        """Monto negativo = dirección contraria: (abs(monto), tipo opuesto). 0 no vale."""
+    def _monto(monto_minor: int) -> int:
+        """Entero distinto de 0; el signo se guarda tal cual (positivo = entrada, negativo = salida)."""
         if not isinstance(monto_minor, int) or isinstance(monto_minor, bool):
             raise DebtError(f"monto_minor must be an integer (minor units). Received: {monto_minor!r}.")
         if monto_minor == 0:
             raise DebtError("Amount cannot be 0.")
-        return (monto_minor, tipo) if monto_minor > 0 else (-monto_minor, OPUESTO[tipo])
+        return monto_minor
 
     @staticmethod
     def _fecha(fecha: str) -> str:
@@ -135,6 +134,11 @@ class DebtsService:
             raise DebtNotFoundError(f"Debt id={deuda_id} not found.")
         return fila
 
+    @staticmethod
+    def _fin_de_mes_actual() -> str:
+        hoy = date.today()
+        return f"{hoy.year:04d}-{hoy.month:02d}-{calendar.monthrange(hoy.year, hoy.month)[1]:02d}"
+
     # ----------------------------------------------------------
     # CREATE
     # ----------------------------------------------------------
@@ -143,7 +147,7 @@ class DebtsService:
         self,
         entidad_persona: str,
         concepto: Optional[str],
-        tipo: str,
+        tab: str,
         monto_minor: int,
         moneda_id: int,
         fecha: str,
@@ -152,25 +156,24 @@ class DebtsService:
         origen_id: Optional[int] = None,
     ) -> DebtResult:
         """
-        Crea una fila del libro. monto_minor negativo invierte `tipo` (ver
-        docstring del módulo).
+        Crea una fila del libro en ese tab. monto_minor positivo = la deuda
+        crece; negativo = un pago que la baja.
 
         Raises:
-            DebtError si la persona está vacía, el tipo no es válido, el
-            monto es 0 o no es entero, la fecha no es 'YYYY-MM-DD', la
-            moneda no existe, o es un doble-click (fila idéntica recién
-            creada).
+            DebtError si la persona está vacía, el tab no es válido, el monto
+            es 0 o no es entero, la fecha no es 'YYYY-MM-DD', la moneda no
+            existe, o es un doble-click (fila idéntica recién creada).
         """
         persona = self._persona(entidad_persona)
-        monto, tipo_final = self._monto_y_tipo(monto_minor, self._tipo(tipo))
+        tab = self._tab(tab)
         if not origen_tipo or not origen_tipo.strip():
             raise DebtError("origen_tipo cannot be empty.")
         try:
             deuda_id = self._repo.crear(
                 entidad_persona=persona,
                 concepto=self._texto(concepto),
-                tipo=tipo_final,
-                monto_minor=monto,
+                tab=tab,
+                monto_minor=self._monto(monto_minor),
                 moneda_id=self._moneda(moneda_id),
                 fecha=self._fecha(fecha),
                 notas=self._texto(notas),
@@ -179,7 +182,7 @@ class DebtsService:
             )
         except DeudaDuplicadaError as err:
             raise DebtError(str(err)) from err
-        return DebtResult(success=True, entity_id=deuda_id, message=f"Debt #{deuda_id} ({tipo_final}) created for '{persona}'.")
+        return DebtResult(success=True, entity_id=deuda_id, message=f"Debt #{deuda_id} ({tab}) created for '{persona}'.")
 
     # ----------------------------------------------------------
     # READ
@@ -189,21 +192,32 @@ class DebtsService:
         """La fila enriquecida con la moneda (currency_code, currency_symbol, decimales), o None."""
         return self._repo.obtener_por_id(id)
 
-    def list_by_period(self, mes: int, anio: int) -> list[sqlite3.Row]:
+    def list_by_tab(self, tab: str, mes: Optional[int] = None, anio: Optional[int] = None) -> list[sqlite3.Row]:
         """
-        Filas con fecha dentro de ese mes/año, la más nueva primero.
+        Filas de un tab, la más nueva primero. Con mes y anio: solo las de
+        ese mes; con anio solo: las de ese año; sin ninguno: todas.
 
         Raises:
-            DebtError si mes no está entre 1 y 12.
+            DebtError si el tab no es válido, mes no está entre 1 y 12, o se
+            pasa mes sin anio.
         """
-        if not isinstance(mes, int) or not 1 <= mes <= 12:
-            raise DebtError(f"mes must be between 1 and 12. Received: {mes!r}.")
-        ultimo_dia = calendar.monthrange(anio, mes)[1]
-        return self._repo.listar_por_periodo(f"{anio:04d}-{mes:02d}-01", f"{anio:04d}-{mes:02d}-{ultimo_dia:02d}")
+        tab = self._tab(tab)
+        if mes is not None:
+            if not isinstance(mes, int) or isinstance(mes, bool) or not 1 <= mes <= 12:
+                raise DebtError(f"mes must be between 1 and 12. Received: {mes!r}.")
+            if anio is None:
+                raise DebtError("mes requires anio.")
+        return self._repo.listar_por_tab(tab, mes, anio)
 
-    def list_all(self) -> list[sqlite3.Row]:
-        """Todas las filas, la más nueva primero."""
-        return self._repo.listar_todo()
+    def list_by_person(self, entidad_persona: str, tab: Optional[str] = None) -> list[sqlite3.Row]:
+        """
+        Filas de una persona (el nombre se normaliza igual que al guardar),
+        de un tab o de los dos; la más nueva primero.
+
+        Raises:
+            DebtError si la persona está vacía o el tab no es válido.
+        """
+        return self._repo.listar_por_persona(self._persona(entidad_persona), self._tab(tab) if tab is not None else None)
 
     # ----------------------------------------------------------
     # UPDATE / DELETE
@@ -212,8 +226,7 @@ class DebtsService:
     def update(self, id: int, **kwargs: Any) -> DebtResult:
         """
         Update parcial: solo los campos pasados (CAMPOS_EDITABLES). Mismas
-        validaciones que create(). monto_minor negativo invierte el tipo —
-        el que se pase en la misma llamada o, si no, el actual.
+        validaciones que create(); el signo de monto_minor se guarda tal cual.
 
         Returns:
             DebtResult con success=False si no se pasó ningún campo.
@@ -222,31 +235,23 @@ class DebtsService:
             DebtNotFoundError si la fila no existe.
             DebtError si un campo no es editable o no es válido.
         """
-        fila = self._obtener(id)
+        self._obtener(id)
         desconocidos = set(kwargs) - set(CAMPOS_EDITABLES)
         if desconocidos:
             raise DebtError(f"Fields cannot be updated: {', '.join(sorted(desconocidos))}.")
         if not kwargs:
             return DebtResult(success=False, entity_id=id, message="No fields to update were provided.")
 
-        campos: dict[str, Any] = {}
-        if "entidad_persona" in kwargs:
-            campos["entidad_persona"] = self._persona(kwargs["entidad_persona"])
-        if "concepto" in kwargs:
-            campos["concepto"] = self._texto(kwargs["concepto"])
-        if "notas" in kwargs:
-            campos["notas"] = self._texto(kwargs["notas"])
-        if "tipo" in kwargs:
-            campos["tipo"] = self._tipo(kwargs["tipo"])
-        if "monto_minor" in kwargs:
-            monto, tipo_final = self._monto_y_tipo(kwargs["monto_minor"], campos.get("tipo", fila["tipo"]))
-            campos["monto_minor"] = monto
-            campos["tipo"] = tipo_final
-        if "moneda_id" in kwargs:
-            campos["moneda_id"] = self._moneda(kwargs["moneda_id"])
-        if "fecha" in kwargs:
-            campos["fecha"] = self._fecha(kwargs["fecha"])
-
+        validadores = {
+            "entidad_persona": self._persona,
+            "concepto": self._texto,
+            "notas": self._texto,
+            "tab": self._tab,
+            "monto_minor": self._monto,
+            "moneda_id": self._moneda,
+            "fecha": self._fecha,
+        }
+        campos = {campo: validadores[campo](valor) for campo, valor in kwargs.items()}
         actualizado = self._repo.actualizar(id, **{k: campos.get(k, NO_CAMBIAR) for k in CAMPOS_EDITABLES})
         return DebtResult(
             success=actualizado, entity_id=id,
@@ -268,32 +273,30 @@ class DebtsService:
     # SALDOS
     # ----------------------------------------------------------
 
-    def get_saldo_neto(self, hasta_fecha: Optional[str] = None) -> list[dict]:
+    def summary_by_person(self, tab: str, hasta_fecha: Optional[str] = None) -> list[dict]:
         """
-        Saldo neto por persona y moneda con las filas de fecha <= hasta_fecha
-        (None = hoy): [{entidad_persona, moneda_id, saldo_minor}], positivo =
-        te debe, negativo = le debés. Incluye los saldos en 0.
+        Saldo neto por persona y moneda en ese tab, con las filas de fecha <=
+        hasta_fecha (None = último día del mes actual): [{entidad_persona,
+        moneda_id, saldo_minor, moneda_codigo, moneda_simbolo, decimales}],
+        por persona. Incluye los saldos en 0 (saldado).
+
+        Cómo leer saldo_minor (verde si > 0, rojo si < 0):
+            'me_deben': positivo = te deben, negativo = ya te pagaron de más.
+            'debo':     positivo = todavía debés, negativo = pagaste de más.
 
         Raises:
-            DebtError si hasta_fecha no es 'YYYY-MM-DD'.
+            DebtError si el tab no es válido o hasta_fecha no es 'YYYY-MM-DD'.
         """
-        tope = self._fecha(hasta_fecha) if hasta_fecha is not None else date.today().isoformat()
-        return [
-            {"entidad_persona": fila["entidad_persona"], "moneda_id": fila["moneda_id"], "saldo_minor": fila["saldo"]}
-            for fila in self._repo.get_saldo_neto_por_persona(tope)
-        ]
-
-    def summary_by_person(self, hasta_fecha: Optional[str] = None) -> list[dict]:
-        """
-        Para la barra de saldo de la pantalla: get_saldo_neto() + la moneda
-        (moneda_codigo, moneda_simbolo, decimales).
-        """
+        tab = self._tab(tab)
+        tope = self._fecha(hasta_fecha) if hasta_fecha is not None else self._fin_de_mes_actual()
         monedas = {fila["id"]: fila for fila in self._db.obtener_monedas()}
         resumen = []
-        for entrada in self.get_saldo_neto(hasta_fecha):
-            moneda = monedas.get(entrada["moneda_id"])
+        for fila in self._repo.get_saldo_neto_por_persona(tab, tope):
+            moneda = monedas.get(fila["moneda_id"])
             resumen.append({
-                **entrada,
+                "entidad_persona": fila["entidad_persona"],
+                "moneda_id": fila["moneda_id"],
+                "saldo_minor": fila["saldo"],
                 "moneda_codigo": moneda["codigo"] if moneda else "",
                 "moneda_simbolo": (moneda["simbolo"] or "") if moneda else "",
                 "decimales": moneda["decimales"] if moneda else 2,

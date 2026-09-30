@@ -53,8 +53,12 @@ permitida y calcula los valores nuevos, estos métodos solo escriben):
     - eliminar_por_compra(): DELETE físico de todas las cuotas de una
       compra, para que el service las regenere con crear_lote() en la
       misma transacción. Cubre FeesService.update_purchase_cuotas() (otra
-      cantidad de cuotas) y update_purchase() cuando la fecha cambia de
-      mes (el cronograma se corre).
+      cantidad de cuotas).
+    - actualizar_periodo(): una cuota por id, reescribe mes_proyectado/
+      anio_proyectado. Cubre FeesService.reschedule_fees() (editar el
+      cronograma a mano) y update_purchase() cuando la fecha cambia de mes
+      (cada cuota se corre los mismos meses, así no se pierden los
+      movimientos hechos a mano).
 Siguen sin ser un actualizar() genérico a propósito — mismo criterio de
 arriba.
 """
@@ -297,6 +301,36 @@ class CuotasCreditoRepository:
             "WHERE compra_id = ? AND estado = ?;"
         )
         params = (monto_cuota_minor, compra_id, estado_actual)
+        if conn is not None:
+            return conn.execute(sql, params).rowcount
+        cur = self._db.conn.execute(sql, params)
+        self._db.conn.commit()
+        return cur.rowcount
+
+    # ----------------------------------------------------------
+    # PERÍODO PROYECTADO (una cuota)
+    # ----------------------------------------------------------
+
+    def actualizar_periodo(
+        self,
+        cuota_id: int,
+        mes_proyectado: int,
+        anio_proyectado: int,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> int:
+        """
+        Mueve una cuota a otro mes/año proyectado. Cubre
+        FeesService.reschedule_fees() (editar el cronograma a mano) y
+        update_purchase() cuando la fecha cambia de mes (corre cada cuota
+        los mismos meses). No decide si la cuota se puede mover ni si el
+        mes choca con otra cuota — eso lo valida el service. Devuelve la
+        cantidad de filas afectadas.
+
+        Mismo motivo que marcar_estado_por_resumen() para no usar
+        self._db.execute() en el caso standalone (rowcount confiable).
+        """
+        sql = "UPDATE cuotas_credito SET mes_proyectado = ?, anio_proyectado = ? WHERE id = ?;"
+        params = (mes_proyectado, anio_proyectado, cuota_id)
         if conn is not None:
             return conn.execute(sql, params).rowcount
         cur = self._db.conn.execute(sql, params)

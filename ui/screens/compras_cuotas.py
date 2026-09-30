@@ -36,15 +36,31 @@ La sección "Cargos extra de este resumen" que se abría desde esa tarjeta
 se sacó (pedido explícito): los cargos se siguen cargando desde la fila de
 alta con las categorías especiales, y cuentan en el total de la barra.
 
+⚙ al final de la barra: panel de configuración de tarjetas. Por cada
+tarjeta de crédito activa, día de cierre y día de vencimiento
+(FeesService.set_card_config(), tabla tarjetas_config); debajo, los
+resúmenes ANTERIOR / ACTUAL / PRÓXIMO de cada tarjeta configurada con sus
+fechas de cierre y vencimiento (FeesService.card_cycle_dates(): ACTUAL es
+el último que cerró). Una tarjeta con los dos días vacíos se deja como
+está; con uno solo, es un error.
+
 --- Fila de alta ---
 
 Concepto, Tarjeta y Categoría (CampoFiltrable, sugerencias flotantes), Monto
-(CampoMonto, persistir_formula=True), Cuotas (default 1), Fecha y Moneda
-(las monedas de la tarjeta elegida). Enter nunca guarda la fila salvo con
-el foco en el ✓: cada campo pasa al siguiente (igual que Tab) y en Moneda,
-el último, Enter o Tab llevan el foco al ✓ sin activarlo; ahí Enter o un
-click confirman (TablaPlanilla.tab_a_confirmar()). Al guardar, la fila se
-reconstruye vacía con el foco en Concepto.
+(CampoMonto, persistir_formula=True), Cuotas (default 1), 1ª cuota, Fecha y
+Moneda (las monedas de la tarjeta elegida). Enter nunca guarda la fila
+salvo con el foco en el ✓: cada campo pasa al siguiente (igual que Tab) y
+en Moneda, el último, Enter o Tab llevan el foco al ✓ sin activarlo; ahí
+Enter o un click confirman (TablaPlanilla.tab_a_confirmar()). Al guardar,
+la fila se reconstruye vacía con el foco en Concepto.
+
+1ª cuota (MM/AAAA): el mes de la cuota 1 — FeesService.create_purchase()
+arma el cronograma desde ahí. La sugiere FeesService.suggest_first_fee()
+(el mes siguiente a la compra; dos meses después si la tarjeta tiene día de
+cierre y la compra es posterior) y se vuelve a sugerir al cambiar la
+tarjeta o la fecha, hasta que se edita a mano (tipeando o con ◀ ▶: a partir
+de ahí queda la elegida). No aplica a un cargo extra (se deshabilita como
+Cuotas).
 
 Routing por CATEGORÍA al confirmar (sin cambios):
 - Categoría NORMAL: FeesService.create_purchase() con el monto y la
@@ -80,7 +96,17 @@ valor anterior. Reglas replicadas en la UI:
 - Una compra cancelada se muestra atenuada, con todas sus celdas de solo
   lectura y un ícono en la columna de acción.
 El selector de Categoría inline excluye las 3 categorías especiales (una
-compra ya cargada no puede convertirse en cargo extra).
+compra ya cargada no puede convertirse en cargo extra). 1ª cuota es de solo
+lectura: se cambia desde el cronograma.
+
+Columna de acción: 📅 (TablaPlanilla.icono_accion(), visible al pasar el
+mouse) abre el cronograma de la compra — cada cuota con su mes y su
+estado; las pendientes con ◀ ▶ para correrlas un mes, las demás en gris y
+sin botones. Dos cuotas en el mismo mes: aviso en el mismo panel y
+GUARDAR deshabilitado. GUARDAR llama a FeesService.reschedule_fees(), que
+repite las reglas (solo pendientes, no compartidas una por una, sin
+repetir mes) y, si rechaza, su FeesError se muestra en el panel. Al lado,
+el ícono de compra compartida, como antes.
 
 --- Eliminar / compartir (barra flotante) ---
 
@@ -101,7 +127,9 @@ parcialmente).
 
 Todo lo de la tabla está listado en el docstring de tabla_planilla.py.
 Propio de acá: page.run_task() sobre el on_click async del ícono de
-compartir_compra.py.
+compartir_compra.py; que las ◀ ▶ de la 1ª cuota (Containers con on_click,
+sin ink) no roben el foco del Tab; y el ancho de la columna 1ª CUOTA (110
+px) para ◀ MM/AAAA ▶.
 """
 
 from datetime import date, datetime
@@ -117,6 +145,7 @@ from ui.components import compartir_compra
 from ui.components.campo_monto import CampoMonto
 from ui.components.compartir_varios import abrir_compartir_varios
 from ui.components.tabla_planilla import (
+    ANCHO_ICONO_ACCION,
     EXTRA_AJUSTE_DOT,
     ChipResumen,
     Columna,
@@ -129,6 +158,7 @@ from ui.components.tabla_planilla import (
     estilo_campo,
     mostrar_mensaje,
     pantalla_planilla,
+    sin_auto_update,
     sin_borde,
     texto_celda,
 )
@@ -154,6 +184,8 @@ COLUMNAS = [
     # Monto: la cuota que vence en el mes elegido (lo que se cobra ese mes), no el total.
     Columna("monto", "CUOTA DEL MES", 120, redimensionable=False, alineacion=ft.Alignment.CENTER_RIGHT),
     Columna("cuotas", "CUOTAS", 70, redimensionable=False),
+    # Mes de la cuota 1 (MM/AAAA): en el alta se elige; en las filas, solo lectura.
+    Columna("primera", "1ª CUOTA", 110, redimensionable=False),
     Columna("fecha", "FECHA", 110, redimensionable=False),
     Columna("moneda", "MONEDA", 80, redimensionable=False),
 ]
@@ -164,6 +196,37 @@ HINT_MONTO_ALTA = "± MONTO"
 TOOLTIP_CUOTAS_BLOQUEADAS = "NO SE PUEDE MODIFICAR: HAY CUOTAS YA PROCESADAS"
 TOOLTIP_VARIAS_CUOTAS = "VENCE MÁS DE UNA CUOTA DE ESTA COMPRA ESTE MES: EL MONTO NO SE EDITA DESDE ACÁ"
 TOOLTIP_CANCELADA = "COMPRA CANCELADA"
+TOOLTIP_CRONOGRAMA = "EDITAR CRONOGRAMA DE CUOTAS"
+TOOLTIP_CONFIG_TARJETAS = "CONFIGURAR TARJETAS (CIERRE Y VENCIMIENTO)"
+
+# 1ª cuota en la fila de alta: ◀ campo MM/AAAA ▶.
+HINT_PRIMERA_CUOTA = "MM/AAAA"
+ANCHO_FLECHA_PERIODO = 18
+ICONO_FLECHA_PERIODO = 16
+DIGITOS_ANIO = 4
+
+# Paneles (AlertDialog): configuración de tarjetas y cronograma de una compra.
+DIA_MINIMO, DIA_MAXIMO = 1, 31  # días de cierre / vencimiento (mismo rango que el CHECK de tarjetas_config)
+ANCHO_DIALOGO_TARJETAS = 600
+ANCHO_CAMPO_DIA = 90
+ANCHO_DIALOGO_CRONOGRAMA = 480
+ANCHO_TEXTO_CUOTA = 80
+ANCHO_TEXTO_PERIODO = 70
+ICONO_ESTADO_CUOTA = 16
+ESPACIADO_DIALOGO = 8
+ESPACIADO_SECCION_DIALOGO = 16
+TAMANIO_TEXTO_DIALOGO = TypographyTokens.REGISTRO_FONT_CELDA
+PESO_TITULO_BLOQUE = ft.FontWeight.W_600
+
+# Estado de una cuota en el cronograma: (texto, ícono). Solo 'pendiente' se puede mover.
+ESTADOS_CUOTA = {
+    "pendiente": ("PENDIENTE", ft.Icons.HOURGLASS_EMPTY),
+    "en_resumen": ("EN RESUMEN", ft.Icons.RECEIPT_LONG),
+    "pagado": ("PAGADA", ft.Icons.CHECK_CIRCLE),
+    "omitido": ("OMITIDA", ft.Icons.BLOCK),
+}
+# Resúmenes del panel de tarjetas: clave de FeesService.card_cycle_dates(), etiqueta, verbo del cierre.
+RESUMENES_TARJETA = (("anterior", "ANTERIOR", "CERRÓ"), ("actual", "ACTUAL", "CERRÓ"), ("proximo", "PRÓXIMO", "CIERRA"))
 
 
 # ============================================================
@@ -180,6 +243,37 @@ def _estado_ui(page: ft.Page) -> dict:
         ui = {"mes": hoy.month, "anio": hoy.year, "moneda_resumen": MONEDA_DEFAULT}
         _ESTADOS_UI[id(page)] = ui
     return ui
+
+
+# ============================================================
+# PERÍODOS MM/AAAA (1ª cuota y cronograma)
+# ============================================================
+
+def _texto_periodo(mes: int, anio: int) -> str:
+    return f"{mes:02d}/{anio:04d}"
+
+
+def _leer_periodo(texto: Optional[str]) -> Optional[tuple[int, int]]:
+    """'MM/AAAA' (o 'M/AAAA') → (mes, anio), o None si no es válido."""
+    partes = (texto or "").strip().split("/")
+    if len(partes) != 2 or not partes[0].strip().isdigit():
+        return None
+    anio_texto = partes[1].strip()
+    if len(anio_texto) != DIGITOS_ANIO or not anio_texto.isdigit():
+        return None
+    mes = int(partes[0])
+    return (mes, int(anio_texto)) if 1 <= mes <= 12 else None
+
+
+def _correr_periodo(mes: int, anio: int, meses: int) -> tuple[int, int]:
+    """(mes, anio) corrido `meses` (negativo = para atrás)."""
+    indice = anio * 12 + (mes - 1) + meses
+    return indice % 12 + 1, indice // 12
+
+
+def _fecha_corta(fecha_iso: str) -> str:
+    """'2026-08-15' → '15/08/2026'."""
+    return f"{fecha_iso[8:10]}/{fecha_iso[5:7]}/{fecha_iso[:4]}"
 
 
 def build(
@@ -231,9 +325,11 @@ def build(
         """
         compras = fees_service.list_purchases_due_in_month(ui["mes"], ui["anio"])  # ya son dicts (CLAUDE.md §11)
         for compra in compras:
-            estados = [q["estado"] for q in fees_service.get_fees_for_purchase(compra["id"])]
+            cuotas = fees_service.get_fees_for_purchase(compra["id"])  # por numero_cuota
+            estados = [q["estado"] for q in cuotas]
             compra["todas_pendientes"] = bool(estados) and all(e == "pendiente" for e in estados)
             compra["procesada"] = any(e in ("en_resumen", "pagado") for e in estados)
+            compra["primera_cuota"] = (cuotas[0]["mes_proyectado"], cuotas[0]["anio_proyectado"]) if cuotas else None
             _, compra["compartida"] = compartir_compra.build_icon(
                 page, shared_expenses_service, fees_service, compra, lambda: None,
             )
@@ -268,6 +364,8 @@ def build(
             return _monto_texto(compra)
         if columna == "cuotas":
             return _texto_cuotas(compra)
+        if columna == "primera":
+            return _texto_periodo(*compra["primera_cuota"]) if compra["primera_cuota"] else ""
         if columna == "fecha":
             return compra["fecha_compra"] or ""
         return compra["currency_code"] or ""
@@ -277,6 +375,9 @@ def build(
             return compra["monto_cuota_mes_minor"] / (10 ** compra["decimales"])
         if columna == "cuotas":
             return (compra["numeros_cuota_mes"][0], compra["total_cuotas"])
+        if columna == "primera":
+            mes, anio = compra["primera_cuota"] or (0, 0)
+            return (anio, mes)
         return _valor_columna(compra, columna).lower()
 
     def _firma(compra: dict) -> tuple:
@@ -286,7 +387,7 @@ def build(
             compra["category_name"], compra["monto_total_minor"], compra["monto_cuota_mes_minor"],
             tuple(compra["numeros_cuota_mes"]), compra["total_cuotas"], compra["fecha_compra"],
             compra["currency_code"], compra["decimales"], compra["estado"], compra["todas_pendientes"],
-            compra["procesada"], compra["compartida"],
+            compra["procesada"], compra["compartida"], compra["primera_cuota"],
         )
 
     # ------------------------------------------------------------
@@ -321,6 +422,7 @@ def build(
             "TOTAL A PAGAR POR TARJETA", ft.Icons.CREDIT_CARD, chips,
             [fila["currency_code"] for fila in resumen], codigo_sel,
             on_moneda=_elegir_moneda_resumen, texto_vacio="NO HAY TARJETAS DE CRÉDITO CARGADAS.",
+            acciones=[boton_config_tarjetas],
         )
 
     def _elegir_moneda_resumen(codigo: str) -> None:
@@ -332,6 +434,125 @@ def build(
         # Los totales cambian con cualquier alta/edición/borrado y con el período.
         contenedor_totales.content = _barra_totales()
         return [contenedor_totales]
+
+    # ------------------------------------------------------------
+    # ⚙ CONFIGURACIÓN DE TARJETAS (cierre / vencimiento + resúmenes)
+    # ------------------------------------------------------------
+
+    def _texto_dialogo(texto: str, color: str = TEXT_SECONDARY, **kwargs: Any) -> ft.Text:
+        return ft.Text(texto, size=TAMANIO_TEXTO_DIALOGO, color=color, **kwargs)
+
+    def _abrir_config_tarjetas() -> None:
+        if not tarjetas_activas:
+            _mostrar_error("PRIMERO CARGÁ UNA TARJETA DE CRÉDITO EN CONFIGURACIÓN → CUENTAS.")
+            return
+        campos: dict[int, tuple[ft.TextField, ft.TextField]] = {}
+        filas_config: list[ft.Control] = []
+        for tarjeta in tarjetas_activas:
+            config = fees_service.get_card_config(tarjeta["id"])
+            campo_cierre = ft.TextField(
+                label="CIERRE", hint_text="DÍA", width=ANCHO_CAMPO_DIA, dense=LayoutTokens.CELDA_DENSE,
+                text_align=ft.TextAlign.CENTER, value=str(config["dia_cierre"]) if config else "",
+            )
+            campo_vencimiento = ft.TextField(
+                label="VENCE", hint_text="DÍA", width=ANCHO_CAMPO_DIA, dense=LayoutTokens.CELDA_DENSE,
+                text_align=ft.TextAlign.CENTER, value=str(config["dia_vencimiento"]) if config else "",
+            )
+            campos[tarjeta["id"]] = (campo_cierre, campo_vencimiento)
+            nombre = ft.Container(
+                expand=True, content=banco_con_dot(color_cuenta(tarjeta, tarjeta["nombre"]), tarjeta["nombre"]),
+            )
+            filas_config.append(ft.Row(
+                [nombre, campo_cierre, campo_vencimiento],
+                spacing=ESPACIADO_DIALOGO, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ))
+
+        columna_resumenes = ft.Column(spacing=ESPACIADO_DIALOGO, tight=True)
+        estado = _texto_dialogo("", visible=False)
+
+        def _armar_resumenes() -> None:
+            bloques: list[ft.Control] = []
+            for tarjeta in tarjetas_activas:
+                ciclo = fees_service.card_cycle_dates(tarjeta["id"])
+                if ciclo is None:
+                    continue
+                bloques.append(_texto_dialogo(
+                    f"{tarjeta['nombre'].upper()}  —  CIERRA DÍA {ciclo['dia_cierre']}, VENCE DÍA {ciclo['dia_vencimiento']}",
+                    color=TEXT_PRIMARY, weight=PESO_TITULO_BLOQUE,
+                ))
+                for clave, etiqueta, verbo in RESUMENES_TARJETA:
+                    resumen = ciclo[clave]
+                    bloques.append(_texto_dialogo(
+                        f"    {etiqueta}  →  {verbo} {_fecha_corta(resumen['cierre'])}  ·  "
+                        f"VENCE {_fecha_corta(resumen['vencimiento'])}",
+                    ))
+            columna_resumenes.controls = bloques or [_texto_dialogo(
+                "CARGÁ EL DÍA DE CIERRE Y EL DE VENCIMIENTO DE UNA TARJETA PARA VER SUS RESÚMENES.",
+                color=TEXT_MUTED, italic=True,
+            )]
+
+        def _guardar(e=None) -> None:
+            errores: list[str] = []
+            guardadas = 0
+            for tarjeta in tarjetas_activas:
+                campo_cierre, campo_vencimiento = campos[tarjeta["id"]]
+                texto_cierre = (campo_cierre.value or "").strip()
+                texto_vencimiento = (campo_vencimiento.value or "").strip()
+                if not texto_cierre and not texto_vencimiento:
+                    continue  # sin configurar: se deja como está
+                nombre = tarjeta["nombre"].upper()
+                try:
+                    dia_cierre, dia_vencimiento = int(texto_cierre), int(texto_vencimiento)
+                except ValueError:
+                    errores.append(f"{nombre}: COMPLETÁ LOS DOS DÍAS CON NÚMEROS")
+                    continue
+                if not (DIA_MINIMO <= dia_cierre <= DIA_MAXIMO and DIA_MINIMO <= dia_vencimiento <= DIA_MAXIMO):
+                    errores.append(f"{nombre}: LOS DÍAS VAN DE {DIA_MINIMO} A {DIA_MAXIMO}")
+                    continue
+                try:
+                    fees_service.set_card_config(tarjeta["id"], dia_cierre, dia_vencimiento)
+                    guardadas += 1
+                except FeesError as err:
+                    errores.append(f"{nombre}: {err}")
+            _armar_resumenes()
+            if errores:
+                estado.value, estado.color = " | ".join(errores), TEXT_NEGATIVO
+            else:
+                estado.value, estado.color = f"CONFIGURACIÓN GUARDADA ({guardadas} TARJETA(S)).", TEXT_POSITIVO
+            estado.visible = True
+            # La 1ª cuota sugerida del alta depende del día de cierre.
+            if "sugerir_primera" in alta_refs:
+                alta_refs["sugerir_primera"]()
+            page.update()
+
+        _armar_resumenes()
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text("CONFIGURACIÓN DE TARJETAS"),
+            content=ft.Container(
+                width=ANCHO_DIALOGO_TARJETAS,
+                content=ft.Column(
+                    [
+                        *filas_config,
+                        estado,
+                        ft.Divider(),
+                        _texto_dialogo("RESÚMENES", color=TEXT_PRIMARY, weight=PESO_TITULO_BLOQUE),
+                        columna_resumenes,
+                    ],
+                    tight=True, spacing=ESPACIADO_SECCION_DIALOGO, scroll=ft.ScrollMode.AUTO,
+                ),
+            ),
+            actions=[
+                ft.TextButton(content=ft.Text("CERRAR"), on_click=lambda e: page.pop_dialog()),
+                ft.ElevatedButton(content=ft.Text("GUARDAR"), on_click=_guardar),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
+
+    boton_config_tarjetas = ft.IconButton(
+        icon=ft.Icons.SETTINGS, icon_color=TEXT_SECONDARY, tooltip=TOOLTIP_CONFIG_TARJETAS,
+        on_click=lambda e: _abrir_config_tarjetas(),
+    )
 
     # ------------------------------------------------------------
     # FILA DE ALTA
@@ -355,15 +576,75 @@ def build(
             dropdown_moneda.options = [ft.dropdown.Option(key=c, text=c) for c in codigos]
             dropdown_moneda.value = codigos[0]
 
+        # --- 1ª cuota: ◀ MM/AAAA ▶ (ver docstring del módulo, "Fila de alta") ---
+        primera: dict[str, Any] = {"periodo": None, "manual": False}
+        campo_primera = ft.TextField(
+            hint_text=HINT_PRIMERA_CUOTA, text_align=ft.TextAlign.CENTER, expand=True, **estilo_campo(),
+        )
+
+        def _mostrar_primera() -> None:
+            campo_primera.value = _texto_periodo(*primera["periodo"]) if primera["periodo"] else ""
+            tabla.refrescar(campo_primera)
+
+        def _sugerir_primera() -> None:
+            """La sugerencia del service para la tarjeta y la fecha actuales, salvo que ya se eligió a mano."""
+            if primera["manual"]:
+                return
+            id_tarjeta = campo_tarjeta.id_seleccionado
+            try:
+                primera["periodo"] = fees_service.suggest_first_fee(
+                    int(id_tarjeta) if id_tarjeta else None, (campo_fecha.value or "").strip(),
+                )
+            except ValueError:
+                return  # fecha a medio tipear: queda la sugerencia anterior
+            _mostrar_primera()
+
+        def _mover_primera(meses: int) -> None:
+            actual = _leer_periodo(campo_primera.value) or primera["periodo"]
+            if actual is None or campo_primera.disabled:
+                return
+            primera["periodo"] = _correr_periodo(*actual, meses)
+            primera["manual"] = True
+            _mostrar_primera()
+
+        def _on_cambio_primera(e=None) -> None:
+            primera["manual"] = True  # tipeada a mano: ya no se re-sugiere
+            sin_auto_update()  # el texto ya está en pantalla
+
+        campo_primera.on_change = _on_cambio_primera
+
+        def _flecha_primera(icono: str, tooltip: str, meses: int) -> ft.Control:
+            return ft.Container(
+                width=ANCHO_FLECHA_PERIODO, alignment=ft.Alignment.CENTER, tooltip=tooltip,
+                on_click=lambda e: _mover_primera(meses),
+                content=ft.Icon(icono, size=ICONO_FLECHA_PERIODO, color=TEXT_SECONDARY),
+            )
+
+        celda_primera = ft.Row(
+            [
+                _flecha_primera(ft.Icons.CHEVRON_LEFT, "UN MES ANTES", -1),
+                campo_primera,
+                _flecha_primera(ft.Icons.CHEVRON_RIGHT, "UN MES DESPUÉS", 1),
+            ],
+            spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+
         def _on_tarjeta(id_tarjeta: Optional[str]) -> None:
             # CampoFiltrable parchea la fila (tabla.pagina_alta) justo después.
             if id_tarjeta is not None:
                 _refrescar_monedas(id_tarjeta)
+                _sugerir_primera()  # el día de cierre es de la tarjeta
+
+        def _habilitar_cuotas(id_categoria: str) -> None:
+            # Cuotas y 1ª cuota no aplican a un cargo extra (categoría especial).
+            es_cargo_extra = id_categoria in mapa_categoria_a_charge_type
+            campo_cuotas.disabled = es_cargo_extra
+            celda_primera.disabled = es_cargo_extra
+            campo_primera.disabled = es_cargo_extra
 
         def _on_categoria(id_categoria: Optional[str]) -> None:
-            # Cuotas no aplica a un cargo extra (categoría especial).
             if id_categoria is not None:
-                campo_cuotas.disabled = id_categoria in mapa_categoria_a_charge_type
+                _habilitar_cuotas(id_categoria)
 
         categoria_inicial = opciones_categoria_alta[0][0] if opciones_categoria_alta else None
         tarjeta_inicial = opciones_tarjeta[0][0] if opciones_tarjeta else None
@@ -392,24 +673,28 @@ def build(
         campo_monto.control.text_align = ft.TextAlign.RIGHT
 
         celda_fecha, campo_fecha = tabla.campo_fecha_alta(
-            date.today().isoformat(), on_cambio=lambda: None, on_submit=lambda: tabla.enfocar(dropdown_moneda),
+            # La 1ª cuota sugerida depende de la fecha (on_cambio: al tipear o elegir en el calendario).
+            date.today().isoformat(), on_cambio=_sugerir_primera, on_submit=lambda: tabla.enfocar(dropdown_moneda),
         )
         _refrescar_monedas(tarjeta_inicial)
         # Sync inicial: la categoría default podría ser una especial.
         if campo_categoria.id_seleccionado:
-            campo_cuotas.disabled = campo_categoria.id_seleccionado in mapa_categoria_a_charge_type
+            _habilitar_cuotas(campo_categoria.id_seleccionado)
+        _sugerir_primera()  # todavía sin montar: refrescar() lo saltea
         boton_confirmar = tabla.boton_confirmar_alta("AGREGAR", _confirmar_alta)
 
         alta_refs.update(
             concepto=campo_concepto, tarjeta=campo_tarjeta, categoria=campo_categoria, monto=campo_monto,
-            cuotas=campo_cuotas, fecha=campo_fecha, moneda=dropdown_moneda, boton=boton_confirmar,
+            cuotas=campo_cuotas, primera=campo_primera, fecha=campo_fecha, moneda=dropdown_moneda,
+            boton=boton_confirmar, sugerir_primera=_sugerir_primera,
         )
 
         # Enter avanza al campo siguiente (en Tarjeta/Categoría, vía
         # on_avanzar de CampoFiltrable) y nunca guarda la fila; en Moneda, el
         # último, Enter o Tab llevan al ✓ sin activarlo (ahí Enter confirma).
         campo_concepto.on_submit = lambda e: tabla.enfocar(campo_tarjeta.campo_texto)
-        campo_cuotas.on_submit = lambda e: tabla.enfocar(campo_fecha)
+        campo_cuotas.on_submit = lambda e: tabla.enfocar(campo_primera)
+        campo_primera.on_submit = lambda e: tabla.enfocar(campo_fecha)
         tabla.tab_a_confirmar(dropdown_moneda)
 
         return FilaAlta(
@@ -419,6 +704,7 @@ def build(
                 "categoria": campo_categoria.control,
                 "monto": campo_monto.control,
                 "cuotas": campo_cuotas,
+                "primera": celda_primera,
                 "fecha": celda_fecha,
                 "moneda": ft.Row([dropdown_moneda], spacing=0),
             },
@@ -501,6 +787,14 @@ def build(
             if cantidad_cuotas < 1:
                 _mostrar_error("LA CANTIDAD DE CUOTAS DEBE SER AL MENOS 1.")
                 return
+            periodo_primera = _leer_periodo(alta_refs["primera"].value)
+            if periodo_primera is None:
+                _mostrar_error(f"LA 1ª CUOTA DEBE TENER EL FORMATO {HINT_PRIMERA_CUOTA}.")
+                return
+            mes_primera, anio_primera = periodo_primera
+            if (anio_primera, mes_primera) < (fecha.year, fecha.month):
+                _mostrar_error("LA 1ª CUOTA NO PUEDE SER ANTERIOR AL MES DE LA COMPRA.")
+                return
             try:
                 resultado = fees_service.create_purchase(
                     date_str=fecha_str,
@@ -510,11 +804,16 @@ def build(
                     currency_code=moneda_codigo,
                     total_amount=monto_con_signo,
                     total_fees=cantidad_cuotas,
+                    first_fee_month=mes_primera,
+                    first_fee_year=anio_primera,
                 )
             except (FeesError, ValueError) as err:
                 _mostrar_error(str(err))
                 return
-            mensaje = f"COMPRA #{resultado.entity_id} REGISTRADA EN {cantidad_cuotas} CUOTA(S)."
+            mensaje = (
+                f"COMPRA #{resultado.entity_id} REGISTRADA EN {cantidad_cuotas} CUOTA(S), "
+                f"LA 1ª EN {_texto_periodo(mes_primera, anio_primera)}."
+            )
         else:
             # Cargo extra del resumen, con el signo tal cual se tipeó (la
             # categoría ya clasificó el TIPO de cargo, no su signo).
@@ -552,6 +851,11 @@ def build(
         def _moneda_lectura() -> ft.Control:
             return tabla.celda_lectura("moneda", texto_celda(compra["currency_code"] or "", color=TEXT_SECONDARY))
 
+        # 1ª cuota: solo lectura (se cambia desde el cronograma, 📅).
+        celda_primera = tabla.celda_lectura(
+            "primera", texto_celda(_valor_columna(compra, "primera"), color=TEXT_SECONDARY),
+        )
+
         if compra["estado"] == "cancelada":
             # Atenuada y sin edición (fila_atenuada + todas de solo lectura).
             return {
@@ -565,6 +869,7 @@ def build(
                     texto_celda(texto_monto, color=color_monto, size=TypographyTokens.REGISTRO_FONT_MONTO),
                 ),
                 "cuotas": tabla.celda_lectura("cuotas", texto_celda(_texto_cuotas(compra))),
+                "primera": celda_primera,
                 "fecha": tabla.celda_lectura("fecha", texto_celda(compra["fecha_compra"])),
                 "moneda": _moneda_lectura(),
             }
@@ -663,6 +968,7 @@ def build(
             ),
             "monto": celda_monto,
             "cuotas": celda_cuotas,
+            "primera": celda_primera,
             "fecha": tabla.celda_texto(compra, "fecha", compra["fecha_compra"], _guardar_fecha),
             "moneda": tabla.celda_dropdown(
                 compra, "moneda", compra["currency_code"] or "", opciones_moneda, compra["currency_code"],
@@ -673,9 +979,122 @@ def build(
     def _accion_fila(compra: dict) -> Optional[ft.Control]:
         if compra["estado"] == "cancelada":
             return ft.Icon(ft.Icons.BLOCK, size=ICONO_ACCION, color=TEXT_MUTED, tooltip=TOOLTIP_CANCELADA)
+        # 📅 visible con el mouse encima (icono_accion()); al lado, el de compartida (o su lugar vacío).
+        compartida = ft.Container(width=ANCHO_ICONO_ACCION, alignment=ft.Alignment.CENTER)
         if compra["compartida"]:
-            return ft.Icon(ft.Icons.PEOPLE, size=ICONO_ACCION, color=TEXT_ACCENT, tooltip="COMPRA COMPARTIDA")
-        return None
+            compartida.content = ft.Icon(ft.Icons.PEOPLE, size=ICONO_ACCION, color=TEXT_ACCENT)
+            compartida.tooltip = "COMPRA COMPARTIDA"
+        return ft.Row(
+            [tabla.icono_accion(ft.Icons.EDIT_CALENDAR, TOOLTIP_CRONOGRAMA, False, lambda: _abrir_cronograma(compra)),
+             compartida],
+            spacing=0,
+            tight=True,
+        )
+
+    # ------------------------------------------------------------
+    # 📅 CRONOGRAMA DE UNA COMPRA (mover cuotas pendientes)
+    # ------------------------------------------------------------
+
+    def _abrir_cronograma(compra: dict) -> None:
+        cuotas = [dict(q) for q in fees_service.get_fees_for_purchase(compra["id"])]  # CLAUDE.md §11
+        if not cuotas:
+            _mostrar_error(f"LA COMPRA #{compra['id']} NO TIENE CUOTAS.")
+            return
+        # Mes de cada cuota en el panel (se guarda recién con GUARDAR).
+        periodos = {q["id"]: (q["mes_proyectado"], q["anio_proyectado"]) for q in cuotas}
+        filas = ft.Column(spacing=ESPACIADO_DIALOGO, tight=True)
+        aviso = _texto_dialogo("", color=TEXT_NEGATIVO, visible=False)
+        boton_guardar = ft.ElevatedButton(content=ft.Text("GUARDAR"), on_click=lambda e: _guardar())
+
+        def _cambios() -> dict[int, tuple[int, int]]:
+            return {
+                q["id"]: periodos[q["id"]] for q in cuotas
+                if periodos[q["id"]] != (q["mes_proyectado"], q["anio_proyectado"])
+            }
+
+        def _meses_repetidos() -> list[str]:
+            vistos: set[tuple[int, int]] = set()
+            repetidos: list[str] = []
+            for q in cuotas:
+                periodo = periodos[q["id"]]
+                if periodo in vistos and _texto_periodo(*periodo) not in repetidos:
+                    repetidos.append(_texto_periodo(*periodo))
+                vistos.add(periodo)
+            return repetidos
+
+        def _fila(q: dict) -> ft.Control:
+            texto_estado, icono_estado = ESTADOS_CUOTA.get(q["estado"], (q["estado"].upper(), ft.Icons.HELP_OUTLINE))
+            movible = q["estado"] == "pendiente"
+            color = TEXT_PRIMARY if movible else TEXT_MUTED
+            movida = periodos[q["id"]] != (q["mes_proyectado"], q["anio_proyectado"])
+            controles: list[ft.Control] = [
+                _texto_dialogo(f"CUOTA {q['numero_cuota']}", color=color, width=ANCHO_TEXTO_CUOTA),
+                _texto_dialogo("→", color=color),
+                _texto_dialogo(
+                    _texto_periodo(*periodos[q["id"]]), color=TEXT_ACCENT if movida else color,
+                    weight=PESO_TITULO_BLOQUE if movida else None, width=ANCHO_TEXTO_PERIODO,
+                ),
+                ft.Icon(icono_estado, size=ICONO_ESTADO_CUOTA, color=color),
+                _texto_dialogo(texto_estado, color=color, expand=True),
+            ]
+            if movible:
+                controles += [
+                    ft.IconButton(
+                        icon=ft.Icons.CHEVRON_LEFT, icon_color=TEXT_SECONDARY, tooltip="UN MES ANTES",
+                        on_click=lambda e, cuota_id=q["id"]: _mover(cuota_id, -1),
+                    ),
+                    ft.IconButton(
+                        icon=ft.Icons.CHEVRON_RIGHT, icon_color=TEXT_SECONDARY, tooltip="UN MES DESPUÉS",
+                        on_click=lambda e, cuota_id=q["id"]: _mover(cuota_id, 1),
+                    ),
+                ]
+            return ft.Row(controles, spacing=ESPACIADO_DIALOGO, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+        def _armar() -> None:
+            filas.controls = [_fila(q) for q in cuotas]
+            repetidos = _meses_repetidos()
+            aviso.value = f"NO PUEDE HABER DOS CUOTAS EN EL MISMO MES: {', '.join(repetidos)}." if repetidos else ""
+            aviso.visible = bool(repetidos)
+            boton_guardar.disabled = bool(repetidos) or not _cambios()
+
+        def _mover(cuota_id: int, meses: int) -> None:
+            periodos[cuota_id] = _correr_periodo(*periodos[cuota_id], meses)
+            _armar()
+            page.update()
+
+        def _guardar() -> None:
+            cambios = _cambios()
+            if not cambios:
+                page.pop_dialog()
+                return
+            try:
+                resultado = fees_service.reschedule_fees(compra["id"], cambios)
+            except FeesError as err:
+                # El service repite las reglas (solo pendientes, no compartidas, sin repetir mes).
+                aviso.value, aviso.visible = str(err), True
+                page.update()
+                return
+            page.pop_dialog()
+            tabla.recargar()
+            _mostrar_ok(
+                f"CRONOGRAMA DE LA COMPRA #{compra['id']} ACTUALIZADO "
+                f"({resultado.data['fees_moved']} CUOTA(S) MOVIDA(S))."
+            )
+
+        _armar()
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"{(compra['concepto'] or '').upper()} — {compra['total_cuotas']} CUOTA(S)"),
+            content=ft.Container(
+                width=ANCHO_DIALOGO_CRONOGRAMA,
+                content=ft.Column([filas, aviso], tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO),
+            ),
+            actions=[
+                ft.TextButton(content=ft.Text("CANCELAR"), on_click=lambda e: page.pop_dialog()),
+                boton_guardar,
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
 
     # ------------------------------------------------------------
     # ELIMINAR / COMPARTIR (barra flotante)

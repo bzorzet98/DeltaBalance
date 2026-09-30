@@ -12,3 +12,5 @@ dependencies:
     - uvicorn             # servidor FastAPI
     - pydantic            # validación de datos
     - pytest              # tests
+    - supabase            # sincronización (sync/)
+    - python-dotenv       # credenciales de Supabase desde .env

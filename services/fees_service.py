@@ -11,6 +11,8 @@ Purpose:
         - compras_cuotas
         - cuotas_credito
         - resumenes_tarjeta
+        - tarjetas_config (closing / due day of each credit card —
+          docs/DATA_MODEL_DECISIONS.md section 23)
 
     Does NOT create transactions. The actual cash outflow (paying the credit card
     statement) is handled by TransactionService. FeesService only manages the
@@ -23,14 +25,23 @@ Purpose:
     only so delete_purchase() never deletes a purchase a debt points to.
 
     Key workflows:
-        1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito
+        1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito,
+                                    starting on the purchase month or on an explicit
+                                    first-fee month (suggest_first_fee())
            update_purchase()      → early-correction edit (CLAUDE.md §4): concepto /
                                     categoria_id / same-month fecha always; cuenta_id,
                                     another-month fecha, monto_total_minor and moneda
                                     only while the fees they feed have no state of
-                                    their own yet
+                                    their own yet. Another-month fecha shifts every
+                                    fee by the same number of months.
            update_purchase_cuotas() → regenerates the fee schedule with another number
-                                    of fees, same total, same §4 rule
+                                    of fees, same total, same §4 rule, starting on the
+                                    month the first fee has now
+           reschedule_fees()      → moves pending fees to other months by hand (no two
+                                    fees of a purchase in the same month)
+        Card config: set_card_config() / get_card_config() (tarjetas_config),
+        card_cycle_dates() (previous / current / next statement dates) and
+        suggest_first_fee() (next month, or two months ahead after the closing day).
            delete_purchase()      → physical delete of a purchase + its fees while
                                     nothing depends on them (§4); otherwise
                                     cancel_purchase()
@@ -48,6 +59,7 @@ Purpose:
                                     (equivalent to your original Google Sheets monthly table)
 """
 
+import calendar
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -62,6 +74,7 @@ from repositories.deudas_repository import DeudasRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
 from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
+from repositories.tarjetas_config_repository import TarjetasConfigRepository
 
 # Mapeo nombre de categoría especial (categoria_principal, subcategoria —
 # ver services/categorias_service.py CATEGORIAS_PROTEGIDAS, que las
@@ -172,6 +185,7 @@ class FeesService:
         self._cuotas_repo = CuotasCreditoRepository(db)
         self._resumenes_repo = ResumenesTarjetaRepository(db)
         self._cargos_repo = ResumenCargosExtraRepository(db)
+        self._tarjetas_repo = TarjetasConfigRepository(db)
         # Read-only — see module docstring (update_purchase()).
         self._gastos_repo = GastosCompartidosRepository(db)
         # Read-only — see module docstring (delete_purchase()).
@@ -304,21 +318,37 @@ class FeesService:
             year += 1
         return month, year
 
+    @staticmethod
+    def _add_months(month: int, year: int, delta: int) -> tuple[int, int]:
+        """(month, year) moved `delta` months (negative = backwards). E.g. (11, 2026) + 3 → (2, 2027)."""
+        indice = year * 12 + (month - 1) + delta
+        return indice % 12 + 1, indice // 12
+
+    @staticmethod
+    def _validate_period(month: Any, year: Any, label: str) -> tuple[int, int]:
+        """A month 1–12 and a positive year, both ints. Raises FeesError otherwise."""
+        for valor in (month, year):
+            if not isinstance(valor, int) or isinstance(valor, bool):
+                raise FeesError(f"{label}: month and year must be integers. Received: {month!r}/{year!r}.")
+        if not 1 <= month <= 12 or year < 1:
+            raise FeesError(f"{label}: invalid period {month:02d}/{year}.")
+        return month, year
+
     @classmethod
-    def _build_fee_schedule(cls, fecha_compra: str, total_fees: int, per_fee_minor: int) -> list[dict]:
+    def _build_fee_schedule(cls, first_month: int, first_year: int, total_fees: int, per_fee_minor: int) -> list[dict]:
         """
         Fee rows for CuotasCreditoRepository.crear_lote(): N fees projected
-        month by month, the first one on the purchase month. Shared by
-        create_purchase() and the fee regeneration of the edit methods.
+        month by month, the first one on first_month/first_year. Shared by
+        create_purchase() and the fee regeneration of update_purchase_cuotas().
 
         Args:
-            fecha_compra:  Validated purchase date 'YYYY-MM-DD'.
+            first_month:   Month (1–12) of fee #1.
+            first_year:    Year of fee #1.
             total_fees:    Number of fees (>= 1).
             per_fee_minor: Amount of each fee, in minor units.
         """
-        dt    = datetime.strptime(fecha_compra, "%Y-%m-%d")
-        month = dt.month
-        year  = dt.year
+        month = first_month
+        year  = first_year
 
         cuotas = []
         for n in range(1, total_fees + 1):
@@ -346,17 +376,22 @@ class FeesService:
         total_fees:       int,
         amount_per_fee:   Optional[float] = None,
         notes:            Optional[str]   = None,
+        first_fee_month:  Optional[int]   = None,
+        first_fee_year:   Optional[int]   = None,
     ) -> FeesResult:
         """
         Creates a purchase in installments and auto-generates all N fee rows.
-        The fees are projected month by month starting from the purchase month.
+        The fees are projected month by month starting from the purchase
+        month — or from first_fee_month/first_fee_year when given (the
+        screen passes suggest_first_fee() or what the user picked).
 
         If amount_per_fee is not provided, it is calculated as total_amount / total_fees.
         Pass a custom amount_per_fee when the bank applies interest and the per-fee
         amount differs from a simple division (e.g. 12 fees with CFT).
 
         Args:
-            date_str:       Purchase date in 'YYYY-MM-DD'. First fee falls on this month.
+            date_str:       Purchase date in 'YYYY-MM-DD'. First fee falls on this month
+                            unless first_fee_month/first_fee_year say otherwise.
             concept:        Description. E.g. 'Washing machine', 'iPhone 15'.
             account_id:     The credit card account used for the purchase.
             category_id:    Category for classification.
@@ -365,12 +400,16 @@ class FeesService:
             total_fees:     Number of installments (>= 1).
             amount_per_fee: Optional per-fee amount. If None, computed automatically.
             notes:          Optional description.
+            first_fee_month / first_fee_year: Optional month (1–12) and year of
+                            fee #1. Both or neither; never before the purchase
+                            month. None = the purchase month.
 
         Returns:
             FeesResult with the purchase id and a summary of generated fees.
 
         Raises:
-            FeesError for invalid inputs.
+            FeesError for invalid inputs (including a first fee before the
+                purchase month, or only one of first_fee_month/first_fee_year).
             ValueError for invalid date or currency.
         """
         if total_amount <= 0:
@@ -381,6 +420,18 @@ class FeesService:
             raise FeesError("Concept cannot be empty.")
 
         validated_date = self._validate_date(date_str)
+        purchase_month, purchase_year = int(validated_date[5:7]), int(validated_date[:4])
+        if first_fee_month is None and first_fee_year is None:
+            first_month, first_year = purchase_month, purchase_year
+        elif first_fee_month is None or first_fee_year is None:
+            raise FeesError("first_fee_month and first_fee_year must be passed together.")
+        else:
+            first_month, first_year = self._validate_period(first_fee_month, first_fee_year, "First fee")
+            if (first_year, first_month) < (purchase_year, purchase_month):
+                raise FeesError(
+                    f"The first fee ({first_month:02d}/{first_year}) cannot be before the purchase month "
+                    f"({purchase_month:02d}/{purchase_year})."
+                )
         currency       = self._get_currency(currency_code)
         dec            = currency["decimales"]
 
@@ -408,7 +459,7 @@ class FeesService:
             )
 
             # Auto-generate N fee rows projected month by month
-            cuotas = self._build_fee_schedule(validated_date, total_fees, per_fee_minor)
+            cuotas = self._build_fee_schedule(first_month, first_year, total_fees, per_fee_minor)
             self._cuotas_repo.crear_lote(compra_id=purchase_id, cuotas=cuotas, conn=conn)
 
         return FeesResult(
@@ -422,6 +473,7 @@ class FeesService:
                 "amount_per_fee": per_fee_amount,
                 "currency":       currency_code.upper(),
                 "account_id":     account_id,
+                "first_fee":      (first_month, first_year),
             },
             message=(
                 f"Purchase '{concept.strip()}' created with {total_fees} fee(s) "
@@ -1267,8 +1319,10 @@ class FeesService:
         Changing monto_total_minor recalculates monto_por_cuota_minor as
         round(monto_total_minor / total_cuotas) — same default split as
         create_purchase() — and rewrites every fee with that amount.
-        Moving fecha to another month regenerates the fee schedule from the
-        new month. Both happen in the same transaction as the purchase row.
+        Moving fecha to another month shifts every fee by the same number of
+        months (a hand-picked first fee and any fee moved with
+        reschedule_fees() keep their distance to the purchase). Both happen
+        in the same transaction as the purchase row.
 
         Changing moneda_codigo keeps the DISPLAYED amount (3000.00 ARS →
         3000.00 USD), same criterion as the Registro, where
@@ -1321,7 +1375,7 @@ class FeesService:
             self._require_fees_pending(purchase_id, cuotas, "its card can no longer be changed")
             campos_repo["cuenta_id"] = cuenta_id
 
-        regenerar_cuotas = False
+        meses_a_correr = 0
         if fecha is not None:
             fecha_validada = self._validate_date(fecha)
             if fecha_validada != purchase["fecha_compra"]:
@@ -1329,7 +1383,10 @@ class FeesService:
                     accion = "its date can no longer move to another month"
                     self._require_fees_pending(purchase_id, cuotas, accion)
                     self._require_fees_not_shared(purchase_id, cuotas, accion)
-                    regenerar_cuotas = True
+                    meses_a_correr = (
+                        (int(fecha_validada[:4]) * 12 + int(fecha_validada[5:7]))
+                        - (int(purchase["fecha_compra"][:4]) * 12 + int(purchase["fecha_compra"][5:7]))
+                    )
                 campos_repo["fecha_compra"] = fecha_validada
 
         nueva_moneda = None
@@ -1398,18 +1455,16 @@ class FeesService:
         conn = self._db.conn
         with self._db.transaction():
             self._compras_repo.actualizar(purchase_id, conn=conn, **campos_repo)
-            if regenerar_cuotas:
-                monto_cuota_minor = (
-                    nuevo_monto_cuota_minor if nuevo_monto_cuota_minor is not None
-                    else purchase["monto_por_cuota_minor"]
-                )
-                fees_updated = self._regenerate_fees(
-                    purchase_id, campos_repo["fecha_compra"], purchase["total_cuotas"], monto_cuota_minor, conn,
-                )
-            elif nuevo_monto_cuota_minor is not None:
-                fees_updated = self._cuotas_repo.actualizar_monto_por_compra(
+            if meses_a_correr:
+                # Every fee moves the same number of months as the date (all
+                # of them are 'pendiente': checked above).
+                for cuota in cuotas:
+                    mes, anio = self._add_months(cuota["mes_proyectado"], cuota["anio_proyectado"], meses_a_correr)
+                    fees_updated += self._cuotas_repo.actualizar_periodo(cuota["id"], mes, anio, conn=conn)
+            if nuevo_monto_cuota_minor is not None:
+                fees_updated = max(fees_updated, self._cuotas_repo.actualizar_monto_por_compra(
                     purchase_id, "pendiente", nuevo_monto_cuota_minor, conn=conn,
-                )
+                ))
 
         return FeesResult(
             success=True,
@@ -1427,8 +1482,9 @@ class FeesService:
         """
         Changes the number of fees of a purchase, keeping its total:
         deletes every fee and recreates nueva_cantidad of them, projected
-        month by month from the purchase month, each of
-        round(monto_total_minor / nueva_cantidad).
+        month by month from the month fee #1 has now (a hand-picked first
+        fee is kept; later fees moved by hand go back to consecutive
+        months), each of round(monto_total_minor / nueva_cantidad).
 
         Args:
             compra_id:      The purchase to modify.
@@ -1461,7 +1517,7 @@ class FeesService:
             self._compras_repo.actualizar(
                 compra_id, total_cuotas=nueva_cantidad, monto_por_cuota_minor=monto_cuota_minor, conn=conn,
             )
-            self._regenerate_fees(compra_id, purchase["fecha_compra"], nueva_cantidad, monto_cuota_minor, conn)
+            self._regenerate_fees(compra_id, purchase["fecha_compra"], cuotas, nueva_cantidad, monto_cuota_minor, conn)
 
         return FeesResult(
             success=True,
@@ -1526,15 +1582,25 @@ class FeesService:
         self,
         purchase_id:       int,
         fecha_compra:      str,
+        cuotas_actuales:   list[sqlite3.Row],
         total_cuotas:      int,
         monto_cuota_minor: int,
         conn:              sqlite3.Connection,
     ) -> int:
-        """Deletes every fee of the purchase and recreates the schedule. Returns the new fee count."""
+        """
+        Deletes every fee of the purchase and recreates the schedule,
+        starting on the month fee #1 has now (the purchase month if it has
+        no fees). Returns the new fee count.
+        """
+        primera = min(cuotas_actuales, key=lambda c: c["numero_cuota"], default=None)
+        if primera is not None:
+            first_month, first_year = primera["mes_proyectado"], primera["anio_proyectado"]
+        else:
+            first_month, first_year = int(fecha_compra[5:7]), int(fecha_compra[:4])
         self._cuotas_repo.eliminar_por_compra(purchase_id, conn=conn)
         ids = self._cuotas_repo.crear_lote(
             compra_id=purchase_id,
-            cuotas=self._build_fee_schedule(fecha_compra, total_cuotas, monto_cuota_minor),
+            cuotas=self._build_fee_schedule(first_month, first_year, total_cuotas, monto_cuota_minor),
             conn=conn,
         )
         return len(ids)
@@ -1638,4 +1704,189 @@ class FeesService:
                 f"{fees_cancelled} pending fee(s) marked as omitido."
             ),
         )
+
+    # ----------------------------------------------------------
+    # RESCHEDULE FEES ("Editar cronograma")
+    # ----------------------------------------------------------
+
+    def reschedule_fees(self, purchase_id: int, new_periods: dict[int, tuple[int, int]]) -> FeesResult:
+        """
+        Moves fees of a purchase to other months by hand:
+        new_periods = {fee_id: (month, year)}. A fee passed with the month it
+        already has is ignored.
+
+        Rules (early-correction window, CLAUDE.md §4):
+        - only 'pendiente' fees can move (en_resumen / pagado / omitido have
+          state of their own);
+        - a fee shared on its own (a gastos_compartidos row per fee, dated on
+          the fee's month) cannot move — delete the shared expense first,
+          same rule as moving the purchase date to another month;
+        - no two fees of the purchase may end up in the same month.
+
+        Returns:
+            FeesResult with data["fees_moved"]; success=False if no fee
+            changes month.
+
+        Raises:
+            PurchaseNotFoundError if the purchase does not exist.
+            FeeNotFoundError if an id is not a fee of this purchase.
+            FeesError for an invalid month/year, a fee that is not pending
+                or is shared, or two fees in the same month.
+        """
+        self._get_purchase(purchase_id)
+        cuotas = self._cuotas_repo.listar_por_compra(purchase_id)
+        por_id = {c["id"]: c for c in cuotas}
+
+        cambios: dict[int, tuple[int, int]] = {}
+        for fee_id, periodo in new_periods.items():
+            cuota = por_id.get(fee_id)
+            if cuota is None:
+                raise FeeNotFoundError(f"Fee id={fee_id} is not a fee of purchase id={purchase_id}.")
+            month, year = periodo
+            month, year = self._validate_period(month, year, f"Fee #{cuota['numero_cuota']}")
+            if (month, year) == (cuota["mes_proyectado"], cuota["anio_proyectado"]):
+                continue
+            if cuota["estado"] != "pendiente":
+                raise FeesError(
+                    f"Fee #{cuota['numero_cuota']} of purchase id={purchase_id} is '{cuota['estado']}' — "
+                    f"only pending fees can be moved."
+                )
+            cambios[fee_id] = (month, year)
+
+        if not cambios:
+            return FeesResult(
+                success=False, entity_id=purchase_id, data={"fees_moved": 0}, message="No fee changes month.",
+            )
+        self._require_fees_not_shared(purchase_id, [por_id[i] for i in cambios], "its fees can no longer be moved")
+
+        ocupados: dict[tuple[int, int], int] = {}
+        for cuota in cuotas:
+            month, year = cambios.get(cuota["id"], (cuota["mes_proyectado"], cuota["anio_proyectado"]))
+            if (year, month) in ocupados:
+                raise FeesError(
+                    f"Fees #{ocupados[(year, month)]} and #{cuota['numero_cuota']} of purchase "
+                    f"id={purchase_id} would both fall on {month:02d}/{year}."
+                )
+            ocupados[(year, month)] = cuota["numero_cuota"]
+
+        conn = self._db.conn
+        with self._db.transaction():
+            for fee_id, (month, year) in cambios.items():
+                self._cuotas_repo.actualizar_periodo(fee_id, month, year, conn=conn)
+
+        return FeesResult(
+            success=True,
+            entity_id=purchase_id,
+            data={"fees_moved": len(cambios)},
+            message=f"{len(cambios)} fee(s) of purchase #{purchase_id} moved.",
+        )
+
+    # ----------------------------------------------------------
+    # CARD CONFIG (tarjetas_config: closing / due day of each card)
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _day_in_month(day: int, month: int, year: int) -> date:
+        """That day of the month, or the month's last day when it is shorter (31 → 30, 29 → 28…)."""
+        return date(year, month, min(day, calendar.monthrange(year, month)[1]))
+
+    def _due_date(self, closing: date, closing_day: int, due_day: int) -> date:
+        """
+        Due date of the statement that closes on `closing`: due_day of the
+        same month, or of the next one when due_day <= closing_day (it can
+        never be due before — or on — the day it closes).
+        """
+        month, year = closing.month, closing.year
+        if due_day <= closing_day:
+            month, year = self._add_months(month, year, 1)
+        return self._day_in_month(due_day, month, year)
+
+    def get_card_config(self, account_id: int) -> Optional[dict]:
+        """{"cuenta_id", "dia_cierre", "dia_vencimiento", ...} of a card, or None if it has no config yet."""
+        fila = self._tarjetas_repo.obtener(account_id)
+        return dict(fila) if fila is not None else None
+
+    def set_card_config(self, account_id: int, closing_day: int, due_day: int) -> FeesResult:
+        """
+        Creates or updates the closing / due day of a credit card.
+
+        Raises:
+            FeesError if the account does not exist, is inactive or is not
+                a credit card, or a day is not an integer from 1 to 31.
+        """
+        cuenta = self._get_account(account_id)
+        if cuenta["tipo"] != "credito":
+            raise FeesError(f"Account id={account_id} is not a credit card.")
+        for nombre, dia in (("closing_day", closing_day), ("due_day", due_day)):
+            if not isinstance(dia, int) or isinstance(dia, bool) or not 1 <= dia <= 31:
+                raise FeesError(f"{nombre} must be an integer from 1 to 31. Received: {dia!r}.")
+        self._tarjetas_repo.upsert(account_id, closing_day, due_day)
+        return FeesResult(
+            success=True,
+            entity_id=account_id,
+            data={"dia_cierre": closing_day, "dia_vencimiento": due_day},
+            message=f"Card #{account_id}: closes on day {closing_day}, due on day {due_day}.",
+        )
+
+    def card_cycle_dates(self, account_id: int, today: Optional[Any] = None) -> Optional[dict]:
+        """
+        Previous / current / next statement of a card, from its config:
+            {"dia_cierre": 15, "dia_vencimiento": 5,
+             "anterior": {"cierre": "2026-08-15", "vencimiento": "2026-09-05"},
+             "actual":   {"cierre": "2026-09-15", "vencimiento": "2026-10-05"},
+             "proximo":  {"cierre": "2026-10-15", "vencimiento": "2026-11-05"}}
+        "actual" is the statement that closed most recently (closing date
+        <= today), "anterior" the one before it, "proximo" the one that
+        closes next. Closing = dia_cierre of each month (the month's last day
+        when it is shorter); due date: see _due_date(). None if the card has
+        no config.
+
+        Args:
+            today: 'YYYY-MM-DD' or a date; None = today.
+
+        Raises:
+            ValueError for an invalid `today`.
+        """
+        config = self._tarjetas_repo.obtener(account_id)
+        if config is None:
+            return None
+        hoy = date.fromisoformat(self._validate_date(today)) if today is not None else date.today()
+        dia_cierre, dia_vencimiento = config["dia_cierre"], config["dia_vencimiento"]
+        month, year = hoy.month, hoy.year
+        if self._day_in_month(dia_cierre, month, year) > hoy:
+            month, year = self._add_months(month, year, -1)  # this month's statement has not closed yet
+
+        def _resumen(delta: int) -> dict:
+            m, a = self._add_months(month, year, delta)
+            cierre = self._day_in_month(dia_cierre, m, a)
+            return {
+                "cierre": cierre.isoformat(),
+                "vencimiento": self._due_date(cierre, dia_cierre, dia_vencimiento).isoformat(),
+            }
+
+        return {
+            "dia_cierre": dia_cierre,
+            "dia_vencimiento": dia_vencimiento,
+            "anterior": _resumen(-1),
+            "actual": _resumen(0),
+            "proximo": _resumen(1),
+        }
+
+    def suggest_first_fee(self, account_id: Optional[int], date_str: Any) -> tuple[int, int]:
+        """
+        Suggested (month, year) of fee #1 for a purchase made on date_str:
+        the month after the purchase; two months after when the card has a
+        closing day configured and the purchase is after it that month (it
+        goes into the next statement). account_id None (no card chosen yet)
+        or a card without config → the month after.
+
+        Raises:
+            ValueError for an invalid date.
+        """
+        compra = date.fromisoformat(self._validate_date(date_str))
+        meses = 1
+        config = self._tarjetas_repo.obtener(account_id) if account_id is not None else None
+        if config is not None and compra > self._day_in_month(config["dia_cierre"], compra.month, compra.year):
+            meses = 2
+        return self._add_months(compra.month, compra.year, meses)
 

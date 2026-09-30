@@ -20,11 +20,12 @@ snapshot y para calcular en vivo:
   acumulando el anterior. Así, snapshot del mes anterior + movimientos del
   mes en curso = el saldo que muestra la app. Incluye las cuentas
   archivadas (sus meses viejos siguen siendo historia válida).
-- deudas_mensuales, por (persona, moneda): la suma con signo de TODAS las
-  filas de `deudas` (libro de movimientos, docs/DATA_MODEL_DECISIONS.md
-  sección 22) con fecha <= último día del mes — a_favor (te deben) suma,
-  en_contra (debés, o te pagaron) resta: el mismo saldo que
-  DebtsService.get_saldo_neto() a esa fecha. La persona se normaliza
+- deudas_mensuales, por (persona, tab, moneda): SUM(monto_minor) — ya con
+  signo — de las filas de `deudas` de ese tab ('me_deben' / 'debo', libro
+  de movimientos, docs/DATA_MODEL_DECISIONS.md sección 22) con fecha <=
+  último día del mes: el mismo saldo que DebtsService.summary_by_person()
+  a esa fecha. Los dos tabs nunca se mezclan (la misma persona puede
+  deberte algo y vos deberle otra cosa). La persona se normaliza
   (utils/personas.py): "Noe" y "NOE" son la misma fila.
 - compartidos_mensuales, por (hogar, pagador, moneda): el
   monto_pendiente_minor ACTUAL de los gastos 'pendiente' con fecha <=
@@ -71,7 +72,7 @@ from repositories.compras_cuotas_repository import ComprasCuotasRepository
 from repositories.cuentas_repository import CuentasRepository
 from repositories.cuotas_credito_repository import CuotasCreditoRepository
 from repositories.deudas_mensuales_repository import DeudasMensualesRepository
-from repositories.deudas_repository import DeudasRepository
+from repositories.deudas_repository import TABS, DeudasRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
 from repositories.saldos_mensuales_repository import SaldosMensualesRepository
 from repositories.transacciones_repository import TransaccionesRepository
@@ -179,6 +180,12 @@ class SnapshotsService:
         """Clave de persona de deudas_mensuales (utils/personas.py, igual que DebtsService)."""
         return normalizar_persona(nombre)
 
+    @staticmethod
+    def _tab(tab: str) -> str:
+        if tab not in TABS:
+            raise SnapshotsError(f"tab must be 'me_deben' or 'debo'. Received: {tab!r}.")
+        return tab
+
     # ----------------------------------------------------------
     # LECTURA DE LAS FUENTES (solo repositorios, paginado)
     # ----------------------------------------------------------
@@ -220,8 +227,13 @@ class SnapshotsService:
         }
 
     def _filas_deuda(self, fecha_hasta: str) -> list[dict]:
-        """Todas las filas del libro de deudas con fecha <= fecha_hasta."""
-        return [dict(d) for d in self._deudas_fuente_repo.listar_todo() if d["fecha"] <= fecha_hasta]
+        """Todas las filas del libro de deudas (los dos tabs) con fecha <= fecha_hasta."""
+        return [
+            dict(d)
+            for tab in TABS
+            for d in self._deudas_fuente_repo.listar_por_tab(tab)
+            if d["fecha"] <= fecha_hasta
+        ]
 
     def _moneda_de_origen(self, origen_tipo: str, origen_id: int, cache: dict) -> Optional[int]:
         """moneda_id del origen de un gasto compartido (gastos_compartidos no tiene moneda propia), o None."""
@@ -317,17 +329,13 @@ class SnapshotsService:
             resultado[mes] = dict(acumulado)
         return resultado
 
-    def _clave_deuda(self, deuda: dict) -> tuple[str, int]:
-        return (self._persona(deuda["entidad_persona"]), deuda["moneda_id"])
-
-    @staticmethod
-    def _monto_deuda(deuda: dict) -> int:
-        # a_favor (te deben) suma, en_contra (debés, o te pagaron) resta.
-        return deuda["monto_minor"] if deuda["tipo"] == "a_favor" else -deuda["monto_minor"]
+    def _clave_deuda(self, deuda: dict) -> tuple[str, str, int]:
+        return (self._persona(deuda["entidad_persona"]), deuda["tab"], deuda["moneda_id"])
 
     def _netos_deudas(self, meses: list[Periodo], deudas: list[dict]) -> dict[Periodo, dict[tuple, int]]:
+        # monto_minor ya tiene signo (positivo = entrada, negativo = pago): se suma tal cual.
         return self._acumulado_por_mes(
-            meses, deudas, clave=self._clave_deuda, monto=self._monto_deuda, fecha=lambda d: d["fecha"],
+            meses, deudas, clave=self._clave_deuda, monto=lambda d: d["monto_minor"], fecha=lambda d: d["fecha"],
         )
 
     def _pendientes_compartidos(
@@ -395,8 +403,8 @@ class SnapshotsService:
                 anio, mes = periodo
                 for (cuenta_id, moneda_id), saldo in saldos[periodo].items():
                     self._saldos_repo.upsert(cuenta_id, moneda_id, mes, anio, saldo, conn=conn)
-                for (persona, moneda_id), monto in netos[periodo].items():
-                    self._deudas_repo.upsert(persona, moneda_id, mes, anio, monto, conn=conn)
+                for (persona, tab, moneda_id), monto in netos[periodo].items():
+                    self._deudas_repo.upsert(persona, tab, moneda_id, mes, anio, monto, conn=conn)
                 for (hogar_id, pagador, moneda_id), monto in compartidos[periodo].items():
                     self._compartidos_repo.upsert(hogar_id, pagador, moneda_id, mes, anio, monto, conn=conn)
 
@@ -438,23 +446,23 @@ class SnapshotsService:
         transacciones = self._transacciones(self._fin_de_mes(anterior), cuenta_id=cuenta_id, moneda_id=moneda_id)
         return self._saldos_al_cierre([anterior], transacciones, iniciales)[anterior].get((cuenta_id, moneda_id), 0)
 
-    def get_saldo_anterior_deuda(self, entidad_persona: str, moneda_id: int, mes: int, anio: int) -> int:
+    def get_saldo_anterior_deuda(self, entidad_persona: str, moneda_id: int, tab: str, mes: int, anio: int) -> int:
         """
-        Neto pendiente con esa persona en esa moneda (+ te debe, − le debés)
-        al cierre del mes anterior a mes/anio. El nombre se normaliza igual
+        Saldo con esa persona en ese tab y esa moneda al cierre del mes
+        anterior a mes/anio: SUM(monto_minor) — en 'me_deben', positivo = te
+        debe; en 'debo', positivo = le debés. El nombre se normaliza igual
         que al guardar ("Noe" = "NOE"). Snapshot, o en vivo si falta.
 
         Raises:
-            SnapshotsError si mes/anio no son válidos.
+            SnapshotsError si mes/anio o el tab no son válidos.
         """
         anterior = self._anterior(self._periodo(mes, anio))
+        tab = self._tab(tab)
         persona = self._persona(entidad_persona)
-        fila = self._deudas_repo.obtener(persona, moneda_id, anterior[1], anterior[0])
+        fila = self._deudas_repo.obtener(persona, tab, moneda_id, anterior[1], anterior[0])
         if fila is not None:
             return fila["monto_minor"]
-        # En vivo: la misma suma con signo, directo en el repositorio (los
-        # nombres ya se guardan normalizados, ver DebtsService).
-        return self._deudas_fuente_repo.get_saldo_persona(persona, moneda_id, self._fin_de_mes(anterior))
+        return self._netos_deudas_en_vivo(anterior, tab).get((persona, moneda_id), 0)
 
     def get_saldo_anterior_compartidos(
         self, hogar_id: int, pagador: str, moneda_id: int, mes: int, anio: int,
@@ -508,25 +516,28 @@ class SnapshotsService:
             for cuenta_id, moneda_id in iniciales
         ]
 
-    def get_saldos_anteriores_deudas(self, mes: int, anio: int) -> list[dict]:
+    def get_saldos_anteriores_deudas(self, mes: int, anio: int, tab: str) -> list[dict]:
         """
-        Una entrada por (persona, moneda) con el neto pendiente al cierre del
-        mes anterior: {entidad_persona (normalizada), moneda_id,
+        Una entrada por (persona, moneda) de ese tab con su saldo al cierre
+        del mes anterior: {entidad_persona (normalizada), tab, moneda_id,
         monto_minor, moneda_codigo, moneda_simbolo, decimales}. Del snapshot
-        de ese mes; si no hay ninguno, en vivo.
+        de ese mes; si no hay ninguno para el tab, en vivo.
 
         Raises:
-            SnapshotsError si mes/anio no son válidos.
+            SnapshotsError si mes/anio o el tab no son válidos.
         """
         anterior = self._anterior(self._periodo(mes, anio))
-        filas = self._deudas_repo.listar_por_periodo(anterior[1], anterior[0])
+        tab = self._tab(tab)
+        filas = self._deudas_repo.listar_por_periodo(anterior[1], anterior[0], tab)
         if filas:
             netos = {(fila["entidad_persona"], fila["moneda_id"]): fila["monto_minor"] for fila in filas}
         else:
-            netos = self._netos_deudas_en_vivo(anterior)
+            netos = self._netos_deudas_en_vivo(anterior, tab)
         monedas = self._monedas()
         return [
-            self._con_moneda({"entidad_persona": persona, "moneda_id": moneda_id, "monto_minor": monto}, monedas)
+            self._con_moneda(
+                {"entidad_persona": persona, "tab": tab, "moneda_id": moneda_id, "monto_minor": monto}, monedas,
+            )
             for (persona, moneda_id), monto in sorted(netos.items())
         ]
 
@@ -556,9 +567,13 @@ class SnapshotsService:
     # EN VIVO (cuando falta el snapshot) + formato
     # ----------------------------------------------------------
 
-    def _netos_deudas_en_vivo(self, periodo: Periodo) -> dict[tuple, int]:
-        deudas = self._filas_deuda(fecha_hasta=self._fin_de_mes(periodo))
-        return self._netos_deudas([periodo], deudas)[periodo]
+    def _netos_deudas_en_vivo(self, periodo: Periodo, tab: str) -> dict[tuple[str, int], int]:
+        """(persona, moneda_id) → SUM(monto_minor) de ese tab al cierre de `periodo` (la suma la hace el repositorio)."""
+        netos: dict[tuple[str, int], int] = defaultdict(int)
+        for fila in self._deudas_fuente_repo.get_saldo_neto_por_persona(tab, self._fin_de_mes(periodo)):
+            # Los nombres ya se guardan normalizados (DebtsService); se normaliza igual por si una fila vieja no.
+            netos[(self._persona(fila["entidad_persona"]), fila["moneda_id"])] += fila["saldo"]
+        return dict(netos)
 
     def _compartidos_en_vivo(self, hogar_id: int, periodo: Periodo) -> dict[tuple, int]:
         gastos, _ = self._gastos_pendientes(fecha_hasta=self._fin_de_mes(periodo), hogar_id=hogar_id)

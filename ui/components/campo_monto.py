@@ -34,11 +34,19 @@ Al confirmar (blur o Enter):
   a on_confirmar — el texto tipeado se deja tal cual para poder corregirlo
   en el lugar (no se revierte, mismo criterio que ya tenía Presupuestos).
 - Si NO empieza con "=": mismo chequeo de "¿es un número válido?" que ya
-  hacía cada pantalla a mano (float(texto.replace(",", "."))) — inválido =
-  borde rojo, no confirma (unifica el feedback visual con el caso de
-  fórmula inválida, en vez de que cada pantalla revierta el texto a su
-  manera). Válido = se llama on_confirmar(monto_minor) igual que en la
-  rama de fórmula.
+  hacía cada pantalla a mano (float(...)) — inválido = borde rojo, no
+  confirma (unifica el feedback visual con el caso de fórmula inválida, en
+  vez de que cada pantalla revierta el texto a su manera). Válido = se
+  llama on_confirmar(monto_minor) igual que en la rama de fórmula.
+
+Separador decimal: se acepta ',' o '.' — antes de parsear el número o de
+evaluar la fórmula, _normalizar_separador() lo lleva a '.' ("1.234,56" →
+1234.56, "1234,5" → 1234.5, "1,234" → 1234; solo con '.', queda tal cual).
+En una fórmula se aplica a CADA número por separado (_normalizar_numeros()):
+sobre el texto entero, "=1,5*2,5" o "=100.5+200,25" se leerían mal. La
+fórmula que se recuerda (persistir_formula) es la tipeada, sin normalizar.
+Lo que se MUESTRA usa siempre '.' como decimal (ver "Formato de
+visualización").
 
 on_error (opcional): si el caller lo pasa, se invoca con un mensaje de
 texto en los dos casos de "borde rojo" de arriba, para que cada pantalla
@@ -87,7 +95,8 @@ SavingsError, ni falta que le hace).
 
 --- Formato de visualización ---
 
-Siempre ".2f" tras un confirm exitoso (fórmula o número directo) — mismo
+Siempre ".2f" tras un confirm exitoso (fórmula o número directo): '.' como
+separador decimal y sin separador de miles ("1234.56") — mismo
 criterio ya usado en TODA la app para mostrar montos (ver
 utils.money.amount_display() y el texto_numero original de Presupuestos,
 ambos hardcodean ".2f" sin importar los decimales reales de la moneda).
@@ -116,11 +125,35 @@ Reglas de arquitectura: sin dependencias de servicios/repositorios — ver
 CLAUDE.md §2/§3, mismo criterio que campo_filtrable.py.
 """
 
+import re
 from typing import Callable, Optional
 
 import flet as ft
 
 from utils.calculadora_segura import CalculadoraError, evaluar_expresion
+
+# Un número dentro del texto de una fórmula: dígitos con '.' y/o ',' (ver _normalizar_numeros()).
+PATRON_NUMERO = re.compile(r"\d[\d.,]*")
+
+
+def _normalizar_separador(texto: str) -> str:
+    """Acepta tanto ',' como '.' como separador decimal — normaliza a '.'"""
+    # Si tiene coma y punto: formato argentino 1.234,56 → 1234.56
+    if "," in texto and "." in texto:
+        return texto.replace(".", "").replace(",", ".")
+    # Si tiene solo coma: puede ser decimal 1234,56 → 1234.56
+    if "," in texto:
+        partes = texto.split(",")
+        if len(partes) == 2 and len(partes[1]) <= 2:
+            return texto.replace(",", ".")
+        # Si tiene 3 dígitos después de la coma: es miles 1,234 → 1234
+        return texto.replace(",", "")
+    return texto
+
+
+def _normalizar_numeros(expresion: str) -> str:
+    """_normalizar_separador() sobre cada número de una fórmula, por separado (ver docstring del módulo)."""
+    return PATRON_NUMERO.sub(lambda coincidencia: _normalizar_separador(coincidencia.group()), expresion)
 
 
 class CampoMonto:
@@ -278,7 +311,7 @@ class CampoMonto:
 
         if texto.startswith("="):
             try:
-                monto = evaluar_expresion(texto[1:])
+                monto = evaluar_expresion(_normalizar_numeros(texto[1:]))
             except CalculadoraError as err:
                 self._campo.border_color = ft.Colors.ERROR
                 if self._on_error:
@@ -288,7 +321,7 @@ class CampoMonto:
             formula_nueva = texto if self._persistir_formula else None
         else:
             try:
-                monto = float(texto.replace(",", "."))
+                monto = float(_normalizar_separador(texto))
             except ValueError:
                 self._campo.border_color = ft.Colors.ERROR
                 if self._on_error:

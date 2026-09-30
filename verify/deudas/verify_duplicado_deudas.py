@@ -2,8 +2,8 @@
 verify/deudas/verify_duplicado_deudas.py
 
 Verifica el chequeo de duplicados de DeudasRepository.crear() sobre la
-tabla reestructurada (libro de movimientos): crear() dos veces seguidas con
-la misma entidad_persona/tipo/monto_minor/fecha en menos de
+tabla en su estructura final (tabs + monto con signo): crear() dos veces seguidas con
+la misma entidad_persona/tab/monto_minor/fecha en menos de
 VENTANA_DUPLICADO_SEGUNDOS lanza DeudaDuplicadaError la segunda vez (un
 doble-click); después de esa ventana (simulada ajustando creada_en a mano,
 sin esperar tiempo real) sí permite una fila idéntica — dos movimientos
@@ -56,7 +56,7 @@ def main() -> None:
     manager.inicializar()
     repo = DeudasRepository(manager)
     ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    campos = dict(entidad_persona="NOE", concepto="Cena", tipo="a_favor", monto_minor=5000, moneda_id=ars, fecha="2026-03-01")
+    campos = dict(entidad_persona="NOE", concepto="Cena", tab="me_deben", monto_minor=5000, moneda_id=ars, fecha="2026-03-01")
 
     def contar() -> int:
         return manager.fetchone("SELECT COUNT(*) AS n FROM deudas WHERE entidad_persona = 'NOE';")["n"]
@@ -79,7 +79,7 @@ def main() -> None:
     svc = DebtsService(manager)
     caso_excepcion(
         "vía DebtsService el doble-click sube como DebtError", DebtError,
-        lambda: svc.create("Noe", "Cena", "a_favor", 5000, ars, "2026-03-01"),
+        lambda: svc.create("Noe", "Cena", "me_deben", 5000, ars, "2026-03-01"),
     )
 
     print(f"\n{casos_ok}/{casos_total} casos OK")

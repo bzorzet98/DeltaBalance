@@ -22,11 +22,13 @@ Cubre:
   - Sin snapshot (borrados a mano): las lecturas calculan en vivo y dan lo
     mismo.
   - recalcular_todo() dos veces: mismas filas (upsert, sin duplicados).
-  - deudas_mensuales: neto con signo por persona (a_favor +, en_contra −),
-    "Noe" y "noe " son la misma persona, las deudas del mes actual no
-    entran, y un pago de este mes (fila de tipo opuesto) no cambia el
+  - deudas_mensuales: SUM(monto_minor) — ya con signo — por (persona, tab,
+    moneda); los tabs ME DEBEN y DEBO no se mezclan (la misma persona en
+    los dos), "Noe" y "noe " son la misma persona, las deudas del mes
+    actual no entran, y un pago de este mes (fila negativa) no cambia el
     cierre del mes anterior (libro de movimientos: los meses cerrados
-    quedan fijos). Sin snapshot, el cálculo en vivo da lo mismo.
+    quedan fijos). Sin snapshot, el cálculo en vivo da lo mismo; un tab
+    inválido → SnapshotsError.
   - compartidos_mensuales: pendiente por (hogar, pagador, moneda), con la
     moneda sacada de la transacción de origen.
   - mes fuera de 1-12: SnapshotsError.
@@ -199,34 +201,43 @@ def main() -> None:
     # ============================================================
     # deudas_mensuales
     # ============================================================
-    print("\n--- deudas_mensuales (libro de movimientos) ---")
-    deudas.create("Noe", "Préstamo", "a_favor", 40000, ars_id, _fecha(m2))
-    deudas.create("noe ", "Me pagó de más", "en_contra", 10000, ars_id, _fecha(m1))
-    deudas.create("Kevin", "Cena", "en_contra", 5000, ars_id, _fecha(m3))
-    deudas.create("Pedro", "Del mes actual", "a_favor", 7000, ars_id, _fecha(m0))
+    print("\n--- deudas_mensuales (libro de movimientos, por tab) ---")
+    deudas.create("Noe", "Préstamo", "me_deben", 40000, ars_id, _fecha(m2))
+    deudas.create("noe ", "Me devolvió una parte", "me_deben", -10000, ars_id, _fecha(m1))
+    deudas.create("Kevin", "Cena", "debo", 5000, ars_id, _fecha(m3))
+    deudas.create("Kevin", "Le pagué el cine", "me_deben", 1200, ars_id, _fecha(m3))
+    deudas.create("Pedro", "Del mes actual", "me_deben", 7000, ars_id, _fecha(m0))
     snapshots.recalcular_todo()
 
-    caso("NOE al cierre del mes anterior: 400.00 − 100.00 (misma persona)", 30000,
-         snapshots.get_saldo_anterior_deuda("Noe", ars_id, m0[1], m0[0]))
-    caso("KEVIN: le debés 50.00 → negativo", -5000,
-         snapshots.get_saldo_anterior_deuda("KEVIN", ars_id, m0[1], m0[0]))
-    caso("NOE hace 2 meses: todavía no existía la de 100.00", 40000,
-         snapshots.get_saldo_anterior_deuda("NOE", ars_id, m1[1], m1[0]))
-    personas_mes_anterior = {e["entidad_persona"] for e in snapshots.get_saldos_anteriores_deudas(m0[1], m0[0])}
-    caso("PEDRO (deuda del mes actual) no está en el saldo anterior", False, "PEDRO" in personas_mes_anterior)
+    caso("ME DEBEN — NOE al cierre del mes anterior: 400.00 − 100.00 (misma persona)", 30000,
+         snapshots.get_saldo_anterior_deuda("Noe", ars_id, "me_deben", m0[1], m0[0]))
+    caso("DEBO — KEVIN: le debés 50.00 (en positivo, en su tab)", 5000,
+         snapshots.get_saldo_anterior_deuda("KEVIN", ars_id, "debo", m0[1], m0[0]))
+    caso("ME DEBEN — KEVIN: lo que te debe va aparte (12.00)", 1200,
+         snapshots.get_saldo_anterior_deuda("KEVIN", ars_id, "me_deben", m0[1], m0[0]))
+    caso("ME DEBEN — NOE hace 2 meses: todavía no existía la devolución", 40000,
+         snapshots.get_saldo_anterior_deuda("NOE", ars_id, "me_deben", m1[1], m1[0]))
+    anteriores_me_deben = {e["entidad_persona"]: e["monto_minor"]
+                           for e in snapshots.get_saldos_anteriores_deudas(m0[1], m0[0], "me_deben")}
+    caso("PEDRO (deuda del mes actual) no está en el saldo anterior", False, "PEDRO" in anteriores_me_deben)
+    caso("get_saldos_anteriores_deudas('me_deben'): solo ese tab", {"NOE": 30000, "KEVIN": 1200}, anteriores_me_deben)
+    caso_excepcion("tab inválido → SnapshotsError", SnapshotsError,
+                   lambda: snapshots.get_saldos_anteriores_deudas(m0[1], m0[0], "a_favor"))
 
-    # Un pago es una fila de tipo opuesto con su propia fecha: uno de este
-    # mes no cambia el cierre del mes anterior (el mes cerrado queda fijo).
-    deudas.create("Kevin", "Le pagué", "a_favor", 5000, ars_id, _fecha(m0))
+    # Un pago es una fila negativa con su propia fecha: uno de este mes no
+    # cambia el cierre del mes anterior (el mes cerrado queda fijo).
+    deudas.create("Kevin", "Le pagué", "debo", -5000, ars_id, _fecha(m0))
     snapshots.recalcular_todo()
-    caso("pago a Kevin de este mes: el cierre del mes anterior sigue en −50.00", -5000,
-         snapshots.get_saldo_anterior_deuda("Kevin", ars_id, m0[1], m0[0]))
-    caso("… y el saldo al día queda en 0 (DebtsService.get_saldo_neto())", 0, next(
-        e["saldo_minor"] for e in deudas.get_saldo_neto() if e["entidad_persona"] == "KEVIN"
+    caso("pago a Kevin de este mes: el cierre del mes anterior sigue en 50.00", 5000,
+         snapshots.get_saldo_anterior_deuda("Kevin", ars_id, "debo", m0[1], m0[0]))
+    caso("… y el saldo al día queda en 0 (DebtsService.summary_by_person())", 0, next(
+        e["saldo_minor"] for e in deudas.summary_by_person("debo") if e["entidad_persona"] == "KEVIN"
     ))
     manager.execute("DELETE FROM deudas_mensuales;")
     caso("sin snapshot: get_saldo_anterior_deuda() en vivo da lo mismo", 30000,
-         snapshots.get_saldo_anterior_deuda("NOE", ars_id, m0[1], m0[0]))
+         snapshots.get_saldo_anterior_deuda("NOE", ars_id, "me_deben", m0[1], m0[0]))
+    caso("sin snapshot: get_saldos_anteriores_deudas('debo') en vivo", {"KEVIN": 5000},
+         {e["entidad_persona"]: e["monto_minor"] for e in snapshots.get_saldos_anteriores_deudas(m0[1], m0[0], "debo")})
 
 
     # ============================================================

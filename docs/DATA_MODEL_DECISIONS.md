@@ -99,12 +99,11 @@ Pospuesta hasta tener datos reales cargados. Vive en `lab/`, nunca en `services/
 autoevaluación subjetiva del usuario — no diseñada en detalle todavía.
 
 ## 8. Sincronización familiar
-Supabase (Postgres + Auth + RLS). Solo `gastos_compartidos` viaja al servidor. Vínculo
-por código de invitación (`hogares` + `hogar_miembros`). Polling al abrir la app, no
-realtime.
-- `hogares` y `hogar_miembros` ya están implementados en `schema.sql` (ver sección 2) —
-  son las tablas locales de las que depende este apartado. El resto (cliente `sync/`,
-  Supabase, Auth, RLS, polling) sigue sin implementar.
+Supabase (Postgres + Auth + RLS). Vínculo por código de invitación (`hogares` +
+`hogar_miembros`). Polling al abrir la app y cada 5 minutos, no realtime.
+- Actualizado (tarea "Módulo de sincronización con Supabase"): ya no viaja solo
+  `gastos_compartidos` — sube todo lo del usuario (tablas privadas y compartidas) y
+  baja solo lo propio. Ver hacerlo real y bajar lo del otro miembro: sección 24.
 
 ## 9. Regla de edición/borrado
 Ver `CLAUDE.md` sección 4 — ventana de corrección temprana según si el registro ya
@@ -599,11 +598,15 @@ Registro, Deudas y Gastos compartidos sin recorrer toda la historia cada vez.
   signo que `vw_balance_cuentas` (ingreso suma, egreso resta, `movimiento`
   suma). Snapshot del mes anterior + movimientos del mes en curso = el saldo
   que muestra la app.
-- `deudas_mensuales(entidad_persona, moneda_id, mes, anio, monto_minor)`:
-  suma con signo de todas las filas de `deudas` (libro de movimientos,
-  sección 22) con `fecha` <= fin de mes, por persona y moneda (`a_favor`
-  suma, `en_contra` resta — el neto de la barra de Deudas). Antes de la
-  reestructuración era el pendiente ACTUAL de las deudas `activa`. La
+- `deudas_mensuales(entidad_persona, tab, moneda_id, mes, anio,
+  monto_minor)`: `SUM(monto_minor)` — ya con signo — de las filas de
+  `deudas` (sección 22) de ese `tab` con `fecha` <= fin de mes, por persona
+  y moneda (el saldo de la barra de Deudas de ese tab). Los tabs
+  `me_deben` y `debo` van por separado: la misma persona puede deberte algo
+  y vos deberle otra cosa. `tab` se agregó en la reestructuración final de
+  deudas: una base que ya tenía la tabla sin esa columna la recrea vacía
+  (`_deudas_mensuales_con_tab()` en `db/schema_migrations.py` — es un caché:
+  se vuelve a llenar con ↻, y mientras tanto se calcula en vivo). La
   persona se guarda normalizada (sin espacios de más, en mayúsculas): "Noe"
   y "NOE" son la misma fila.
 - `compartidos_mensuales(hogar_id, pagador, moneda_id, mes, anio,
@@ -628,60 +631,201 @@ Decisiones:
   desactualizado hasta el próximo recálculo (↻ de las pantallas). Deudas ya
   no: desde la sección 22 un pago es una fila con su propia fecha. Lo mismo con los saldos si se carga o edita una transacción de
   un mes cerrado. Alternativa posible (no implementada): reconstruir el
-  pendiente al cierre de cada mes con las fechas de `deuda_pagos` /
+  pendiente al cierre de cada mes con las fechas de
   `gasto_compartido_pagos`, que deja los meses cerrados fijos.
 - Sin `deleted_at` ni reglas de edición (sección 9): se borran y se
   reescriben enteras al recalcular.
 
-## 22. Deudas como libro de movimientos — ✅ implementado (vía `db/schema_migrations.py`)
+## 22. Deudas: libro de movimientos en dos tabs — ✅ implementado en schema.sql
 
-`deudas` deja de ser "una deuda con su pendiente, su estado y sus pagos en
-`deuda_pagos`" y pasa a ser un **libro de movimientos**: cada fila es un
-monto (siempre positivo) con dirección —
+`deudas` es un **libro de movimientos** separado en dos tabs:
 
-- `tipo = 'a_favor'`: te deben más (le prestaste, pagaste algo por esa persona);
-- `tipo = 'en_contra'`: debés más, o te pagaron (un pago que recibiste).
+- `tab = 'me_deben'`: lo que te deben (le prestaste, pagaste algo por esa persona);
+- `tab = 'debo'`: lo que debés (te prestaron, alguien pagó algo por vos).
 
-El saldo con una persona es la suma con signo de sus filas (`a_favor` suma,
-`en_contra` resta): positivo = te debe, negativo = le debés. No hay
-`monto_pendiente_minor`, ni `estado`, ni pagos aparte: registrar un pago es
-crear una fila de tipo opuesto. `DebtsService.register_payment()` /
-`write_off()` ya no existen.
+`monto_minor` tiene **signo**: positivo = entrada (la deuda crece), negativo
+= salida (un pago que la baja). El saldo de una persona en un tab es
+`SUM(monto_minor)`: en `me_deben`, positivo = te debe y negativo = te pagó de
+más; en `debo`, positivo = le debés y negativo = le pagaste de más. No hay
+`monto_pendiente_minor`, ni `estado`, ni vencimiento, ni tabla de pagos
+(`deuda_pagos` ya no existe): registrar un pago es crear una fila negativa
+en el mismo tab. `DebtsService.register_payment()` / `write_off()` /
+`mark_uncollectable()` / `apply_payment()` ya no existen.
 
-Columnas: `id, entidad_persona, concepto, tipo, monto_minor, moneda_id,
-fecha, notas, origen_tipo, origen_id, sincronizado_en, creada_en`
-(`sincronizado_en` reservado para la sincronización futura).
+Columnas (`db/schema.sql`): `id, entidad_persona, concepto, tab, monto_minor,
+moneda_id, fecha, notas, origen_tipo, origen_id, sincronizado_en, creada_en`
+(`sincronizado_en` reservado para la sincronización futura). Sin índices,
+triggers ni vistas sobre las columnas nuevas en `schema.sql`: corre antes de
+la migración, y en una base todavía sin convertir un `CREATE INDEX` sobre
+`tab` fallaría. `vw_deudas_activas`, `idx_deudas_estado` y el trigger
+`trg_deudas_updated` se eliminaron (usaban columnas que ya no existen).
 
-Migración (`reestructurar_deudas()`, corre sola en `inicializar()`):
+Historia: la tabla tuvo dos estructuras anteriores —
+**ORIGINAL** (`monto_original_minor` / `monto_pendiente_minor` / `estado`,
+con los pagos en `deuda_pagos`) y un **LIBRO** intermedio (`tipo`
+`'a_favor'` / `'en_contra'` + `monto_minor` siempre positivo, con la tabla
+original renombrada a `deudas_old`).
 
-- Condición: la tabla todavía tiene la estructura vieja (columna
-  `monto_original_minor`), haya datos o no — `db/schema.sql` **sigue
-  teniendo la definición vieja** de `deudas` (no se tocó en esta tarea), así
-  que una base nueva nace vieja y se convierte en su primera
-  `inicializar()`. Pendiente: actualizar `schema.sql` a la estructura nueva.
-- Si hay datos, antes copia el archivo (`deltabalance_backup_antes_deudas_<fecha>.db`,
-  al lado de la base).
-- Todo en una transacción: crea `deudas_v2`; copia cada deuda con su monto
-  ORIGINAL, su `fecha_inicio` y su mismo id; copia cada pago de
-  `deuda_pagos` como fila de tipo opuesto (`origen_tipo='pago_migrado'`,
-  `origen_id` = id del pago, fecha recortada a `AAAA-MM-DD`); normaliza la
-  persona (`utils/personas.py`); renombra `deudas` → `deudas_old` y
-  `deudas_v2` → `deudas`. Si algo falla, rollback: `deudas` queda intacta.
-- `deudas_old` (con su índice, su trigger `updated_en`, la vista
-  `vw_deudas_activas` y la FK de `deuda_pagos`, que el `RENAME` se lleva)
-  queda como archivo histórico; nada la lee.
+Migración (`reestructurar_deudas()` en `db/schema_migrations.py`, corre sola
+en `inicializar()`; no hace nada si la tabla ya tiene `tab`):
+
+- Convierte cualquiera de las dos directo a la final **conservando el
+  sentido** de cada fila (el saldo de cada persona no cambia). No copia
+  `monto_minor` tal cual, como proponía el pedido: en LIBRO nunca tuvo
+  signo, y un pago recibido habría quedado como deuda tuya en `debo`
+  (decisión confirmada con el usuario).
+  - ORIGINAL: cada deuda → su tab (`a_favor` → `me_deben`, `en_contra` →
+    `debo`) con su monto ORIGINAL en positivo, su `fecha_inicio` y su mismo
+    id; su vencimiento, si tenía, pasa a `notas` (`VENCE: AAAA-MM-DD`). Cada
+    pago de `deuda_pagos` → el tab de su deuda, en negativo
+    (`origen_tipo='pago_migrado'`, `origen_id` = id del pago, fecha
+    recortada a `AAAA-MM-DD`, sin concepto → `PAGO`).
+  - LIBRO: los pagos migrados (`pago_migrado`, de tipo opuesto a su deuda)
+    → el tab de su deuda, en negativo; las filas importadas del Excel
+    (`notas` que empiezan con `MIGRADO DESDE EXCEL — TABLA DEUDAS`) →
+    `me_deben`, `en_contra` en negativo; el resto → por su tipo, en
+    positivo. Conserva id y `sincronizado_en`.
+  - **Límite**: una fila de LIBRO cargada a mano como `en_contra` para anotar
+    un pago RECIBIDO no se distingue de una deuda tuya: queda en `debo`.
+- Normaliza la persona (`utils/personas.py`) y elimina `deuda_pagos`,
+  `deudas_old` (y `deudas_old_N`), la vista, la tabla anterior y sus
+  índices/trigger. Todo en una transacción: si algo falla, rollback completo.
+- Si hay datos, antes copia el archivo
+  (`<base>_backup_antes_deudas_<fecha>_<hora>.db`, al lado de la base).
 - Las deudas `incobrable` se migran tal cual (decisión explícita): vuelven a
-  sumar su monto completo — el write-off no tenía contrapartida en filas.
-  Las `saldada` quedan en 0 (deuda + pagos).
+  sumar su monto completo. Las `saldada` quedan en 0 (deuda + pagos).
 
 Reglas de dominio (`DebtsService`): la persona se normaliza (sin espacios de
-más, en mayúsculas); un monto negativo es la dirección contraria (se guarda
-positivo con el tipo invertido); edición y borrado directos (una fila no
-tiene dependencias con estado propio — sección 9). La tabla ya no tiene
-fecha de vencimiento: el routing "Deuda" del Registro la guarda en `notas`.
+más, en mayúsculas); `tab` válido; `monto_minor` entero distinto de 0, con
+su signo tal cual; edición y borrado directos (una fila no tiene
+dependencias con estado propio — sección 9). El routing "Deuda" del Registro
+guarda el vencimiento en `notas`.
 
-Snapshots (sección 21): `deudas_mensuales` suma estas filas al cierre de
-cada mes, así que un mes cerrado solo cambia si se carga, edita o borra una
-fila con fecha de ese mes — un pago de hoy ya no lo desactualiza.
+Snapshots (sección 21): `deudas_mensuales` guarda `SUM(monto_minor)` por
+(persona, tab, moneda) al cierre de cada mes, así que un mes cerrado solo
+cambia si se carga, edita o borra una fila con fecha de ese mes.
 
-Importación del Excel: `migration/migrar_deudas.py` (TABLA DEUDAS en CSV).
+Importación del Excel: `migration/migrar_deudas.py` (TABLA DEUDAS en CSV):
+todo va a `me_deben` — PRECIO positivo suma; PRECIO negativo, la columna
+negativa y las filas de `COBRO DEUDA` restan (pagos recibidos).
+`--reemplazar` borra y vuelve a importar lo que ya se había importado.
+
+## 23. Días de cierre/vencimiento de tarjetas y cronograma editable — ✅ implementado (vía `db/schema_migrations.py`)
+
+`tarjetas_config(cuenta_id UNIQUE, dia_cierre, dia_vencimiento, creada_en,
+updated_en)`: una fila por tarjeta de crédito, con los dos días entre 1 y 31.
+Va en `MIGRACIONES_TABLA` (pedido explícito de no tocar `schema.sql`, como
+los snapshots de la sección 21). Sin trigger: `updated_en` lo escribe el
+upsert de `TarjetasConfigRepository` (`INSERT … ON CONFLICT(cuenta_id) DO
+UPDATE`, así la fila conserva su id y su `creada_en`). La maneja
+`FeesService` (`set_card_config()` / `get_card_config()`): solo tarjetas de
+crédito activas.
+
+Fechas de resumen (`FeesService.card_cycle_dates()`), calculadas, no
+guardadas:
+
+- Cierre: `dia_cierre` de cada mes; si el mes es más corto, su último día
+  (31 → 30 / 28).
+- Vencimiento: `dia_vencimiento` del mismo mes del cierre, o del mes
+  siguiente cuando `dia_vencimiento <= dia_cierre`. El pedido decía `<`; con
+  `=` también va al mes siguiente, porque un resumen no puede vencer el mismo
+  día que cierra.
+- ACTUAL es el último resumen que cerró (cierre <= hoy); ANTERIOR, el de
+  antes; PRÓXIMO, el que cierra después.
+
+1ª cuota (`create_purchase(first_fee_month, first_fee_year)`): el cronograma
+arranca en ese mes en vez del mes de compra. No puede ser anterior al mes de
+compra. Sin esos parámetros sigue arrancando en el mes de compra, que es lo
+que hacen las migraciones y los scripts de `verify/`. La pantalla pasa
+siempre uno: el que sugiere `suggest_first_fee()` o el que se elige a mano.
+La sugerencia es el mes siguiente a la compra, o dos meses después si la
+tarjeta tiene `dia_cierre` y la compra es posterior a ese día; el mismo día
+del cierre todavía entra en ese resumen.
+
+Cronograma editable (`reschedule_fees()`): mueve cuotas a otro mes
+(`cuotas_credito.mes_proyectado` / `anio_proyectado`), con estas reglas
+(sección 9):
+
+- solo las `pendiente`;
+- no una cuota compartida por su cuenta: su gasto compartido tiene la fecha
+  del mes de la cuota, la misma regla que al mover la fecha de la compra;
+- nunca dos cuotas de la misma compra en el mismo mes.
+
+Qué pasa con el cronograma al editar la compra (decisión con el usuario:
+conservar la 1ª cuota):
+
+- `update_purchase_cuotas()` lo rearma desde el mes que tiene hoy la cuota 1.
+  Las cuotas que se habían movido a mano vuelven a meses consecutivos.
+- `update_purchase(fecha a otro mes)` ya no lo rearma desde el mes nuevo:
+  corre cada cuota la misma cantidad de meses que la fecha. Así se conservan
+  la 1ª cuota elegida y las cuotas movidas a mano. Para las compras de
+  siempre, con la 1ª cuota en el mes de compra, el resultado es el mismo
+  que antes.
+
+Las compras ya cargadas no se tocan: siguen con la 1ª cuota en su mes de
+compra.
+
+## 24. Sincronización con Supabase — ✅ implementado (`sync/`, vía `db/schema_migrations.py`)
+
+Módulo de aplicación (`sync/`): `supabase_client.py` (un único cliente por
+proceso), `auth.py` (login con email y contraseña, sesión guardada en
+`.deltabalance_prefs.json` → `"supabase_session"`, nombre de display local →
+`"display_name"`) y `sync_engine.py`. El SQL de Supabase está en
+`sync/supabase_schema.sql` y se corre una vez en el SQL Editor.
+
+**En Supabase**, una tabla genérica, `deltabalance_filas(usuario_id, tabla, clave,
+datos jsonb, hogar_codigo, borrado, actualizado_local, subido_en)`, con clave
+`(usuario_id, tabla, clave)`. `clave` es la clave primaria local como texto: `'12'`,
+o `'3|1'` en `cuentas_saldos` y `hogar_miembros`. Genérica y no una tabla espejo por
+tabla local porque el schema local cambia seguido: con espejos, cada columna nueva
+rompería la subida hasta tocar Supabase a mano. Además:
+
+- `deltabalance_hogar_miembros(codigo, usuario_id)`: quién es miembro de qué hogar,
+  por su `codigo_invitacion`. Se llena al subir cada hogar.
+- RLS: cada usuario lee, escribe y borra solo sus filas, y lee también las
+  compartidas (`hogar_codigo`) de sus hogares. La consulta de "mis hogares" pasa por
+  una función `security definer`, para que la política no se consulte a sí misma.
+
+**Tablas** (`TABLAS_SINCRONIZADAS`, en orden de dependencias): las 10 pedidas más
+`cuentas_saldos`, `cuotas_credito`, `resumenes_tarjeta`, `tarjetas_config` y
+`gasto_compartido_pagos`. Sin estas, una compra llegaría sin sus cuotas y una cuenta
+sin sus saldos. `monedas` no viaja: sale del seed, con los mismos ids en toda base.
+
+**Localmente** (`preparar_sync()`, en cada `inicializar()`):
+
+- `sincronizado_en` en las 15 tablas.
+- `sync_cambios(tabla, clave, operacion, modificado_en)`, que llenan triggers AFTER
+  INSERT / UPDATE / DELETE en cada tabla. Así una edición y un borrado también
+  viajan, sin tocar ningún service ni repositorio.
+- `sync_estado`: la marca con la que la sync apaga esos triggers mientras escribe,
+  dentro de su propia transacción. Nunca se comitea.
+
+Pendiente de subir = lo que está en `sync_cambios`, más las filas con
+`sincronizado_en` NULL (las anteriores a los triggers).
+
+**Reglas** (decisiones con el usuario):
+
+1. Se sube todo lo pendiente del usuario.
+2. Se baja solo lo PROPIO, por ejemplo para recuperar la base en otra computadora.
+   Lo del otro miembro del hogar no baja todavía: los ids son locales de cada base
+   (el gasto #12 de uno no es el #12 del otro, y apunta a una transacción que solo
+   existe en la otra base). Para eso hacen falta ids globales y cambios en la
+   pantalla de Compartidos.
+3. Conflicto: last-write-wins por `actualizado_local`. Es el `modificado_en` del
+   trigger, o `updated_en` / `creada_en`; una fila sin fecha pierde.
+4. La primera sincronización de un usuario en una computadora es una restauración:
+   baja primero y lo remoto gana. Si no, las categorías del seed de una base nueva
+   pisarían las de Supabase. `migration/subir_a_supabase.py` deja la marca de "ya
+   sincronizó", así la computadora original nunca pasa por este caso.
+
+**Límites conocidos:**
+
+- Usar una sola computadora por usuario a la vez: dos bases del mismo usuario
+  generan ids que chocan.
+- Una fila bajada que referencia algo que acá no existe (una FK) se cuenta como
+  error y se saltea.
+- Renombrar la clave primaria de una fila (ej. `usuario_local` en `hogar_miembros`)
+  deja la versión vieja en Supabase.
+- `sync_fila()` existe pero todavía no la llama nadie. Las ediciones privadas suben
+  al abrir la app, al tocar el indicador del Registro o con la sincronización
+  periódica, que es solo de las tablas compartidas.

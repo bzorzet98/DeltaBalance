@@ -312,74 +312,31 @@ CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
 -- =============================================================
 -- DEUDAS
 -- =============================================================
+-- Libro de movimientos (docs/DATA_MODEL_DECISIONS.md sección 22): cada fila
+-- es un movimiento con una persona dentro de un `tab` — 'me_deben' (lo que
+-- te deben) o 'debo' (lo que debés) — y monto_minor CON SIGNO: positivo =
+-- entrada (la deuda crece), negativo = salida (un pago que la baja). El
+-- saldo de una persona en un tab es SUM(monto_minor). No hay pendiente,
+-- estado, vencimiento ni tabla de pagos aparte (deuda_pagos ya no existe).
+--
+-- Las bases con alguna estructura anterior de `deudas` se convierten a esta
+-- en db/schema_migrations.py (reestructurar_deudas()), que corre DESPUÉS de
+-- este archivo. Por eso acá no hay índices, triggers ni vistas sobre las
+-- columnas nuevas: en una base todavía sin convertir, un CREATE INDEX
+-- sobre `tab` fallaría antes de llegar a la migración.
 CREATE TABLE IF NOT EXISTS deudas (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
-
-    entidad_persona                TEXT NOT NULL,
-
-    tipo                           TEXT NOT NULL
-                                   CHECK(tipo IN (
-                                        'a_favor',
-                                        'en_contra'
-                                   )),
-
-    monto_original_minor           INTEGER NOT NULL,
-    monto_pendiente_minor          INTEGER NOT NULL,
-
-    moneda_id                      INTEGER NOT NULL,
-
-    fecha_inicio                   TEXT NOT NULL
-                                   CHECK(fecha_inicio GLOB '????-??-??'),
-
-    fecha_vencimiento              TEXT
-                                   CHECK(
-                                        fecha_vencimiento IS NULL OR
-                                        fecha_vencimiento GLOB '????-??-??'
-                                   ),
-
-    estado                         TEXT NOT NULL DEFAULT 'activa'
-                                   CHECK(estado IN (
-                                        'activa',
-                                        'saldada',
-                                        'incobrable'
-                                   )),
-
-    origen_tipo                    TEXT DEFAULT 'manual',
-    origen_id                      INTEGER,
-
-    notas                          TEXT,
-
-    creada_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_en                     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
-);
-
--- =============================================================
--- DEUDA PAGOS
--- =============================================================
-CREATE TABLE IF NOT EXISTS deuda_pagos (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
-
-    deuda_id                        INTEGER NOT NULL,
-    transaccion_id                  INTEGER,
-    concepto                        TEXT,   -- 'Paid back half', 'Cash at dinner', etc.
-
-    monto_applied_minor             INTEGER NOT NULL,
-
-    tipo_pago                       TEXT NOT NULL DEFAULT 'transaccion'
-                                    CHECK(tipo_pago IN (
-                                        'transaccion',
-                                        'compensacion',
-                                        'ajuste'
-                                    )),
-
-    notas                           TEXT,
-
-    fecha                           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    FOREIGN KEY (deuda_id) REFERENCES deudas(id),
-    FOREIGN KEY (transaccion_id) REFERENCES transacciones(id)
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    entidad_persona TEXT NOT NULL,
+    concepto        TEXT,
+    tab             TEXT NOT NULL CHECK(tab IN ('me_deben', 'debo')),
+    monto_minor     INTEGER NOT NULL,  -- positivo = entrada, negativo = salida
+    moneda_id       INTEGER NOT NULL REFERENCES monedas(id),
+    fecha           TEXT NOT NULL CHECK(fecha GLOB '????-??-??'),
+    notas           TEXT,
+    origen_tipo     TEXT DEFAULT 'manual',
+    origen_id       INTEGER,
+    sincronizado_en TEXT DEFAULT NULL,
+    creada_en       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================
@@ -710,8 +667,9 @@ CREATE TABLE IF NOT EXISTS gastos_compartidos (
 -- =============================================================
 -- GASTO COMPARTIDO PAGOS
 -- =============================================================
--- Espejo exacto de DEUDA PAGOS (ver arriba), pero para pago parcial de
--- gastos_compartidos (Tarea 9, Parte A — docs/PROXIMOS_PASOS.md). La
+-- Nació como espejo de la vieja tabla deuda_pagos (eliminada en la
+-- reestructuración de deudas, docs/DATA_MODEL_DECISIONS.md sección 22),
+-- pero para pago parcial de gastos_compartidos (Tarea 9, Parte A — docs/PROXIMOS_PASOS.md). La
 -- columna gastos_compartidos.monto_pendiente_minor que este pago reduce se
 -- agrega vía db/schema_migrations.py, no acá (mismo motivo que el resto de
 -- las columnas de esa lista: gastos_compartidos ya es una tabla existente).
@@ -886,12 +844,6 @@ ON resumenes_tarjeta(anio, mes);
 CREATE INDEX IF NOT EXISTS idx_resumen_cargos_extra_resumen
 ON resumen_cargos_extra(resumen_id);
 
-CREATE INDEX IF NOT EXISTS idx_deudas_estado
-ON deudas(estado);
-
-CREATE INDEX IF NOT EXISTS idx_deuda_pagos_deuda
-ON deuda_pagos(deuda_id);
-
 CREATE INDEX IF NOT EXISTS idx_recibos_periodo
 ON recibos_sueldo(anio, mes);
 
@@ -953,14 +905,6 @@ CREATE TRIGGER IF NOT EXISTS trg_transacciones_updated
 AFTER UPDATE ON transacciones
 BEGIN
     UPDATE transacciones
-    SET updated_en = CURRENT_TIMESTAMP
-    WHERE id = NEW.id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS trg_deudas_updated
-AFTER UPDATE ON deudas
-BEGIN
-    UPDATE deudas
     SET updated_en = CURRENT_TIMESTAMP
     WHERE id = NEW.id;
 END;
@@ -1045,19 +989,6 @@ LEFT JOIN transacciones t
     AND t.deleted_at IS NULL
 
 GROUP BY c.id, m.id;
-
-CREATE VIEW IF NOT EXISTS vw_deudas_activas AS
-SELECT
-    d.id,
-    d.entidad_persona,
-    d.tipo,
-    d.monto_pendiente_minor,
-    m.codigo AS moneda,
-    d.estado
-FROM deudas d
-JOIN monedas m
-    ON m.id = d.moneda_id
-WHERE d.estado = 'activa';
 
 CREATE VIEW IF NOT EXISTS vw_cuotas_pendientes AS
 SELECT
