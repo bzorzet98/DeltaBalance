@@ -1,0 +1,226 @@
+"""
+DeltaBalance — repositories/sync_repository.py
+
+Acceso a datos GENÉRICO para la sincronización con Supabase
+(sync/sync_engine.py, docs/DATA_MODEL_DECISIONS.md sección 24): lee y
+escribe filas de cualquier tabla de TABLAS_SINCRONIZADAS por su clave, y
+maneja las tablas de control sync_cambios / sync_estado que preparan los
+triggers de db/schema_migrations.py (preparar_sync()).
+
+Por qué un repositorio genérico y no un método en cada repositorio de
+entidad: la sync copia filas tal cual (columna → valor) sin conocer su
+significado — un espejo, no una operación de negocio —, y hacerlo por
+entidad obligaría a tocar quince repositorios con el mismo código. Sin
+lógica de negocio: no decide qué fila gana un conflicto ni qué se sube; eso
+es de SyncEngine.
+
+Nombres de tabla y columna: solo los de TABLAS_SINCRONIZADAS y los que
+devuelve PRAGMA table_info (nunca texto que venga de afuera sin validar),
+porque se interpolan en el SQL.
+
+Escrituras de la sync: siempre dentro de escritura_sync(), que pone la
+MARCA_ESCRITURA_SYNC en sync_estado dentro de la misma transacción (y la
+saca antes del COMMIT): así los triggers no vuelven a marcar como
+pendiente lo que la propia sync escribe.
+"""
+
+import sqlite3
+from contextlib import contextmanager
+from typing import Any, Iterator, Optional
+
+from db.database import DatabaseManager
+from db.schema_migrations import MARCA_ESCRITURA_SYNC, SEPARADOR_CLAVE, TABLAS_SINCRONIZADAS, claves_primarias
+
+# Columnas que no viajan (sincronizado_en es local de cada base).
+COLUMNAS_LOCALES = ("sincronizado_en",)
+
+
+class SyncRepository:
+    def __init__(self, db: DatabaseManager):
+        self._db = db
+        self._columnas_cache: dict[str, list[str]] = {}
+
+    # ----------------------------------------------------------
+    # ESTRUCTURA
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _validar_tabla(tabla: str) -> str:
+        if tabla not in TABLAS_SINCRONIZADAS:
+            raise ValueError(f"'{tabla}' no es una tabla sincronizada.")
+        return tabla
+
+    def columnas(self, tabla: str) -> list[str]:
+        """Columnas reales de la tabla en esta base (PRAGMA table_info)."""
+        if tabla not in self._columnas_cache:
+            filas = self._db.conn.execute(f"PRAGMA table_info({self._validar_tabla(tabla)});").fetchall()
+            self._columnas_cache[tabla] = [fila[1] for fila in filas]
+        return self._columnas_cache[tabla]
+
+    @staticmethod
+    def clave_de(tabla: str, fila: dict) -> str:
+        return SEPARADOR_CLAVE.join(str(fila[columna]) for columna in claves_primarias(tabla))
+
+    @staticmethod
+    def valores_de_clave(tabla: str, clave: str) -> tuple[str, ...]:
+        """Inversa de clave_de() (como texto: SQLite aplica la afinidad de la columna al comparar)."""
+        columnas = claves_primarias(tabla)
+        return tuple(clave.split(SEPARADOR_CLAVE, len(columnas) - 1))
+
+    def _where_clave(self, tabla: str) -> str:
+        return " AND ".join(f"{columna} = ?" for columna in claves_primarias(tabla))
+
+    # ----------------------------------------------------------
+    # LECTURA
+    # ----------------------------------------------------------
+
+    def fila(self, tabla: str, clave: str) -> Optional[dict]:
+        fila = self._db.conn.execute(
+            f"SELECT * FROM {self._validar_tabla(tabla)} WHERE {self._where_clave(tabla)};",
+            self.valores_de_clave(tabla, clave),
+        ).fetchone()
+        return dict(fila) if fila is not None else None
+
+    def todas(self, tabla: str) -> list[dict]:
+        return [dict(f) for f in self._db.conn.execute(f"SELECT * FROM {self._validar_tabla(tabla)};").fetchall()]
+
+    def cambio(self, tabla: str, clave: str) -> Optional[dict]:
+        """La entrada de sync_cambios de esa fila, o None si no cambió desde la última sync."""
+        fila = self._db.conn.execute(
+            "SELECT * FROM sync_cambios WHERE tabla = ? AND clave = ?;", (tabla, clave),
+        ).fetchone()
+        return dict(fila) if fila is not None else None
+
+    def pendientes(self, tabla: str) -> list[dict]:
+        """
+        Lo que hay que subir de una tabla: [{clave, operacion, modificado_en,
+        fila (dict o None si se borró)}]. Son las entradas de sync_cambios y,
+        además, las filas que nunca se sincronizaron (sincronizado_en NULL)
+        sin entrada — las que ya existían antes de los triggers —, con
+        modificado_en None.
+        """
+        self._validar_tabla(tabla)
+        pendientes: list[dict] = []
+        vistas: set[str] = set()
+        for cambio in self._db.conn.execute(
+            "SELECT clave, operacion, modificado_en FROM sync_cambios WHERE tabla = ? ORDER BY modificado_en;",
+            (tabla,),
+        ).fetchall():
+            fila = self.fila(tabla, cambio["clave"])
+            pendientes.append({
+                "clave": cambio["clave"],
+                # Una fila 'guardado' que ya no existe se borró después (y viceversa).
+                "operacion": "guardado" if fila is not None else "borrado",
+                "modificado_en": cambio["modificado_en"],
+                "fila": fila,
+            })
+            vistas.add(cambio["clave"])
+        for fila in self._db.conn.execute(f"SELECT * FROM {tabla} WHERE sincronizado_en IS NULL;").fetchall():
+            fila = dict(fila)
+            clave = self.clave_de(tabla, fila)
+            if clave not in vistas:
+                pendientes.append({"clave": clave, "operacion": "guardado", "modificado_en": None, "fila": fila})
+        return pendientes
+
+    def contar_pendientes(self) -> int:
+        """Cuántas filas de todas las tablas sincronizadas faltan subir."""
+        total = self._db.conn.execute("SELECT COUNT(*) FROM sync_cambios;").fetchone()[0]
+        for tabla in TABLAS_SINCRONIZADAS:
+            separador = f" || '{SEPARADOR_CLAVE}' || "
+            clave_sql = separador.join(f"CAST(t.{columna} AS TEXT)" for columna in claves_primarias(tabla))
+            sql = (
+                f"SELECT COUNT(*) FROM {tabla} t WHERE t.sincronizado_en IS NULL AND NOT EXISTS "
+                f"(SELECT 1 FROM sync_cambios c WHERE c.tabla = ? AND c.clave = {clave_sql});"
+            )
+            total += self._db.conn.execute(sql, (tabla,)).fetchone()[0]
+        return total
+
+    def hogar_codigo(self, tabla: str, fila: dict) -> Optional[str]:
+        """codigo_invitacion del hogar de una fila compartida (None si no es de un hogar o no se encuentra)."""
+        hogar_id: Any = None
+        if tabla == "hogares":
+            return fila.get("codigo_invitacion")
+        if tabla in ("hogar_miembros", "gastos_compartidos"):
+            hogar_id = fila.get("hogar_id")
+        elif tabla == "gasto_compartido_pagos":
+            gasto = self._db.conn.execute(
+                "SELECT hogar_id FROM gastos_compartidos WHERE id = ?;", (fila.get("gasto_compartido_id"),),
+            ).fetchone()
+            hogar_id = gasto["hogar_id"] if gasto is not None else None
+        if hogar_id is None:
+            return None
+        hogar = self._db.conn.execute("SELECT codigo_invitacion FROM hogares WHERE id = ?;", (hogar_id,)).fetchone()
+        return hogar["codigo_invitacion"] if hogar is not None else None
+
+    # ----------------------------------------------------------
+    # ESCRITURA (siempre dentro de escritura_sync())
+    # ----------------------------------------------------------
+
+    @contextmanager
+    def escritura_sync(self) -> Iterator[sqlite3.Connection]:
+        """
+        Transacción de la sync, con la marca que apaga los triggers (ver
+        docstring del módulo). Commit al salir; rollback si algo falla.
+        """
+        conn = self._db.conn
+        conn.commit()  # cierra una transacción implícita que hubiera quedado abierta
+        conn.execute("BEGIN;")
+        try:
+            conn.execute("INSERT OR REPLACE INTO sync_estado (clave, valor) VALUES (?, '1');", (MARCA_ESCRITURA_SYNC,))
+            yield conn
+            conn.execute("DELETE FROM sync_estado WHERE clave = ?;", (MARCA_ESCRITURA_SYNC,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    def marcar_sincronizada(self, conn: sqlite3.Connection, tabla: str, clave: str, hasta: str, momento: str) -> None:
+        """
+        La fila quedó igual que en Supabase: sincronizado_en = momento, y su
+        entrada de sync_cambios se borra si es de `hasta` o antes (el
+        modificado_en que se subió, o cuándo se leyeron los pendientes). Si
+        volvió a cambiar mientras se subía, su modificado_en es posterior:
+        sigue pendiente para la próxima.
+        """
+        conn.execute(
+            f"UPDATE {self._validar_tabla(tabla)} SET sincronizado_en = ? WHERE {self._where_clave(tabla)};",
+            (momento, *self.valores_de_clave(tabla, clave)),
+        )
+        conn.execute(
+            "DELETE FROM sync_cambios WHERE tabla = ? AND clave = ? AND modificado_en <= ?;", (tabla, clave, hasta),
+        )
+
+    def quitar_cambio(self, conn: sqlite3.Connection, tabla: str, clave: str) -> None:
+        conn.execute("DELETE FROM sync_cambios WHERE tabla = ? AND clave = ?;", (tabla, clave))
+
+    def guardar_fila(self, conn: sqlite3.Connection, tabla: str, datos: dict, momento: str) -> None:
+        """
+        INSERT o UPDATE por clave de una fila que vino de Supabase, solo con
+        las columnas que existen en esta base, y sincronizado_en = momento.
+        Puede lanzar sqlite3.IntegrityError (ej. una FK a una fila que acá
+        no está): el caller la cuenta como error y sigue.
+        """
+        columnas_locales = self.columnas(tabla)
+        valores = {c: v for c, v in datos.items() if c in columnas_locales and c not in COLUMNAS_LOCALES}
+        valores["sincronizado_en"] = momento
+        clave = self.clave_de(tabla, valores)
+        if self.fila(tabla, clave) is None:
+            columnas = list(valores)
+            conn.execute(
+                f"INSERT INTO {tabla} ({', '.join(columnas)}) VALUES ({', '.join('?' for _ in columnas)});",
+                tuple(valores[c] for c in columnas),
+            )
+            return
+        pk = claves_primarias(tabla)
+        asignaciones = [c for c in valores if c not in pk]
+        conn.execute(
+            f"UPDATE {tabla} SET {', '.join(f'{c} = ?' for c in asignaciones)} WHERE {self._where_clave(tabla)};",
+            (*(valores[c] for c in asignaciones), *self.valores_de_clave(tabla, clave)),
+        )
+
+    def borrar_fila(self, conn: sqlite3.Connection, tabla: str, clave: str) -> None:
+        """DELETE por clave (un borrado que vino de Supabase). Puede lanzar sqlite3.IntegrityError (FK)."""
+        conn.execute(
+            f"DELETE FROM {self._validar_tabla(tabla)} WHERE {self._where_clave(tabla)};",
+            self.valores_de_clave(tabla, clave),
+        )

@@ -64,6 +64,27 @@ Tres detalles que `visible` solo no resuelve:
    selección, que vive en page.overlay y si no quedaría encima de las
    otras pantallas). Opt-in: una pantalla sin hooks no hace nada distinto.
 
+--- Sesión y sincronización con Supabase (sync/) ---
+
+Al abrir: con una sesión guardada (AuthService.is_logged_in(), no toca la
+red) se arma la app directo y se lanza una sincronización completa en
+segundo plano (page.run_thread: la sync abre su propia conexión SQLite en
+ese hilo); sin sesión, la pantalla de login (ui/screens/login.py). Login
+exitoso → primera sincronización → la app; "TRABAJAR SIN CONEXIÓN" → la
+app sin sincronizar.
+
+Cada INTERVALO_SYNC_COMPARTIDAS_S se sincronizan las tablas compartidas
+(una tarea async: asyncio.sleep + asyncio.to_thread, en vez de un
+threading.Thread con time.sleep). Si una sincronización bajó filas, la
+pantalla visible se reconstruye y las demás se marcan para reconstruirse al
+volver: lo que escribe la sync (otra conexión) no suma a
+conn.total_changes de la conexión de la app (punto 2 de arriba).
+
+El SyncEngine queda registrado (sync.sync_engine.registrar_motor()) para el
+indicador de sincronización del Registro. Parte inferior de la sidebar:
+nombre de display (click para editarlo, AuthService.set_display_name()),
+email y CERRAR SESIÓN (o INICIAR SESIÓN si se trabaja sin conexión).
+
 """
 import asyncio
 from typing import Callable, Iterator, Optional
@@ -82,8 +103,11 @@ from services.shared_expenses_service import SharedExpensesService
 from services.snapshots_service import SnapshotsService
 from services.transaction_service import TransactionService
 from services.ingresos_proyectados_service import IngresosProyectadosService
+from sync.auth import AuthService
+from sync.sync_engine import ESTADO_SINCRONIZANDO, TABLAS_COMPARTIDAS, SyncEngine, registrar_motor
 
 from ui.screens import ingresos as ingresos_screen
+from ui.screens import login as login_screen
 from ui.screens import ahorros as ahorros_screen
 from ui.screens import categorias as categorias_screen
 from ui.screens import compras_cuotas as compras_cuotas_screen
@@ -105,6 +129,14 @@ COLOR_FONDO_APP = "#1a1a1a"
 SCROLL_RESTAURAR_DELAY_S = 0.05
 # Throttling de on_scroll (default de Flet: 10 ms) — ver docstring, punto 1.
 SCROLL_INTERVALO_MS = 200
+# Sincronización de las tablas compartidas en segundo plano.
+INTERVALO_SYNC_COMPARTIDAS_S = 300
+# Área de usuario, al pie de la sidebar.
+USUARIO_PADDING_H = 12
+USUARIO_PADDING_V = 4
+USUARIO_ESPACIADO = 2
+USUARIO_TAMANIO_NOMBRE = 14
+USUARIO_TAMANIO_EMAIL = 11
 
 
 def _recorrer_controles(control: ft.Control) -> Iterator[ft.Control]:
@@ -136,6 +168,11 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     ingresos_service = IngresosProyectadosService(db)
     # Snapshots de cierre de mes: fila SALDO ANTERIOR + ↻ de Registro, Deudas y Compartidos.
     snapshots_service = SnapshotsService(db)
+
+    # Sesión de Supabase y sincronización (ver docstring, "Sesión y sincronización").
+    auth = AuthService()
+    motor_sync = SyncEngine(db, auth)
+    registrar_motor(motor_sync)
 
     # ------------------------------------------------------------
     # PANTALLAS PERSISTENTES (ver docstring del módulo, "Navegación")
@@ -341,6 +378,60 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             on_click=_toggle_sidebar,
         )
 
+    # --- Usuario (pie de la sidebar): nombre editable, email, sesión ---
+
+    edicion_nombre = {"activa": False}
+
+    def _nombre_display() -> str:
+        # Sin nombre elegido: la parte del email antes de la @.
+        nombre = auth.get_display_name() or (auth.get_email() or "").split("@")[0]
+        return (nombre or "SIN NOMBRE").upper()
+
+    def _editar_nombre(e=None) -> None:
+        edicion_nombre["activa"] = True
+        _actualizar_sidebar()
+
+    def _area_usuario(expandido: bool) -> ft.Control:
+        if not expandido:
+            return ft.IconButton(icon=ft.Icons.PERSON, tooltip=_nombre_display(), on_click=_toggle_sidebar)
+        if edicion_nombre["activa"]:
+            campo_nombre = ft.TextField(
+                value=auth.get_display_name() or "", hint_text="TU NOMBRE", autofocus=True, dense=True,
+                text_size=USUARIO_TAMANIO_NOMBRE,
+            )
+
+            def _confirmar_nombre(e=None) -> None:
+                if not edicion_nombre["activa"]:
+                    return  # Enter y después blur: una sola vez
+                edicion_nombre["activa"] = False
+                auth.set_display_name(campo_nombre.value or "")
+                _actualizar_sidebar()
+
+            campo_nombre.on_submit = _confirmar_nombre
+            campo_nombre.on_blur = _confirmar_nombre
+            nombre: ft.Control = campo_nombre
+        else:
+            nombre = ft.Container(
+                tooltip="CLICK PARA CAMBIAR EL NOMBRE",
+                on_click=_editar_nombre,
+                content=ft.Text(
+                    _nombre_display(), size=USUARIO_TAMANIO_NOMBRE, weight=ft.FontWeight.BOLD,
+                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                ),
+            )
+        email = ft.Text(
+            auth.get_email() or "SIN SESIÓN — SIN CONEXIÓN", size=USUARIO_TAMANIO_EMAIL, color=ft.Colors.OUTLINE,
+            max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+        )
+        if auth.is_logged_in():
+            boton = ft.TextButton(content=ft.Text("CERRAR SESIÓN"), on_click=_cerrar_sesion)
+        else:
+            boton = ft.TextButton(content=ft.Text("INICIAR SESIÓN"), on_click=lambda e: _mostrar_login())
+        return ft.Container(
+            padding=ft.Padding.symmetric(horizontal=USUARIO_PADDING_H, vertical=USUARIO_PADDING_V),
+            content=ft.Column([nombre, email, boton], spacing=USUARIO_ESPACIADO, tight=True),
+        )
+
     def _contenido_sidebar(expandido: bool) -> ft.Control:
         encabezado = (
             ft.Container(
@@ -378,6 +469,8 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             )
         controles.append(_item_nav("CUENTAS", ft.Icons.ACCOUNT_BALANCE, mostrar_cuentas, expandido))
         controles.append(_item_nav("CATEGORÍAS", ft.Icons.CATEGORY, mostrar_categorias, expandido))
+        controles.append(ft.Divider())
+        controles.append(_area_usuario(expandido))
         controles.append(_boton_toggle())
 
         return ft.Column(controles, expand=True)
@@ -396,19 +489,96 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         ),
         content=None,
     )
-    sidebar.content = _contenido_sidebar(expandido=not estado_sidebar["colapsado"])
+    # ------------------------------------------------------------
+    # ARRANQUE: LOGIN O APP (ver docstring, "Sesión y sincronización")
+    # ------------------------------------------------------------
 
-    page.controls.clear()
-    page.add(
-        ft.Row(
-            [sidebar, ft.VerticalDivider(width=1), content_area],
-            expand=True,
-            spacing=0,
+    def _ocultar_pantalla_actual() -> None:
+        # Sus hooks esconden lo que vive en page.overlay (ej. la barra flotante del Registro).
+        actual = pantalla_actual["nombre"]
+        if actual in pantallas:
+            _notificar(pantallas[actual], "al_ocultar")
+
+    def _mostrar_app() -> None:
+        _ocultar_pantalla_actual()
+        # Pantallas armadas desde cero: los datos pueden haber cambiado (sync, otra sesión).
+        pantallas.clear()
+        content_stack.controls.clear()
+        cambios_al_ocultar.clear()
+        posiciones_scroll.clear()
+        pantalla_actual["nombre"] = None
+        sidebar.content = _contenido_sidebar(expandido=not estado_sidebar["colapsado"])
+        page.controls.clear()
+        page.add(
+            ft.Row(
+                [sidebar, ft.VerticalDivider(width=1), content_area],
+                expand=True,
+                spacing=0,
+            )
         )
-    )
+        hay_cuentas = len(accounts_service.list_accounts()) > 0
+        if hay_cuentas:
+            mostrar_dashboard()
+        else:
+            mostrar_onboarding()
 
-    hay_cuentas = len(accounts_service.list_accounts()) > 0
-    if hay_cuentas:
-        mostrar_dashboard()
+    async def _al_iniciar_sesion() -> None:
+        # Login exitoso → primera sincronización (en otro hilo) → la app.
+        await asyncio.to_thread(motor_sync.sync_completo)
+        _mostrar_app()
+        _iniciar_sync_periodico()
+
+    def _mostrar_login() -> None:
+        _ocultar_pantalla_actual()
+        page.controls.clear()
+        page.add(login_screen.build(page, auth, on_sesion_iniciada=_al_iniciar_sesion, on_sin_conexion=_mostrar_app))
+
+    async def _cerrar_sesion(e=None) -> None:
+        await asyncio.to_thread(auth.logout)
+        _mostrar_login()
+
+    # --- Sincronización en segundo plano ---
+
+    sync_periodico = {"activo": False}
+    ultimo_refresco: dict[str, object] = {"resultado": None}
+
+    async def _sync_periodico() -> None:
+        while True:
+            await asyncio.sleep(INTERVALO_SYNC_COMPARTIDAS_S)
+            if auth.is_logged_in():
+                await asyncio.to_thread(motor_sync.sync_tablas, TABLAS_COMPARTIDAS)
+
+    def _iniciar_sync_periodico() -> None:
+        if not sync_periodico["activo"]:
+            sync_periodico["activo"] = True
+            page.run_task(_sync_periodico)
+
+    async def _refrescar_por_sync() -> None:
+        # La sync escribió con su propia conexión: _cambios_en_db() no se enteró.
+        for nombre in list(cambios_al_ocultar):
+            cambios_al_ocultar[nombre] = -1  # se reconstruyen al volver
+        actual = pantalla_actual["nombre"]
+        if actual not in pantallas:
+            return
+        _notificar(pantallas[actual], "al_ocultar")
+        content_stack.controls.remove(pantallas.pop(actual))
+        pantalla_actual["nombre"] = None
+        _navegar(actual)
+
+    def _al_cambiar_sync(motor: SyncEngine) -> None:
+        # Corre en el hilo de la sync: a la UI se pasa con page.run_task().
+        resultado = motor.ultimo_resultado
+        if motor.estado == ESTADO_SINCRONIZANDO or resultado is None or resultado is ultimo_refresco["resultado"]:
+            return
+        ultimo_refresco["resultado"] = resultado
+        if resultado.bajadas > 0:
+            page.run_task(_refrescar_por_sync)
+
+    motor_sync.escuchar("app", _al_cambiar_sync)
+
+    if auth.is_logged_in():
+        _mostrar_app()
+        page.run_thread(motor_sync.sync_completo)  # sync silencioso al abrir
+        _iniciar_sync_periodico()
     else:
-        mostrar_onboarding()
+        _mostrar_login()

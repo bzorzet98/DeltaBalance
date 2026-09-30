@@ -15,6 +15,14 @@ TransactionService/SharedExpensesService/SavingsService/DebtsService —
 nunca repositories/ ni db/ directo (CLAUDE.md §2/§3). La firma de build()
 no cambió.
 
+--- Indicador de sincronización ---
+
+A la derecha del título, el estado de la sincronización con Supabase
+(_indicador_sync(): SINCRONIZADO / SINCRONIZANDO… / SIN CONEXIÓN; click =
+sincronizar ahora). Toma el SyncEngine que registró ui/app.py
+(sync.sync_engine.motor_registrado()), así que no hizo falta cambiar la
+firma de build() ni la del dashboard.
+
 --- Estado propio del Registro ---
 
 Período, moneda de la barra de saldo y el BORRADOR de la fila de alta
@@ -47,9 +55,10 @@ comportamiento:
   ignorado.
 - "Deuda": crea la transacción normal primero y después pide persona/
   vencimiento para vincularle una deuda (DebtsService.create(origen_tipo=
-  'transaccion')); debt_type sale del signo (egreso → 'a_favor'). La tabla
-  de deudas (libro de movimientos) ya no tiene fecha de vencimiento: si se
-  carga, va en las notas ("VENCE: AAAA-MM-DD").
+  'transaccion')); el tab sale del signo (egreso → 'me_deben', ingreso →
+  'debo') y el monto va en positivo (la deuda crece). La tabla de deudas ya
+  no tiene fecha de vencimiento: si se carga, va en las notas ("VENCE:
+  AAAA-MM-DD").
 
 --- Filas ---
 
@@ -110,11 +119,20 @@ import flet as ft
 
 from services.accounts_service import AccountsService
 from services.categorias_service import CategoriasService
+from services.debts_service import TABS as TABS_DEUDA
 from services.debts_service import DebtError, DebtsService
 from services.savings_service import SavingsError, SavingsService
 from services.shared_expenses_service import SharedExpensesService
 from services.snapshots_service import SnapshotsService
 from services.transaction_service import TransactionError, TransactionService
+from sync.sync_engine import (
+    ESTADO_SIN_CONEXION,
+    ESTADO_SIN_SESION,
+    ESTADO_SINCRONIZADO,
+    ESTADO_SINCRONIZANDO,
+    SyncEngine,
+    motor_registrado,
+)
 from ui.components import compartir_gasto, dialogo_compra_ahorro
 from ui.components.saldo_anterior import TEXTO_SALDO_ANTERIOR, TOOLTIP_SALDO_ANTERIOR, boton_recalcular
 from ui.components.campo_filtrable import CampoFiltrable
@@ -135,11 +153,14 @@ from ui.components.tabla_planilla import (
     estilo_campo,
     mostrar_mensaje,
     pantalla_planilla,
+    refrescar,
     sin_auto_update,
     sin_borde,
     texto_celda,
 )
 from ui.theme.tabla_tokens import (
+    BG_SUPERFICIE,
+    BORDER_DEFAULT,
     TEXT_ACCENT,
     TEXT_NEGATIVO,
     TEXT_POSITIVO,
@@ -170,6 +191,20 @@ MENSAJE_SIGNO_NO_EDITABLE = (
     "CAMBIAR UN GASTO A INGRESO (O AL REVÉS) TODAVÍA NO SE PUEDE DESDE LA TABLA: "
     "BORRALO Y CARGALO DE NUEVO CON EL SIGNO CORRECTO."
 )
+
+# Indicador de sincronización con Supabase (barra superior, a la derecha del título).
+COLOR_SYNC_EN_CURSO = "#f5b942"  # amarillo: no hay token de "en curso" en ui/theme/tabla_tokens.py
+DIAMETRO_PUNTO_SYNC = 10
+PADDING_INDICADOR_H = 12
+ALTURA_INDICADOR = 36
+RADIO_INDICADOR = 18
+# estado de SyncEngine → (texto, color).
+ESTADOS_INDICADOR_SYNC = {
+    ESTADO_SINCRONIZADO: ("SINCRONIZADO", TEXT_POSITIVO),
+    ESTADO_SINCRONIZANDO: ("SINCRONIZANDO…", COLOR_SYNC_EN_CURSO),
+    ESTADO_SIN_CONEXION: ("SIN CONEXIÓN", TEXT_NEGATIVO),
+    ESTADO_SIN_SESION: ("SIN CONEXIÓN", TEXT_NEGATIVO),
+}
 
 # Categorías especiales de routing de la fila de alta — clave:
 # (categoria_principal, subcategoria), mismo criterio que
@@ -296,9 +331,10 @@ def build(
     def _cargar_deudas_vinculadas() -> None:
         """transacción id → deudas con origen_tipo='transaccion' que la apuntan (ícono handshake)."""
         vinculadas: dict[int, list[dict]] = {}
-        for deuda in debts_service.list_all():
-            if deuda["origen_tipo"] == "transaccion" and deuda["origen_id"] is not None:
-                vinculadas.setdefault(deuda["origen_id"], []).append(dict(deuda))
+        for tab in TABS_DEUDA:
+            for deuda in debts_service.list_by_tab(tab):
+                if deuda["origen_tipo"] == "transaccion" and deuda["origen_id"] is not None:
+                    vinculadas.setdefault(deuda["origen_id"], []).append(dict(deuda))
         datos["deudas"] = vinculadas
 
     def _es_egreso(t: dict) -> bool:
@@ -696,8 +732,8 @@ def build(
         campo_persona = ft.TextField(label="PERSONA / ENTIDAD", width=ANCHO_DIALOGO_ROUTING, autofocus=True)
         campo_vencimiento = ft.TextField(label="FECHA DE VENCIMIENTO (OPCIONAL, AAAA-MM-DD)", width=ANCHO_DIALOGO_ROUTING)
         # Egreso (le diste plata a alguien) → te debe; ingreso (te prestaron) → le debés.
-        debt_type = "a_favor" if monto < 0 else "en_contra"
-        texto_direccion = "TE DEBE" if debt_type == "a_favor" else "LE DEBÉS"
+        tab_deuda = "me_deben" if monto < 0 else "debo"
+        texto_direccion = "TE DEBE" if tab_deuda == "me_deben" else "LE DEBÉS"
 
         def _cancelar(e=None) -> None:
             _cerrar_dialogo()
@@ -721,8 +757,8 @@ def build(
                 resultado_deuda = debts_service.create(
                     entidad_persona=persona,
                     concepto=concepto,
-                    tipo=debt_type,
-                    # Positivo: el sentido lo da el tipo (libro de deudas, DebtsService).
+                    tab=tab_deuda,
+                    # Positivo: la deuda crece (negativo sería un pago, DebtsService).
                     monto_minor=amount_to_minor(abs(monto), moneda["decimales"]),
                     moneda_id=moneda["id"],
                     fecha=fecha_str,
@@ -950,14 +986,14 @@ def build(
         # $ y "¿DE CUÁNTO?" arrancan con el monto del movimiento.
         monto_movimiento = f"{t['monto_minor'] / 10 ** decimales:.2f}"
         campo_persona = ft.TextField(label="PERSONA", width=ANCHO_DIALOGO_ROUTING, autofocus=True)
-        dropdown_tipo = ft.Dropdown(
+        dropdown_tab = ft.Dropdown(
             label="TIPO", width=ANCHO_TIPO_DEUDA,
             options=[
-                ft.dropdown.Option(key="a_favor", text="ME DEBEN"),
-                ft.dropdown.Option(key="en_contra", text="DEBO"),
+                ft.dropdown.Option(key="me_deben", text="ME DEBEN"),
+                ft.dropdown.Option(key="debo", text="DEBO"),
             ],
             # Mismo criterio que el routing "Deuda": egreso (pusiste vos) → te deben.
-            value="a_favor" if _es_egreso(t) else "en_contra",
+            value="me_deben" if _es_egreso(t) else "debo",
         )
         campo_valor = CampoTipoValor(
             page, orden=(TIPO_MONTO, TIPO_COEFICIENTE, TIPO_PORCENTAJE), decimales=decimales, con_base=True,
@@ -980,7 +1016,7 @@ def build(
                 resultado = debts_service.create(
                     entidad_persona=persona,
                     concepto=t["concepto"],
-                    tipo=dropdown_tipo.value,
+                    tab=dropdown_tab.value,
                     monto_minor=monto_minor,
                     moneda_id=t["moneda_id"],
                     fecha=t["fecha"],
@@ -1008,13 +1044,16 @@ def build(
                     color=TEXT_SECONDARY),
         ]
         for deuda in existentes:
-            direccion = "TE DEBE" if deuda["tipo"] == "a_favor" else "LE DEBÉS"
-            monto_deuda = amount_display(deuda["monto_minor"], deuda["decimales"], deuda["currency_symbol"] or "")
+            direccion = "TE DEBE" if deuda["tab"] == "me_deben" else "LE DEBÉS"
+            signo = "-" if deuda["monto_minor"] < 0 else ""
+            monto_deuda = signo + amount_display(
+                abs(deuda["monto_minor"]), deuda["decimales"], deuda["currency_symbol"] or "",
+            )
             controles.append(ft.Text(
                 f"YA VINCULADA: {deuda['entidad_persona'].upper()} — {direccion} {monto_deuda}",
                 color=TEXT_ACCENT,
             ))
-        controles += [campo_persona, dropdown_tipo, campo_valor.control]
+        controles += [campo_persona, dropdown_tab, campo_valor.control]
 
         page.show_dialog(ft.AlertDialog(
             modal=True,
@@ -1146,4 +1185,79 @@ def build(
     titulo = barra_titulo(
         page, "REGISTRO DE TRANSACCIONES", tabla, ui, _al_cambiar_periodo, "BUSCAR EN EL REGISTRO…",
     )
-    return pantalla_planilla([titulo, contenedor_saldos, control_tabla])
+    # El indicador de sync va a la derecha del título (barra_titulo() no tiene lugar para controles extra).
+    barra_superior = ft.Row(
+        [ft.Container(content=titulo, expand=True), _indicador_sync(page)],
+        spacing=ESPACIADO * 2,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+    return pantalla_planilla([barra_superior, contenedor_saldos, control_tabla])
+
+
+def _indicador_sync(page: ft.Page) -> ft.Control:
+    """
+    Estado de la sincronización con Supabase (sync/sync_engine.py, el motor
+    que registró ui/app.py): verde SINCRONIZADO, amarillo SINCRONIZANDO…,
+    rojo SIN CONEXIÓN (también trabajando sin sesión). Tooltip: la última
+    sincronización y su resultado. Click: fuerza una sincronización completa
+    en otro hilo. El motor avisa cada cambio de estado desde el hilo de la
+    sync: el repintado pasa a la UI con page.run_task(). El oyente se
+    registra con una clave fija ("registro"): cuando el Registro se
+    reconstruye, el indicador nuevo reemplaza al viejo.
+    """
+    motor = motor_registrado()
+    punto = ft.Container(width=DIAMETRO_PUNTO_SYNC, height=DIAMETRO_PUNTO_SYNC, border_radius=DIAMETRO_PUNTO_SYNC / 2)
+    texto = ft.Text(size=TypographyTokens.REGISTRO_FONT_SALDO_BAR, weight=ft.FontWeight.W_500)
+    indicador = ft.Container(
+        height=ALTURA_INDICADOR,
+        padding=ft.Padding.symmetric(horizontal=PADDING_INDICADOR_H),
+        bgcolor=BG_SUPERFICIE,
+        border=ft.Border.all(1, BORDER_DEFAULT),
+        border_radius=RADIO_INDICADOR,
+        alignment=ft.Alignment.CENTER,
+        content=ft.Row([punto, texto], spacing=ESPACIADO, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+    )
+
+    def _estado() -> str:
+        return motor.estado if motor is not None and motor.hay_sesion() else ESTADO_SIN_SESION
+
+    def _tooltip(estado: str) -> str:
+        if estado == ESTADO_SIN_SESION:
+            return "TRABAJANDO SIN CONEXIÓN: INICIÁ SESIÓN DESDE LA BARRA LATERAL PARA SINCRONIZAR."
+        if estado == ESTADO_SINCRONIZANDO:
+            return "SINCRONIZANDO CON SUPABASE…"
+        partes = []
+        if motor.ultima_sync is not None:
+            partes.append(f"ÚLTIMA SINCRONIZACIÓN: {motor.ultima_sync:%H:%M}")
+        if motor.ultimo_resultado is not None:
+            partes.append(motor.ultimo_resultado.mensaje)
+        partes.append("CLICK PARA SINCRONIZAR AHORA.")
+        return "\n".join(partes)
+
+    def _pintar() -> None:
+        estado = _estado()
+        etiqueta, color = ESTADOS_INDICADOR_SYNC.get(estado, ESTADOS_INDICADOR_SYNC[ESTADO_SIN_CONEXION])
+        punto.bgcolor = color
+        texto.value = etiqueta
+        texto.color = color
+        indicador.tooltip = _tooltip(estado)
+
+    async def _repintar() -> None:
+        _pintar()
+        refrescar(page, indicador)
+
+    def _al_cambiar(_motor: SyncEngine) -> None:
+        page.run_task(_repintar)  # llega desde el hilo de la sync
+
+    def _forzar(e=None) -> None:
+        if motor is None or not motor.hay_sesion():
+            mostrar_mensaje(page, "INICIÁ SESIÓN DESDE LA BARRA LATERAL PARA SINCRONIZAR.", es_error=True)
+            return
+        page.run_thread(motor.sync_completo)  # el motor avisa SINCRONIZANDO… y el resultado
+        sin_auto_update()
+
+    indicador.on_click = _forzar
+    if motor is not None:
+        motor.escuchar("registro", _al_cambiar)
+    _pintar()
+    return indicador

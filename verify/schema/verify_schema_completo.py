@@ -39,7 +39,7 @@ from db.schema_migrations import MIGRACIONES_COLUMNA
 TABLAS_MINIMAS = [
     "monedas", "cuentas", "cuentas_saldos", "categorias", "empleos",
     "transacciones", "resumenes_tarjeta", "compras_cuotas", "cuotas_credito",
-    "deudas", "deuda_pagos", "presupuestos", "ingresos_proyectados",
+    "deudas", "presupuestos", "ingresos_proyectados",
     "recibos_sueldo", "descuentos_programados", "tipos_cambio",
     "activos_financieros", "movimientos_activo", "objetivos_ahorro",
     "asignaciones", "hogares", "hogar_miembros", "gastos_compartidos",
@@ -47,7 +47,7 @@ TABLAS_MINIMAS = [
 ]
 
 VISTAS_ESPERADAS = [
-    "vw_balance_cuentas", "vw_deudas_activas", "vw_cuotas_pendientes",
+    "vw_balance_cuentas", "vw_cuotas_pendientes",
     "vw_saldo_neto_hogar",
 ]
 

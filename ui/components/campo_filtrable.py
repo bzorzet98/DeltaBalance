@@ -48,16 +48,28 @@ texto tipeado coincide EXACTO (case-insensitive) con una opción, o si el
 filtrado en curso ya dejó una sola opción visible, se selecciona sola; si
 es ambiguo o no matchea nada, el campo queda con borde de error y SIN
 ningún id seleccionado (nunca se deja un id viejo/inválido en silencio).
-NAVEGACIÓN POR FLECHAS (arriba/abajo resaltando una sugerencia): NO
-implementada — hacerla bien requeriría interceptar eventos de teclado
-crudos sobre un TextField que ya consume el foco (vía ft.KeyboardListener
-envolviéndolo), y no hay forma de confirmar sin correr la app si el
-wrapper realmente recibe esos eventos mientras el TextField interno tiene
-el foco (comportamiento de Flutter no documentado en
-docs/FLET_API_NOTES.md). Dado que ya reemplazamos dos controles nativos
-por problemas no confirmables sin correr la app, se prefirió no apilar un
-tercer mecanismo especulativo — click funciona siempre, Enter cubre el
-caso de match único/exacto sin necesitar resaltado visual.
+
+NAVEGACIÓN POR FLECHAS: con la lista de sugerencias abierta, ↓ resalta la
+siguiente y ↑ la anterior (sin nada resaltado, ↓ va a la primera y ↑ a la
+última; en los bordes se queda), con fondo BG_FILA_SEL; si la lista tiene
+scroll, se corre para que la resaltada quede a la vista. Enter con una
+resaltada la confirma (igual que un click) y avanza (on_avanzar); sin
+resaltada, Enter sigue como antes (_confirmar_por_texto()). Cambiar el
+texto o reabrir la lista borra el resaltado. Las teclas llegan por
+page.on_keyboard_event — el mismo mecanismo que ya usa TablaPlanilla para
+Tab/Enter en la fila de alta (tab_a_confirmar()), que recibe las teclas
+con el foco en un TextField —, no por un ft.KeyboardListener alrededor del
+campo (no confirmado que reciba teclas mientras el TextField interno tiene
+el foco). Un despachador por página (_registrar_teclado()) que envuelve al
+manejador que ya hubiera (y TablaPlanilla, a su vez, envuelve al que
+encuentra): solo actúa el campo que tiene el foco (_TECLADO[...]["activo"],
+lo marca _on_focus() y lo limpia _on_blur()). Se registra en la página
+REAL (self._campo.page): dentro de TablaPlanilla, `page` es un
+_ActualizacionLocal, y asignarle on_keyboard_event no llegaría a la
+página. Sin confirmar corriendo la app: la etiqueta de las teclas
+("Arrow Down"/"Arrow Up", KeyboardEvent.key de Flutter) y que el cursor del
+TextField también se mueve al principio/fin con ↑/↓ (efecto de Flutter,
+inofensivo en un campo de una línea).
 
 "Blur vs. click" (problema clásico de cualquier UI, no específico de
 Flet): clickear una sugerencia dispara blur en el TextField (Flutter
@@ -101,15 +113,56 @@ control de UI genérico, recibe sus opciones ya resueltas por el caller
 """
 
 import asyncio
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import flet as ft
+
+from ui.theme.tabla_tokens import BG_FILA_SEL
 
 # --- Configuración de layout ---
 MAX_SUGERENCIAS = 50  # mostramos todas las que matcheen, el scroll las contiene
 ALTURA_ITEM_SUGERENCIA = 36
 ALTURA_MAX_LISTA = 220  # ~6 ítems visibles, el resto con scroll
 BLUR_DELAY_SEGUNDOS = 0.2
+# Navegación por flechas (KeyboardEvent.key de Flet: etiqueta de la tecla lógica de Flutter).
+TECLA_ABAJO = "Arrow Down"
+TECLA_ARRIBA = "Arrow Up"
+
+
+# --- Teclado: un despachador de page.on_keyboard_event por página (ver docstring) ---
+
+_TECLADO: dict[int, dict[str, Any]] = {}
+
+
+def _registrar_teclado(page: ft.Page) -> dict[str, Any]:
+    """
+    El estado de teclado de la página ({"activo": campo con el foco o None}).
+    La primera vez registra el despachador, envolviendo al manejador que ya
+    hubiera; si no había ninguno, hace un update completo para que el
+    cliente empiece a mandar las teclas.
+    """
+    estado = _TECLADO.get(id(page))
+    if estado is not None:
+        return estado
+    estado = {"activo": None}
+    _TECLADO[id(page)] = estado
+    manejador_previo = page.on_keyboard_event
+
+    def _despachar_tecla(e: ft.KeyboardEvent) -> None:
+        campo = estado["activo"]
+        if campo is not None:
+            campo._al_tecla(e)
+        if manejador_previo is not None:
+            manejador_previo(e)
+        else:
+            # Cada tecla de la app pasa por acá: sin esto, cada una
+            # terminaría en un page.update() completo automático.
+            ft.context.disable_auto_update()
+
+    page.on_keyboard_event = _despachar_tecla
+    if manejador_previo is None:
+        page.update()
+    return estado
 
 class CampoFiltrable:
     """
@@ -163,6 +216,8 @@ class CampoFiltrable:
         # propia) — evita que ese cambio dispare on_change como si el
         # usuario hubiera tipeado y así invalide la selección recién hecha.
         self._suprimir_on_change = False
+        # Estado de teclado de la página (_registrar_teclado()), desde el primer foco.
+        self._teclado: Optional[dict[str, Any]] = None
 
         texto_inicial = ""
         mapa_por_id = dict(opciones)
@@ -183,14 +238,20 @@ class CampoFiltrable:
             on_submit=self._on_submit,
         )
         self._lista_sugerencias = ft.Column(spacing=0)
+        # Navegación por flechas (ver docstring del módulo): lo que se ve
+        # ahora, sus ítems y cuál está resaltado (None = ninguno).
+        self._filtradas: list[tuple[str, str]] = []
+        self._items: list[ft.Container] = []
+        self._indice_activo: Optional[int] = None
+        self._columna_scroll = ft.Column(
+            [self._lista_sugerencias],
+            scroll=ft.ScrollMode.AUTO,
+            spacing=0,
+        )
         self._contenedor_sugerencias = ft.Container(
             width=width,
             height=ALTURA_MAX_LISTA,
-            content=ft.Column(
-                [self._lista_sugerencias],
-                scroll=ft.ScrollMode.AUTO,
-                spacing=0,
-            ),
+            content=self._columna_scroll,
             border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
             border_radius=4,
             bgcolor=ft.Colors.SURFACE,
@@ -241,7 +302,9 @@ class CampoFiltrable:
         if not filtradas:
             self._ocultar_sugerencias()
             return
-        self._lista_sugerencias.controls = [
+        self._filtradas = filtradas
+        self._indice_activo = None  # lista nueva: nada resaltado
+        self._items = [
             ft.Container(
                 content=ft.Text(nombre, size=self._campo.text_size),
                 height=ALTURA_ITEM_SUGERENCIA,
@@ -251,6 +314,7 @@ class CampoFiltrable:
             )
             for id_, nombre in filtradas
         ]
+        self._lista_sugerencias.controls = list(self._items)
         self._contenedor_sugerencias.visible = True
         # Recién acá entra al árbol de foco/render — ver nota en __init__.
         self.control.controls = [self._campo, self._contenedor_sugerencias]
@@ -258,11 +322,40 @@ class CampoFiltrable:
     def _ocultar_sugerencias(self) -> None:
         self._contenedor_sugerencias.visible = False
         self._lista_sugerencias.controls = []
+        self._filtradas, self._items, self._indice_activo = [], [], None
         # Lo saca del árbol por completo (no solo visible=False) — así no
         # queda una subrama invisible-pero-montada entre el TextField y el
         # siguiente control del Row del caller que Tab pueda "pisar" en vez
         # de saltar directo al siguiente campo. Ver docstring del módulo.
         self.control.controls = [self._campo]
+
+    # ----------------------------------------------------------
+    # Navegación por flechas (ver docstring del módulo)
+    # ----------------------------------------------------------
+
+    def _al_tecla(self, e: ft.KeyboardEvent) -> None:
+        """Lo llama el despachador de la página mientras este campo tiene el foco."""
+        if not self._items or e.ctrl or e.alt or e.meta:
+            return
+        ultimo = len(self._items) - 1
+        if e.key == TECLA_ABAJO:
+            nuevo = 0 if self._indice_activo is None else min(self._indice_activo + 1, ultimo)
+        elif e.key == TECLA_ARRIBA:
+            nuevo = ultimo if self._indice_activo is None else max(self._indice_activo - 1, 0)
+        else:
+            return
+        self._resaltar(nuevo)
+
+    def _resaltar(self, indice: int) -> None:
+        if self._indice_activo is not None and self._indice_activo < len(self._items):
+            self._items[self._indice_activo].bgcolor = None
+        self._indice_activo = indice
+        self._items[indice].bgcolor = BG_FILA_SEL
+        self._page.update()
+        # Con scroll, que la resaltada quede a la vista (al final de lo visible, si hace falta).
+        if len(self._items) * ALTURA_ITEM_SUGERENCIA > ALTURA_MAX_LISTA:
+            offset = max(0, (indice + 1) * ALTURA_ITEM_SUGERENCIA - ALTURA_MAX_LISTA)
+            self._page.run_task(self._columna_scroll.scroll_to, offset=offset, duration=0)
 
     # ----------------------------------------------------------
     # Selección
@@ -341,17 +434,29 @@ class CampoFiltrable:
         self._page.update()
 
     def _on_focus(self, e: ft.ControlEvent) -> None:
+        # Flechas: este campo pasa a ser el que recibe las teclas. La página
+        # REAL (self._campo.page, ya montado), no self._page: dentro de
+        # TablaPlanilla es un _ActualizacionLocal (ver docstring del módulo).
+        self._teclado = _registrar_teclado(self._campo.page)
+        self._teclado["activo"] = self
         self._mostrar_sugerencias(self._filtrar(self._campo.value or ""))
         self._page.update()
 
     async def _on_blur(self, e: ft.ControlEvent) -> None:
         # Delay a propósito — ver docstring del módulo ("blur vs. click").
         await asyncio.sleep(BLUR_DELAY_SEGUNDOS)
+        if self._teclado is not None and self._teclado["activo"] is self:
+            self._teclado["activo"] = None  # si el foco ya pasó a otro campo filtrable, es de ese
         self._confirmar_por_texto()
         self._page.update()
 
     def _on_submit(self, e: ft.ControlEvent) -> None:
-        exito = self._confirmar_por_texto()
+        if self._indice_activo is not None and self._indice_activo < len(self._filtradas):
+            # Enter con una sugerencia resaltada (flechas): se confirma esa, como un click.
+            self._aplicar_seleccion(*self._filtradas[self._indice_activo])
+            exito = True
+        else:
+            exito = self._confirmar_por_texto()
         self._page.update()
         if exito and self._on_avanzar:
             self._on_avanzar()
