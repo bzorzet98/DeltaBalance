@@ -478,6 +478,55 @@ class FeesService:
             por_pagina=per_page,
         )
 
+    def list_purchases_due_in_month(self, month: int, year: int) -> list[dict]:
+        """
+        Purchases with at least one fee due in month/year
+        (cuotas_credito.mes_proyectado/anio_proyectado) — the period filter
+        of the Compras en cuotas screen: what is charged that month, not
+        what was bought that month. Every state is included (a cancelled
+        purchase shows up if one of its fees falls in that month).
+
+        The cuotas_credito ↔ compras_cuotas join is done here over two
+        existing repository reads (CuotasCreditoRepository.listar_por_mes()
+        + ComprasCuotasRepository.obtener_enriquecida()), without SQL in
+        the service: one read per purchase due that month.
+
+        Args:
+            month: 1–12.
+            year:  e.g. 2026.
+
+        Returns:
+            One dict per purchase, newest fecha_compra first: the same
+            enriched shape as get_purchase() (account_name, category_name,
+            currency_code, currency_symbol, decimales, …) plus
+              monto_cuota_mes_minor — the fee(s) due that month (sum, with
+                                      the purchase's sign: negative for a
+                                      refund),
+              numeros_cuota_mes     — their numero_cuota, ascending,
+              estados_cuota_mes     — their estado, same order.
+
+        Raises:
+            ValueError if month is not 1–12.
+        """
+        if not 1 <= month <= 12:
+            raise ValueError(f"Month must be between 1 and 12. Received: {month}.")
+        cuotas_por_compra: dict[int, list[sqlite3.Row]] = {}
+        for cuota in self._cuotas_repo.listar_por_mes(month, year):
+            cuotas_por_compra.setdefault(cuota["compra_id"], []).append(cuota)
+
+        compras: list[dict] = []
+        for compra_id, cuotas in cuotas_por_compra.items():
+            compra = self._compras_repo.obtener_enriquecida(compra_id)
+            if compra is None:
+                continue
+            fila = dict(compra)
+            fila["monto_cuota_mes_minor"] = sum(c["monto_cuota_minor"] for c in cuotas)
+            fila["numeros_cuota_mes"] = [c["numero_cuota"] for c in cuotas]
+            fila["estados_cuota_mes"] = [c["estado"] for c in cuotas]
+            compras.append(fila)
+        compras.sort(key=lambda f: (f["fecha_compra"], f["id"]), reverse=True)
+        return compras
+
     def get_fees_for_purchase(self, purchase_id: int) -> list[sqlite3.Row]:
         """
         Returns all fee rows for a given purchase, ordered by fee number.

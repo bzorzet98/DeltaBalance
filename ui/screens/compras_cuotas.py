@@ -18,7 +18,11 @@ utils.money.amount_to_minor().
 Período y moneda de la barra de totales viven en un almacén por página
 (_ESTADOS_UI); el estado de la tabla (búsqueda, filtros, orden, selección,
 anchos — clave "compras_anchos_columnas" en prefs) lo guarda TablaPlanilla.
-La tabla muestra las compras cuya fecha_compra cae en el mes elegido.
+La tabla muestra las compras con al menos una cuota que VENCE en el mes
+elegido (FeesService.list_purchases_due_in_month(), por
+cuotas_credito.mes_proyectado/anio_proyectado — no por fecha de compra), y
+en Monto la cuota de ese mes: lo que se cobra ese mes por cada compra.
+Cuotas muestra cuál vence ("3/6").
 
 --- Barra "TOTAL A PAGAR POR TARJETA" ---
 
@@ -36,9 +40,10 @@ alta con las categorías especiales, y cuentan en el total de la barra.
 
 Concepto, Tarjeta y Categoría (CampoFiltrable, sugerencias flotantes), Monto
 (CampoMonto, persistir_formula=True), Cuotas (default 1), Fecha y Moneda
-(las monedas de la tarjeta elegida). Tab avanza entre campos, igual que
-Enter; Tab en Moneda (el último) lleva el foco al ✓ y ahí Enter confirma y
-guarda (TablaPlanilla.tab_a_confirmar()). Al guardar, la fila se
+(las monedas de la tarjeta elegida). Enter nunca guarda la fila salvo con
+el foco en el ✓: cada campo pasa al siguiente (igual que Tab) y en Moneda,
+el último, Enter o Tab llevan el foco al ✓ sin activarlo; ahí Enter o un
+click confirman (TablaPlanilla.tab_a_confirmar()). Al guardar, la fila se
 reconstruye vacía con el foco en Concepto.
 
 Routing por CATEGORÍA al confirmar (sin cambios):
@@ -59,17 +64,19 @@ TEXT_POSITIVO (plata que vuelve); las compras, "−" en TEXT_NEGATIVO — mismo
 lenguaje visual que el Registro.
 
 Edición inline (CLAUDE.md §10): todas las columnas — Concepto, Banco,
-Categoría, Monto total, Cuotas, Fecha y Moneda (entre las monedas de la
+Categoría, Cuota del mes, Cuotas, Fecha y Moneda (entre las monedas de la
 tarjeta de la fila; el service mantiene el importe mostrado) —, todas vía
 FeesService.update_purchase() salvo Cuotas (update_purchase_cuotas(),
-regenera el cronograma con el mismo total). Monto total se edita en valor
-absoluto y conserva su signo, igual que en el Registro: un reintegro mal
-cargado se corrige sin dejar de ser reintegro (update_purchase() acepta
-totales negativos). Qué se puede corregir lo decide el service (CLAUDE.md
+regenera el cronograma con el mismo total). La cuota del mes se edita con
+el signo que se ve (− compra, + reintegro): un negativo es válido y el
+signo se puede dar vuelta; el nuevo total es cuota × cantidad de cuotas
+(update_purchase() acepta totales negativos). Solo mientras TODAS las
+cuotas siguen pendientes; si vence más de una este mes, no se edita desde
+acá. Qué se puede corregir lo decide el service (CLAUDE.md
 §4): si rechaza, su FeesError se muestra tal cual y la celda vuelve al
 valor anterior. Reglas replicadas en la UI:
-- Cuotas se muestra bloqueada, con el motivo en el tooltip, si alguna
-  cuota ya no está 'pendiente' (pedido explícito).
+- Cuotas y Cuota del mes se muestran bloqueadas, con el motivo en el
+  tooltip, si alguna cuota ya no está 'pendiente' (pedido explícito).
 - Una compra cancelada se muestra atenuada, con todas sus celdas de solo
   lectura y un ícono en la columna de acción.
 El selector de Categoría inline excluye las 3 categorías especiales (una
@@ -144,19 +151,18 @@ COLUMNAS = [
     Columna("concepto", "CONCEPTO", 200),
     Columna("banco", "BANCO", 130, extra_ajuste=EXTRA_AJUSTE_DOT),
     Columna("categoria", "CATEGORÍA", 140),
-    Columna("monto", "MONTO TOTAL", 120, redimensionable=False, alineacion=ft.Alignment.CENTER_RIGHT),
+    # Monto: la cuota que vence en el mes elegido (lo que se cobra ese mes), no el total.
+    Columna("monto", "CUOTA DEL MES", 120, redimensionable=False, alineacion=ft.Alignment.CENTER_RIGHT),
     Columna("cuotas", "CUOTAS", 70, redimensionable=False),
     Columna("fecha", "FECHA", 110, redimensionable=False),
     Columna("moneda", "MONEDA", 80, redimensionable=False),
 ]
 PREF_ANCHOS_COLUMNAS = "compras_anchos_columnas"
 ICONO_ACCION = 14
-# Las compras se piden de a este lote (ordenadas por fecha_compra DESC) hasta
-# pasar el mes elegido — ver _cargar_compras().
-LOTE_COMPRAS = 500
 MONEDA_DEFAULT = "ARS"
 HINT_MONTO_ALTA = "± MONTO"
 TOOLTIP_CUOTAS_BLOQUEADAS = "NO SE PUEDE MODIFICAR: HAY CUOTAS YA PROCESADAS"
+TOOLTIP_VARIAS_CUOTAS = "VENCE MÁS DE UNA CUOTA DE ESTA COMPRA ESTE MES: EL MONTO NO SE EDITA DESDE ACÁ"
 TOOLTIP_CANCELADA = "COMPRA CANCELADA"
 
 
@@ -218,30 +224,20 @@ def build(
 
     def _cargar_compras() -> list[dict]:
         """
-        Compras con fecha_compra en el mes elegido. list_purchases() no
-        filtra por fecha y viene ordenada por fecha_compra DESC: se pide de
-        a LOTE_COMPRAS hasta pasar el mes (antes era un solo lote de 500 y
-        las compras de meses viejos podían quedar afuera). A cada compra se
-        le agrega el estado de sus cuotas y si está compartida.
+        Compras con al menos una cuota que VENCE en el mes elegido, con el
+        monto de esa cuota (FeesService.list_purchases_due_in_month() —
+        antes era la fecha de compra). A cada compra se le agrega el estado
+        de TODAS sus cuotas y si está compartida.
         """
-        mes_str = f"{ui['anio']:04d}-{ui['mes']:02d}"
-        compras: list[dict] = []
-        pagina = 1
-        while True:
-            lote = [dict(c) for c in fees_service.list_purchases(page=pagina, per_page=LOTE_COMPRAS)]  # CLAUDE.md §11
-            for compra in lote:
-                if compra["fecha_compra"][:7] != mes_str:
-                    continue
-                estados = [q["estado"] for q in fees_service.get_fees_for_purchase(compra["id"])]
-                compra["todas_pendientes"] = bool(estados) and all(e == "pendiente" for e in estados)
-                compra["procesada"] = any(e in ("en_resumen", "pagado") for e in estados)
-                _, compra["compartida"] = compartir_compra.build_icon(
-                    page, shared_expenses_service, fees_service, compra, lambda: None,
-                )
-                compras.append(compra)
-            if len(lote) < LOTE_COMPRAS or lote[-1]["fecha_compra"][:7] < mes_str:
-                return compras
-            pagina += 1
+        compras = fees_service.list_purchases_due_in_month(ui["mes"], ui["anio"])  # ya son dicts (CLAUDE.md §11)
+        for compra in compras:
+            estados = [q["estado"] for q in fees_service.get_fees_for_purchase(compra["id"])]
+            compra["todas_pendientes"] = bool(estados) and all(e == "pendiente" for e in estados)
+            compra["procesada"] = any(e in ("en_resumen", "pagado") for e in estados)
+            _, compra["compartida"] = compartir_compra.build_icon(
+                page, shared_expenses_service, fees_service, compra, lambda: None,
+            )
+        return compras
 
     def _moneda(compra: dict) -> dict:
         return monedas_por_codigo.get(compra["currency_code"], {})
@@ -250,9 +246,15 @@ def build(
         return compra["monto_total_minor"] < 0
 
     def _monto_texto(compra: dict) -> str:
-        # Compra = plata que sale (−); reintegro/devolución = plata que vuelve (+).
+        # La cuota del mes. Compra = plata que sale (−); reintegro/devolución = plata que vuelve (+).
         signo = "+" if _es_reintegro(compra) else "-"
-        return f"{signo} {amount_display(abs(compra['monto_total_minor']), compra['decimales'], _moneda(compra).get('simbolo') or '')}"
+        cuota = abs(compra["monto_cuota_mes_minor"])
+        return f"{signo} {amount_display(cuota, compra['decimales'], _moneda(compra).get('simbolo') or '')}"
+
+    def _texto_cuotas(compra: dict) -> str:
+        """Qué cuota vence este mes, de cuántas: "3/6" (o "2+3/6" si vence más de una)."""
+        numeros = "+".join(str(n) for n in compra["numeros_cuota_mes"])
+        return f"{numeros}/{compra['total_cuotas']}"
 
     def _valor_columna(compra: dict, columna: str) -> str:
         """Valor tal como se muestra — base de los filtros por columna y de "Ajustar al contenido"."""
@@ -265,23 +267,24 @@ def build(
         if columna == "monto":
             return _monto_texto(compra)
         if columna == "cuotas":
-            return str(compra["total_cuotas"])
+            return _texto_cuotas(compra)
         if columna == "fecha":
             return compra["fecha_compra"] or ""
         return compra["currency_code"] or ""
 
     def _clave_orden(compra: dict, columna: str) -> Any:
         if columna == "monto":
-            return compra["monto_total_minor"] / (10 ** compra["decimales"])
+            return compra["monto_cuota_mes_minor"] / (10 ** compra["decimales"])
         if columna == "cuotas":
-            return compra["total_cuotas"]
+            return (compra["numeros_cuota_mes"][0], compra["total_cuotas"])
         return _valor_columna(compra, columna).lower()
 
     def _firma(compra: dict) -> tuple:
         """Todo lo que la fila muestra: si no cambió, la fila cacheada se reusa tal cual."""
         return (
             compra["concepto"], compra["cuenta_id"], compra["account_name"], compra["categoria_id"],
-            compra["category_name"], compra["monto_total_minor"], compra["total_cuotas"], compra["fecha_compra"],
+            compra["category_name"], compra["monto_total_minor"], compra["monto_cuota_mes_minor"],
+            tuple(compra["numeros_cuota_mes"]), compra["total_cuotas"], compra["fecha_compra"],
             compra["currency_code"], compra["decimales"], compra["estado"], compra["todas_pendientes"],
             compra["procesada"], compra["compartida"],
         )
@@ -376,7 +379,7 @@ def build(
         )
         # persistir_formula=True: el campo recuerda la fórmula mientras la
         # fila no se guarde. on_confirmar no-op — la fila entera confirma
-        # junta (Tab/Enter en Moneda o ✓).
+        # junta, solo desde el ✓ (Enter con el foco ahí, o click).
         campo_monto = CampoMonto(
             tabla.pagina_alta,
             on_confirmar=lambda monto_minor: None,
@@ -403,8 +406,8 @@ def build(
         )
 
         # Enter avanza al campo siguiente (en Tarjeta/Categoría, vía
-        # on_avanzar de CampoFiltrable); en Moneda, Tab lleva al ✓ y ahí
-        # Enter confirma.
+        # on_avanzar de CampoFiltrable) y nunca guarda la fila; en Moneda, el
+        # último, Enter o Tab llevan al ✓ sin activarlo (ahí Enter confirma).
         campo_concepto.on_submit = lambda e: tabla.enfocar(campo_tarjeta.campo_texto)
         campo_cuotas.on_submit = lambda e: tabla.enfocar(campo_fecha)
         tabla.tab_a_confirmar(dropdown_moneda)
@@ -561,7 +564,7 @@ def build(
                     "monto",
                     texto_celda(texto_monto, color=color_monto, size=TypographyTokens.REGISTRO_FONT_MONTO),
                 ),
-                "cuotas": tabla.celda_lectura("cuotas", texto_celda(str(compra["total_cuotas"]))),
+                "cuotas": tabla.celda_lectura("cuotas", texto_celda(_texto_cuotas(compra))),
                 "fecha": tabla.celda_lectura("fecha", texto_celda(compra["fecha_compra"])),
                 "moneda": _moneda_lectura(),
             }
@@ -578,10 +581,14 @@ def build(
             return _guardar(concepto=nuevo.strip())
 
         def _guardar_monto(monto_minor: int) -> str:
-            # Se edita el valor absoluto; el signo (compra / reintegro) se conserva.
-            if monto_minor <= 0:
-                raise ValueError("EL MONTO TOTAL DEBE SER MAYOR A 0 (EL SIGNO NO SE CAMBIA DESDE ACÁ).")
-            return _guardar(monto_total_minor=-monto_minor if _es_reintegro(compra) else monto_minor)
+            # Se edita la cuota del mes con el signo que se ve: − compra,
+            # + reintegro/devolución. Un negativo es válido y el signo se
+            # puede dar vuelta (update_purchase() acepta totales negativos).
+            # Todas las cuotas de la compra valen lo mismo (split default):
+            # nuevo total = cuota × cantidad de cuotas.
+            if monto_minor == 0:
+                raise ValueError("EL MONTO NO PUEDE SER 0.")
+            return _guardar(monto_total_minor=-monto_minor * compra["total_cuotas"])
 
         def _guardar_moneda(nuevo_codigo: str) -> str:
             return _guardar(moneda_codigo=nuevo_codigo)
@@ -609,18 +616,38 @@ def build(
                 raise ValueError("LA FECHA DEBE TENER EL FORMATO AAAA-MM-DD.") from None
             return _guardar(fecha=nuevo.strip())
 
-        celda_monto = tabla.celda_monto(
-            compra, "monto", texto_monto, color_monto, abs(compra["monto_total_minor"]), compra["decimales"],
-            _guardar_monto,
-        )
+        # Monto (la cuota del mes): editable solo mientras TODAS las cuotas
+        # siguen 'pendiente' — una vez procesadas, no se toca (pedido
+        # explícito; update_purchase() aplica la misma regla, CLAUDE.md §4).
+        # Si vence más de una cuota este mes, el monto mostrado es su suma
+        # y no se edita desde acá.
+        if not compra["todas_pendientes"]:
+            celda_monto = tabla.celda_lectura("monto", texto_celda(
+                texto_monto, color=color_monto, size=TypographyTokens.REGISTRO_FONT_MONTO,
+                tooltip=f"{texto_monto} ({TOOLTIP_CUOTAS_BLOQUEADAS})",
+            ))
+        elif len(compra["numeros_cuota_mes"]) > 1:
+            celda_monto = tabla.celda_lectura("monto", texto_celda(
+                texto_monto, color=color_monto, size=TypographyTokens.REGISTRO_FONT_MONTO,
+                tooltip=f"{texto_monto} ({TOOLTIP_VARIAS_CUOTAS})",
+            ))
+        else:
+            celda_monto = tabla.celda_monto(
+                compra, "monto", texto_monto, color_monto,
+                -compra["monto_cuota_mes_minor"],  # con el signo que se ve (− compra, + reintegro)
+                compra["decimales"], _guardar_monto,
+            )
 
-        # Cuotas: editable solo si TODAS siguen 'pendiente' (pedido
+        # Cuotas: muestra "3/6" (qué cuota vence este mes) y edita la
+        # cantidad total, solo si TODAS siguen 'pendiente' (pedido
         # explícito). La regla completa la aplica update_purchase_cuotas().
         if compra["todas_pendientes"]:
-            celda_cuotas = tabla.celda_texto(compra, "cuotas", str(compra["total_cuotas"]), _guardar_cuotas)
+            celda_cuotas = tabla.celda_texto(
+                compra, "cuotas", _texto_cuotas(compra), _guardar_cuotas, valor_inicial=str(compra["total_cuotas"]),
+            )
         else:
             celda_cuotas = tabla.celda_lectura(
-                "cuotas", texto_celda(str(compra["total_cuotas"]), color=TEXT_MUTED, tooltip=TOOLTIP_CUOTAS_BLOQUEADAS),
+                "cuotas", texto_celda(_texto_cuotas(compra), color=TEXT_MUTED, tooltip=TOOLTIP_CUOTAS_BLOQUEADAS),
             )
 
         return {

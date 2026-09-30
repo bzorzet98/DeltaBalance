@@ -2,14 +2,16 @@
 DeltaBalance — ui/components/tabla_planilla.py
 
 Tabla estilo planilla (tema oscuro) compartida por el Registro de
-transacciones (ui/components/registro_transacciones.py) y Compras en cuotas
-(ui/screens/compras_cuotas.py): encabezados filtrables/ordenables/
-redimensionables, fila de alta pegada al encabezado, filas con edición
-inline, selección múltiple con barra flotante (eliminar / compartir). Más
-las piezas de cabecera que usan las dos pantallas, para que se vean
-idénticas: barra_titulo() (título + buscador + selector de mes),
-barra_resumen() (la barra "saldo por cuenta") y pantalla_planilla() (el
-fondo y márgenes de la pantalla). Paleta en ui/theme/tabla_tokens.py.
+transacciones (ui/components/registro_transacciones.py), Compras en cuotas
+(ui/screens/compras_cuotas.py), Gastos compartidos
+(ui/screens/gastos_compartidos.py) y Deudas (ui/screens/deudas.py):
+encabezados filtrables/ordenables/redimensionables, fila de alta pegada al
+encabezado, filas con edición inline, selección múltiple con barra
+flotante (eliminar / compartir / acciones propias de cada pantalla). Más
+las piezas de cabecera que usan todas, para que se vean idénticas:
+barra_titulo() (título + buscador + selector de mes), barra_resumen() (la
+barra "saldo por cuenta") y pantalla_planilla() (el fondo y márgenes de la
+pantalla). Paleta en ui/theme/tabla_tokens.py.
 
 Cada pantalla aporta solo lo suyo — columnas (Columna), cómo se cargan las
 filas, qué celda va en cada columna (con los helpers celda_texto()/
@@ -75,15 +77,26 @@ fijas un `width` en px; entre las redimensionables se reparten todo lo que
 dejan libre las fijas, sea cual sea el tamaño de la ventana. Las columnas
 de checkbox y de acción también son fijas.
 
-Arrastrar el borde derecho de una columna redimensionable le pasa el
-diferencial a la columna inmediatamente a la derecha (estilo Google
-Sheets), respetando el mínimo de las dos (Columna.ancho_min): el ancho
-total no cambia. Por eso solo tiene handle una columna redimensionable
-cuya vecina de la derecha también lo es. Durante el drag se actualizan
-solo el encabezado y la fila de alta; las filas de datos se ajustan al
-soltar (re-anchar cientos de filas en cada evento de drag era un cuello de
-botella). "Ajustar al contenido"/"Ajustar todas" reparten el espacio entre
-las demás columnas redimensionables en proporción (_repartir()).
+Arrastrar el borde derecho de cualquier columna (salvo la última) le pasa
+el diferencial a la columna inmediatamente a la derecha (estilo Google
+Sheets), respetando el mínimo de las dos: el ancho total no cambia. La
+vecina puede ser redimensionable o fija: "fija" quiere decir que no se
+estira con la ventana, no que no se pueda arrastrar — su ancho en px vive
+en ui["fijos"] y se guarda en prefs junto a las proporciones. Si en el
+borde hay una fija, se trabaja en px: la izquierda crece exactamente lo
+que la vecina cede y el espacio flexible (ui["ancho_util"]) cambia lo
+mismo en sentido contrario. Mínimo: Columna.ancho_min (default
+ANCHO_MIN_COLUMNA, o ANCHO_MIN_COLUMNA_FIJA para una fija); una fija nunca
+exige más que su ancho de diseño. Durante el drag se actualizan solo el
+encabezado y la fila de alta (incluidas sus celdas unidas); las filas de
+datos se ajustan al soltar (re-anchar cientos de filas en cada evento de
+drag era un cuello de botella). "Ajustar al contenido" de una fija le da el
+ancho del contenido (achicando las redimensionables, nunca por debajo de
+sus mínimos); en una redimensionable, y "Ajustar todas", reparten el
+espacio flexible en proporción (_repartir()).
+
+Títulos del encabezado: centrados en la celda entera cuando entran; en
+columnas angostas, en el espacio que dejan los íconos (con tooltip).
 
 Para convertir píxeles (drag, mínimos, posición de las sugerencias) a esas
 proporciones hace falta el ancho real de la tabla: lo informa
@@ -134,13 +147,19 @@ Si hay pocas filas debajo, relleno_tabla estira la tabla lo justo para que
 la lista entre entera (fuera de los límites del Stack no recibiría
 clicks).
 
-tab_a_confirmar(control): con el foco en ese control (el Dropdown de
-Moneda, último campo del alta), Tab lleva el foco al botón ✓ de la fila, y
-ahí Enter confirma (un IconButton enfocado se activa con Enter). El foco se
-fuerza a mano, sin depender de que el recorrido nativo de Tab caiga justo
-en el ✓ (el DropdownMenu tiene su propio ícono de flecha): Tab se detecta
-con page.on_keyboard_event (un despachador por página, _registrar_tecla(),
-que respeta un manejador previo) mientras el control tiene el foco
+Enter en la fila de alta NUNCA guarda la fila, salvo con el foco en el ✓:
+cada campo avanza al siguiente (TextField on_submit, CampoFiltrable/
+CampoMonto on_avanzar — la pantalla arma la cadena) y el último lleva el
+foco al ✓ sin activarlo (enfocar_confirmar()); ahí Enter (o un click)
+confirma — un IconButton enfocado se activa con Enter.
+
+tab_a_confirmar(control): con el foco en ese control (el último campo del
+alta, ej. el Dropdown de Moneda), Tab o Enter llevan el foco al botón ✓ de
+la fila, sin activarlo. El foco se fuerza a mano, sin depender de que el
+recorrido nativo de Tab caiga justo en el ✓ (el DropdownMenu tiene su
+propio ícono de flecha, y no tiene on_submit): la tecla se detecta con
+page.on_keyboard_event (un despachador por página, _registrar_tecla(), que
+respeta un manejador previo) mientras el control tiene el foco
 (on_focus/on_blur). Shift+Tab no se toca.
 
 focus() es async en Flet 0.86.5: se llama con page.run_task() (enfocar()).
@@ -165,11 +184,37 @@ el campo va sin ✓ (no entra): confirma con Enter o al salir.
 fila_atenuada(fila) (ej. compras canceladas) dibuja la fila con
 OPACIDAD_FILA_ATENUADA; qué celdas se pueden editar lo decide la pantalla.
 
---- Compartir ---
+Filas de pie (filas_pie → FilaPie, ej. SALDO ANTERIOR): van al final, después
+de un ft.Divider, con fondo verde/rojo muy sutil según el signo y texto
+tenue; sin checkbox, no se editan ni se seleccionan (no están en _datos, así
+que no entran en la selección, el orden ni la búsqueda). Siguen los anchos
+de columna como cualquier fila y respetan los filtros por columna según
+FilaPie.valores_filtro (ej. el filtro de Banco del Registro).
+
+FilaAlta.unidas: una celda del alta puede ocupar varias columnas fijas
+contiguas (ej. Deudas: selector $/0.XX/% + valor + "¿DE CUÁNTO?" sobre
+Monto orig. + Pendiente, que en el alta no tienen nada propio que
+mostrar). Su ancho es siempre la suma exacta de esas columnas (también
+después de arrastrarlas), así que no tapa a las vecinas; lo que va adentro
+lo recorta la celda.
+
+selector_alta() (SelectorCiclico): para celdas angostas del alta donde un
+ft.Dropdown no entra — un botón de texto que pasa a la opción siguiente.
+
+Columna de acción: accion_fila(fila) devuelve hasta dos íconos de
+icono_accion(). Un ícono con algo ya vinculado queda siempre visible en
+color de acento; uno sin nada vinculado es gris y aparece solo con el
+mouse encima de la fila, igual que el checkbox.
+
+--- Barra flotante: compartir y acciones propias ---
 
 on_compartir recibe TODAS las filas seleccionadas (una o varias): cada
 pantalla decide si abre su flujo de una fila o el de varias filas con el
-mismo coeficiente (ui/components/compartir_varios.py).
+mismo coeficiente (ui/components/compartir_varios.py). acciones_barra
+agrega botones circulares propios de la pantalla (AccionBarra: ej.
+"Registrar pago"); motivo_deshabilitada(filas) los deja grises con el
+motivo en el tooltip. aviso_barra(mensaje) muestra un error en la misma
+barra (en lugar de un SnackBar) hasta que cambia la selección.
 
 --- Sin confirmar corriendo la app (docs/FLET_API_NOTES.md, regla 2) ---
 
@@ -181,9 +226,10 @@ local_position, on_enter/on_exit, mouse_cursor), controles posicionados
 (en particular, que se dispare en el primer layout y no solo al cambiar de
 tamaño), `expand` entero (flex) sobre GestureDetector/Container dentro de
 un Row, expand_loose, ft.context.disable_auto_update(),
-page.on_keyboard_event (que llegue Tab aunque el foco esté en un
+page.on_keyboard_event (que lleguen Tab y Enter aunque el foco esté en un
 Dropdown), que Enter active un IconButton enfocado, ft.DatePicker vía
-page.show_dialog() y page.run_task() sobre focus().
+page.show_dialog(), page.run_task() sobre focus() y que un TextButton de
+SelectorCiclico con alto recortado por la celda se vea completo.
 """
 
 import calendar
@@ -208,6 +254,8 @@ from ui.theme.tabla_tokens import (
     BG_ITEM_HOVER,
     BG_MENU_CTX,
     BG_OVERLAY,
+    BG_PIE_NEGATIVO,
+    BG_PIE_POSITIVO,
     BG_SUPERFICIE,
     BORDER_BARRA,
     BORDER_DEFAULT,
@@ -222,6 +270,7 @@ from ui.theme.tabla_tokens import (
     PESO_MONTO,
     TEXT_ACCENT,
     TEXT_MUTED,
+    TEXT_NEGATIVO,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     TEXT_SOBRE_BOTON,
@@ -232,14 +281,21 @@ from ui.utils.prefs import escribir_pref, leer_pref
 # --- Configuración de layout ---
 
 ANCHO_COL_CHECK = 32
-ANCHO_COL_ACCION = 48  # ✓ de la fila de alta / indicador de la fila (ej. compartido)
+ANCHO_COL_ACCION = 48  # ✓ de la fila de alta / íconos de la fila (icono_accion())
+ANCHO_ICONO_ACCION = ANCHO_COL_ACCION // 2  # entran dos íconos por fila
 ANCHO_BORDE = 1
 ANCHO_MIN_COLUMNA = 80
+# Mínimo default de una columna fija al arrastrarla (nunca más que su ancho de diseño).
+ANCHO_MIN_COLUMNA_FIJA = 56
 # `expand` solo acepta enteros: proporción × FACTOR_FLEX (resolución 0.1).
 FACTOR_FLEX = 10
 # "Ajustar al contenido": ancho aproximado de un carácter a REGISTRO_FONT_CELDA + margen.
 ANCHO_POR_CARACTER = 7.5
 PADDING_AJUSTE = 28
+# Encabezado: ancho aproximado de un carácter del título (REGISTRO_FONT_HEADER,
+# mayúsculas) — decide si el título entra centrado en la celda entera.
+ANCHO_POR_CARACTER_HEADER = 7
+PADDING_TITULO_ANGOSTO = 4
 
 ALTURA_HEADER = 40
 ALTURA_FILA = LayoutTokens.ALTURA_FILA_TABLA
@@ -249,11 +305,16 @@ ALTA_PADDING = 4  # alrededor de cada campo de la fila de alta (vertical de la f
 # Alto total de la fila de alta: celda + padding vertical + borde inferior de acento.
 ALTURA_FILA_ALTA = ALTURA_FILA + 2 * ALTA_PADDING + ANCHO_BORDE
 ALTURA_VACIO = 48  # fila "no hay filas para mostrar"
+ALTURA_SEPARADOR_PIE = 8  # ft.Divider antes de las filas de pie (FilaPie)
+TEXTO_SIN_VALOR = "—"  # celda de una FilaPie sin texto propio
 ALTA_RADIO_CAMPO = 4
 ICONO_HEADER = 16
-ICONO_CALENDARIO = 16
+ICONO_CALENDARIO = 14
 ICONO_ACCION_FILA = 14
-ANCHO_BOTON_CALENDARIO = 32
+ANCHO_BOTON_CALENDARIO = 24
+# El texto de la fecha va casi sin relleno lateral: "AAAA-MM-DD" (~63 px) tiene
+# que entrar junto al botón en una columna Fecha de 100 px.
+PADDING_CAMPO_FECHA_H = 1
 # Por debajo de este ancho (px) una celda en edición va sin botón ✓ (no
 # entra junto al campo): confirma con Enter o al salir.
 ANCHO_MINIMO_CON_BOTON = 100
@@ -268,6 +329,9 @@ SIZE_CHANGE_INTERVAL_MS = 100
 
 # Sugerencias flotantes de CampoFiltrable
 ANCHO_MINIMO_SUGERENCIAS = 160
+
+# SelectorCiclico (celdas angostas del alta)
+PADDING_SELECTOR_CICLICO_H = 4
 
 # Cabecera (barra de título + barra de resumen): buscador, selector de mes
 # y barra de resumen miden lo mismo de alto y usan el mismo tamaño de texto
@@ -332,10 +396,14 @@ ESPACIADO = 8
 RADIO_TABLA = 8
 PADDING_PANTALLA = 16
 
-# Tecla que, con el foco en el control de tab_a_confirmar(), lleva el foco
-# al ✓ de la fila de alta — KeyboardEvent.key de Flet (etiqueta de la tecla
-# lógica de Flutter).
-TECLA_IR_A_CONFIRMAR = "Tab"
+# Teclas que, con el foco en el control de tab_a_confirmar(), llevan el foco
+# al ✓ de la fila de alta (sin activarlo) — KeyboardEvent.key de Flet
+# (etiqueta de la tecla lógica de Flutter).
+TECLAS_IR_A_CONFIRMAR = ("Tab", "Enter", "Numpad Enter")
+
+# Marca (Control.data) de los íconos de icono_accion() que solo se ven con
+# el mouse encima de la fila.
+_SOLO_HOVER = "solo_hover"
 
 
 # ============================================================
@@ -349,7 +417,8 @@ class Columna:
     ancho: int                    # px iniciales (redimensionable: proporción inicial)
     redimensionable: bool = True
     alineacion: ft.Alignment = field(default_factory=lambda: ft.Alignment.CENTER)
-    ancho_min: int = ANCHO_MIN_COLUMNA
+    # None: ANCHO_MIN_COLUMNA (redimensionable) o ANCHO_MIN_COLUMNA_FIJA (fija).
+    ancho_min: Optional[int] = None
     extra_ajuste: int = 0         # px extra en "Ajustar al contenido" (ej. el dot de Banco)
 
 
@@ -359,6 +428,36 @@ class FilaAlta:
     celdas: dict[str, ft.Control]   # clave de columna → campo (sin celda: la pone la tabla)
     boton: ft.Control               # ✓ de la columna de acción
     foco: Optional[ft.Control] = None  # campo que recibe el foco tras un alta (el primero)
+    # Celdas que ocupan varias columnas: clave de la primera → cuántas
+    # (ella incluida). Solo columnas fijas (no redimensionables): su ancho
+    # es la suma de los anchos. El campo va en celdas[clave de la primera].
+    unidas: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass
+class AccionBarra:
+    """Botón circular extra de la barra flotante (además de Eliminar / Compartir)."""
+    icono: str
+    color: str
+    texto: str                                   # ya en MAYÚSCULAS
+    on_click: Callable[[list[dict]], None]       # recibe las filas seleccionadas
+    # filas → motivo (ya en MAYÚSCULAS) para dejar el botón deshabilitado, o None.
+    motivo_deshabilitada: Optional[Callable[[list[dict]], Optional[str]]] = None
+
+
+@dataclass
+class FilaPie:
+    """
+    Fila especial al final de la tabla (ej. SALDO ANTERIOR): sin checkbox, no
+    editable ni seleccionable, texto tenue, fondo verde/rojo muy sutil.
+    """
+    textos: dict[str, str]          # clave de columna → texto (ya en MAYÚSCULAS); las que falten: TEXTO_SIN_VALOR
+    positiva: bool                  # fondo BG_PIE_POSITIVO (True) o BG_PIE_NEGATIVO (False)
+    # Valores para los filtros por columna (ej. {"banco": "BBVA"}): con un
+    # filtro activo en esa columna, la fila se ve solo si su valor está
+    # elegido. Columnas sin valor acá no la filtran.
+    valores_filtro: dict[str, str] = field(default_factory=dict)
+    tooltip: Optional[str] = None
 
 
 @dataclass
@@ -479,6 +578,20 @@ def texto_celda(texto: str, color: str = TEXT_PRIMARY, size: int = TypographyTok
         texto, color=color, size=size, weight=weight, max_lines=1,
         overflow=ft.TextOverflow.ELLIPSIS, tooltip=tooltip or texto or None,
     )
+
+
+def _solo_hover(control: Optional[ft.Control]) -> list[ft.Control]:
+    """
+    Íconos marcados por icono_accion() dentro de lo que devolvió accion_fila():
+    el control, sus `controls` y el `content` de cada uno (alcanza para un
+    ícono suelto o un Row de íconos).
+    """
+    if control is None:
+        return []
+    candidatos: list[Any] = []
+    for hijo in [control, *(getattr(control, "controls", None) or [])]:
+        candidatos += [hijo, getattr(hijo, "content", None)]
+    return [c for c in candidatos if isinstance(c, ft.Control) and c.data == _SOLO_HOVER]
 
 
 def banco_con_dot(color: str, nombre: str) -> ft.Control:
@@ -636,12 +749,17 @@ def barra_resumen(
     moneda_sel: str,
     on_moneda: Callable[[str], None],
     texto_vacio: str,
+    controles_titulo: Optional[list[ft.Control]] = None,
+    acciones: Optional[list[ft.Control]] = None,
 ) -> ft.Control:
     """
     Barra "saldo por cuenta": ícono + título + chips (dot, nombre, monto,
     moneda; scroll horizontal si no entran) + pills de moneda a la derecha
     (la elegida, rellena). `monedas` se muestra ARS primero, después
-    alfabético.
+    alfabético. controles_titulo (opcional) reemplaza al texto del título
+    (ej. selector de hogar + botón de configuración en Gastos compartidos).
+    acciones (opcional): al extremo derecho, después de las pills (ej. ↻
+    recalcular saldos históricos).
     """
     tamanio = TypographyTokens.REGISTRO_FONT_SALDO_BAR
     controles_chips: list[ft.Control] = [
@@ -686,7 +804,9 @@ def barra_resumen(
         content=ft.Row(
             [
                 ft.Icon(icono, size=ICONO_CABECERA, color=TEXT_SECONDARY),
-                ft.Text(titulo, size=tamanio, weight=TypographyTokens.SECTION_TITLE_WEIGHT, color=TEXT_PRIMARY),
+                *(controles_titulo if controles_titulo is not None else [
+                    ft.Text(titulo, size=tamanio, weight=TypographyTokens.SECTION_TITLE_WEIGHT, color=TEXT_PRIMARY),
+                ]),
                 ft.Row(
                     [
                         ft.Container(
@@ -698,6 +818,7 @@ def barra_resumen(
                     expand=True,
                 ),
                 ft.Row(pills, spacing=ESPACIO_DOT),
+                *(acciones or []),
             ],
             spacing=ESPACIO_CHIPS,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -716,19 +837,27 @@ def _estado_tabla(page: ft.Page, clave: str, columnas: list[Columna], pref_ancho
     ui = _ESTADOS.get((id(page), clave))
     if ui is None:
         anchos: dict[str, float] = {c.clave: float(c.ancho) for c in columnas if c.redimensionable}
+        fijos: dict[str, float] = {c.clave: float(c.ancho) for c in columnas if not c.redimensionable}
         guardados = leer_pref(pref_anchos, {})
         if isinstance(guardados, dict):
             for columna, ancho in guardados.items():
-                if columna in anchos and isinstance(ancho, (int, float)) and ancho > 0:
+                if not isinstance(ancho, (int, float)) or ancho <= 0:
+                    continue
+                if columna in anchos:
                     anchos[columna] = float(ancho)
+                elif columna in fijos:
+                    fijos[columna] = float(ancho)
         ui = {
             "busqueda": "",
             "filtros": {},           # columna → set de valores visibles
             "orden": None,           # (columna, ascendente) o None
             "seleccion": set(),      # ids de fila
             "anchos": anchos,        # solo columnas redimensionables (proporciones)
-            "ancho_util": None,      # px para las columnas redimensionables (on_size_change)
+            "fijos": fijos,          # columnas fijas: px (también se arrastran, ver docstring "Columnas")
+            "ancho_tabla": None,     # px de la tabla entera (on_size_change)
+            "ancho_util": None,      # px para las columnas redimensionables (ancho_tabla − fijas − checkbox − acción)
             "confirmando_eliminar": False,
+            "aviso_barra": None,     # error inline de la barra flotante (aviso_barra())
             "visible": True,
             "barra": None,           # barra flotante (page.overlay), una por tabla
             "host_popups": None,     # host de menú/filtro (page.overlay), uno por tabla
@@ -816,6 +945,66 @@ class _CampoFiltrableFlotante(CampoFiltrable):
             self._al_salir()
 
 
+class SelectorCiclico:
+    """
+    Botón de texto que al click (o Enter/Espacio con el foco) pasa a la
+    opción siguiente — para celdas angostas del alta donde un ft.Dropdown no
+    entra (su flecha sola ocupa ~40 px). Ej.: ME DEBEN ↔ DEBO, ARS → USD.
+    `page` puede ser TablaPlanilla.pagina_alta: parchea solo el botón.
+    """
+
+    def __init__(
+        self,
+        page: Any,
+        opciones: list[tuple[str, str]],
+        valor: Optional[str],
+        on_cambio: Callable[[str], None],
+        nombre: str,
+        colores: Optional[dict[str, str]] = None,
+    ):
+        """
+        Args:
+            opciones:  [(clave, texto visible en MAYÚSCULAS), ...], al menos una.
+            valor:     Clave inicial (default: la primera).
+            on_cambio: Recibe la clave nueva.
+            nombre:    Qué se elige (tooltip), ya en MAYÚSCULAS.
+            colores:   clave → color del texto (default TEXT_PRIMARY).
+        """
+        self._page = page
+        self._opciones = opciones
+        self._on_cambio = on_cambio
+        self._colores = colores or {}
+        claves = [clave for clave, _ in opciones]
+        self._indice = claves.index(valor) if valor in claves else 0
+        self._texto = ft.Text(size=TypographyTokens.REGISTRO_FONT_CELDA, weight=PESO_MONTO)
+        textos = " / ".join(texto for _, texto in opciones)
+        self.control = ft.TextButton(
+            content=self._texto,
+            tooltip=f"{nombre}: {textos} (CLICK PARA CAMBIAR)" if len(opciones) > 1 else nombre,
+            style=ft.ButtonStyle(padding=ft.Padding.symmetric(horizontal=PADDING_SELECTOR_CICLICO_H)),
+            on_click=self._siguiente,
+        )
+        self._pintar()
+
+    @property
+    def valor(self) -> str:
+        return self._opciones[self._indice][0]
+
+    def _pintar(self) -> None:
+        clave, texto = self._opciones[self._indice]
+        self._texto.value = texto
+        self._texto.color = self._colores.get(clave, TEXT_PRIMARY)
+
+    def _siguiente(self, e=None) -> None:
+        if len(self._opciones) < 2:
+            sin_auto_update()
+            return
+        self._indice = (self._indice + 1) % len(self._opciones)
+        self._pintar()
+        self._on_cambio(self.valor)
+        self._page.update(self.control)
+
+
 # ============================================================
 # TABLA
 # ============================================================
@@ -842,13 +1031,19 @@ class TablaPlanilla:
         texto_busqueda:   fila → texto donde busca el buscador.
         clave_orden:      (fila, clave) → clave de orden (default: el texto
                           de valor_columna en minúsculas).
-        accion_fila:      fila → ícono de la columna de acción, o None.
+        accion_fila:      fila → contenido de la columna de acción (uno o
+                          dos íconos de icono_accion(), en un Row), o None.
         fila_atenuada:    fila → True para dibujarla atenuada.
         avisos_eliminar:  filas → aviso extra para la confirmación de borrado.
         on_compartir:     filas seleccionadas (una o varias) → abre el flujo
                           de compartir. None = sin botón Compartir.
+        acciones_barra:   Botones extra de la barra flotante (AccionBarra),
+                          después de Eliminar/Compartir.
         al_recargar:      → controles extra a parchear en cada recargar()
                           (ej. la barra de resumen, ya re-armada).
+        filas_pie:        → filas especiales al final (FilaPie, ej. SALDO
+                          ANTERIOR). Se llama en cada redibujo: si calcularlas
+                          cuesta, la pantalla las cachea.
         errores_esperados: excepciones de dominio que rechazan un valor
                           editado (además de ValueError).
         texto_vacio:      Fila que se muestra si no hay filas visibles.
@@ -873,7 +1068,9 @@ class TablaPlanilla:
         fila_atenuada: Optional[Callable[[dict], bool]] = None,
         avisos_eliminar: Optional[Callable[[list[dict]], str]] = None,
         on_compartir: Optional[Callable[[list[dict]], None]] = None,
+        acciones_barra: Optional[list[AccionBarra]] = None,
         al_recargar: Optional[Callable[[], list[ft.Control]]] = None,
+        filas_pie: Optional[Callable[[], list[FilaPie]]] = None,
         errores_esperados: tuple[type[Exception], ...] = (),
         texto_vacio: str = "NO HAY FILAS PARA MOSTRAR.",
     ):
@@ -895,7 +1092,9 @@ class TablaPlanilla:
         self._fila_atenuada = fila_atenuada
         self._avisos_eliminar = avisos_eliminar
         self._on_compartir = on_compartir
+        self._acciones_barra = acciones_barra or []
         self._al_recargar = al_recargar
+        self._filas_pie = filas_pie
         self._errores = (ValueError, *errores_esperados)
         self._texto_vacio = texto_vacio
 
@@ -917,7 +1116,11 @@ class TablaPlanilla:
         # les cambia el `expand` en vivo (las filas de datos, al soltar).
         self._celdas_header: dict[str, ft.Control] = {}
         self._celdas_alta: dict[str, ft.Control] = {}
+        # Celdas unidas del alta: clave de la primera → (celda, claves que ocupa).
+        self._unidas_alta: dict[str, tuple[ft.Container, list[str]]] = {}
         self._alta: Optional[FilaAlta] = None
+        # Celdas de las filas de pie en pantalla (se re-anchan como las demás).
+        self._celdas_pie: list[dict[str, ft.Control]] = []
         # Foco del control de tab_a_confirmar() (None = la fila no usa uno).
         self._foco_tab: Optional[dict] = None
 
@@ -987,6 +1190,7 @@ class TablaPlanilla:
         if limpiar_seleccion:
             self._ui["seleccion"].clear()
             self._ui["confirmando_eliminar"] = False
+            self._ui["aviso_barra"] = None
         self._datos = [dict(f) for f in self._cargar_filas()]
         extras = self._al_recargar() if self._al_recargar else []
         self._redibujar()
@@ -1024,6 +1228,29 @@ class TablaPlanilla:
     def mostrar_error(self, mensaje: str) -> None:
         mostrar_mensaje(self._page, mensaje, es_error=True)
 
+    def aviso_barra(self, mensaje: str) -> None:
+        """Error inline en la barra flotante (ej. una selección que no se puede compartir junta); se borra al cambiar la selección."""
+        self._ui["aviso_barra"] = mensaje
+        self._ui["confirmando_eliminar"] = False
+        self._actualizar_barra()
+        self.refrescar(self._barra)
+
+    def icono_accion(self, icono: str, tooltip: str, activo: bool, on_click: Callable[[], None]) -> ft.Control:
+        """
+        Ícono para accion_fila(). `activo` (ya hay algo vinculado): color de
+        acento y siempre visible. Si no, gris y visible solo con el mouse
+        encima de la fila (mismo patrón que el checkbox). El lugar del ícono
+        queda reservado aunque no se vea, así los íconos no se corren.
+        """
+        icono_control = ft.Icon(
+            icono, size=ICONO_ACCION_FILA, color=TEXT_ACCENT if activo else TEXT_MUTED,
+            visible=activo, data=None if activo else _SOLO_HOVER,
+        )
+        return ft.Container(
+            width=ANCHO_ICONO_ACCION, height=ALTURA_FILA, alignment=ft.Alignment.CENTER,
+            tooltip=tooltip, on_click=lambda e: on_click(), content=icono_control,
+        )
+
     # --- Fila de alta: helpers para la pantalla ---
 
     def campo_filtrable_alta(
@@ -1042,6 +1269,7 @@ class TablaPlanilla:
         campo = ft.TextField(
             value=valor, hint_text="AAAA-MM-DD", expand=True, text_align=ft.TextAlign.CENTER, **estilo_campo(),
         )
+        campo.content_padding = ft.Padding.symmetric(horizontal=PADDING_CAMPO_FECHA_H, vertical=PADDING_CAMPO)
 
         def _cambio(e=None) -> None:
             on_cambio()
@@ -1073,6 +1301,8 @@ class TablaPlanilla:
                 ft.IconButton(
                     icon=ft.Icons.CALENDAR_MONTH_OUTLINED, icon_size=ICONO_CALENDARIO,
                     icon_color=TEXT_SECONDARY, width=ANCHO_BOTON_CALENDARIO,
+                    # Sin relleno propio: el ícono entra entero en ANCHO_BOTON_CALENDARIO.
+                    style=ft.ButtonStyle(padding=ft.Padding.all(0)),
                     tooltip="ELEGIR FECHA", on_click=_abrir_calendario,
                 ),
             ],
@@ -1080,11 +1310,22 @@ class TablaPlanilla:
         )
         return control, campo
 
+    def selector_alta(
+        self, opciones: list[tuple[str, str]], valor: Optional[str], on_cambio: Callable[[str], None],
+        nombre: str, colores: Optional[dict[str, str]] = None,
+    ) -> SelectorCiclico:
+        """SelectorCiclico para una celda angosta del alta (parchea solo su botón)."""
+        return SelectorCiclico(self.pagina_alta, opciones, valor, on_cambio, nombre, colores)
+
     def boton_confirmar_alta(self, tooltip: str, on_click: Callable[[], None]) -> ft.IconButton:
         return ft.IconButton(icon=ft.Icons.CHECK, icon_color=TEXT_ACCENT, tooltip=tooltip, on_click=lambda e: on_click())
 
+    def enfocar_confirmar(self) -> None:
+        """Foco en el ✓ de la fila de alta, SIN activarlo (Enter en el último campo; ahí Enter o click confirma)."""
+        self.enfocar(self._alta.boton if self._alta is not None else None)
+
     def tab_a_confirmar(self, control: ft.Control) -> None:
-        """Con el foco en `control` (último campo del alta), Tab lleva el foco al ✓ de la fila (ahí Enter confirma)."""
+        """Con el foco en `control` (último campo del alta), Tab o Enter llevan el foco al ✓ sin activarlo (ahí Enter confirma)."""
         foco = {"activo": False}
 
         def _foco(activo: bool) -> None:
@@ -1361,8 +1602,9 @@ class TablaPlanilla:
         return util / suma if util and suma else 1.0
 
     def _px(self, clave: str) -> float:
-        columna = self._por_clave[clave]
-        return self._ui["anchos"][clave] * self._escala() if columna.redimensionable else float(columna.ancho)
+        if self._por_clave[clave].redimensionable:
+            return self._ui["anchos"][clave] * self._escala()
+        return self._ui["fijos"][clave]
 
     def _x_rel(self, clave: str) -> float:
         """px desde el inicio de las columnas de datos (después del checkbox) hasta el borde izquierdo de `clave`."""
@@ -1373,20 +1615,32 @@ class TablaPlanilla:
             x += self._px(c)
         return x
 
+    def _minimo_px(self, clave: str) -> float:
+        """Columna.ancho_min (o el default según el tipo); una fija nunca exige más que su ancho de diseño."""
+        columna = self._por_clave[clave]
+        if columna.redimensionable:
+            return float(columna.ancho_min if columna.ancho_min is not None else ANCHO_MIN_COLUMNA)
+        minimo = columna.ancho_min if columna.ancho_min is not None else ANCHO_MIN_COLUMNA_FIJA
+        return float(min(minimo, columna.ancho))
+
     def _minimo(self, clave: str) -> float:
-        """Columna.ancho_min pasado a unidades de ui["anchos"]."""
-        return self._por_clave[clave].ancho_min / self._escala()
+        """Mínimo de una columna redimensionable, en unidades de ui["anchos"]."""
+        return self._minimo_px(clave) / self._escala()
 
     def _flex(self, clave: str) -> int:
         return max(1, round(self._ui["anchos"][clave] * FACTOR_FLEX))
 
     def _vecina(self, clave: str) -> Optional[str]:
-        """La columna de la derecha, si ambas son redimensionables (la que absorbe el drag)."""
+        """La columna de la derecha (la que absorbe el drag), sea redimensionable o fija; la última no tiene."""
         indice = self._claves.index(clave)
-        if not self._por_clave[clave].redimensionable or indice + 1 >= len(self._claves):
-            return None
-        siguiente = self._claves[indice + 1]
-        return siguiente if self._por_clave[siguiente].redimensionable else None
+        return self._claves[indice + 1] if indice + 1 < len(self._claves) else None
+
+    def _recalcular_util(self) -> None:
+        """ancho_util = lo que dejan las fijas (cambia cuando se arrastra una fija)."""
+        ancho = self._ui.get("ancho_tabla")
+        if ancho:
+            fijas = sum(self._ui["fijos"].values())
+            self._ui["ancho_util"] = max(1.0, ancho - 2 * ANCHO_BORDE - ANCHO_COL_CHECK - ANCHO_COL_ACCION - fijas)
 
     def _ancho_handle(self, clave: str) -> int:
         return ANCHO_RESIZE_HANDLE if self._vecina(clave) else 0
@@ -1396,48 +1650,74 @@ class TablaPlanilla:
         return self._px(clave) >= ANCHO_MINIMO_CON_BOTON
 
     def _dimensionar(self, control: ft.Control, clave: str) -> None:
-        """expand (redimensionable) o width fijo (resto)."""
+        """expand (redimensionable) o width en px (fija)."""
         if self._por_clave[clave].redimensionable:
             control.expand = self._flex(clave)
         else:
-            control.width = self._por_clave[clave].ancho
+            control.width = self._ui["fijos"][clave]
 
     def _aplicar_anchos(self, celdas: dict[str, ft.Control]) -> None:
         for clave, celda in celdas.items():
-            if self._por_clave[clave].redimensionable:
-                celda.expand = self._flex(clave)
+            self._dimensionar(celda, clave)
+
+    def _aplicar_unidas(self) -> None:
+        """Celdas unidas del alta (FilaAlta.unidas): siempre la suma exacta de sus columnas."""
+        for celda, claves in self._unidas_alta.values():
+            celda.width = sum(self._ui["fijos"][c] for c in claves)
 
     def _guardar_anchos(self) -> None:
-        escribir_pref(self._pref_anchos, {c: round(v, 2) for c, v in self._ui["anchos"].items()})
+        # Una sola clave de prefs: proporciones de las redimensionables + px de las fijas.
+        anchos = {c: round(v, 2) for c, v in self._ui["anchos"].items()}
+        anchos.update({c: round(v, 1) for c, v in self._ui["fijos"].items()})
+        escribir_pref(self._pref_anchos, anchos)
 
     def _anchos_cambiaron(self) -> None:
-        """Aplica ui["anchos"] a encabezado, alta y todas las filas; guarda y parchea."""
+        """Aplica ui["anchos"]/ui["fijos"] a encabezado, alta y todas las filas; guarda y parchea."""
         self._aplicar_anchos(self._celdas_header)
         self._aplicar_anchos(self._celdas_alta)
+        self._aplicar_unidas()
         for ref in self._cache.values():
             self._aplicar_anchos(ref["celdas"])
+        for celdas in self._celdas_pie:
+            self._aplicar_anchos(celdas)
         self._guardar_anchos()
         self.refrescar(self._contenedor_header, self._contenedor_alta, self._tabla_filas)
 
     def _redimensionar(self, clave: str, delta_px: float) -> None:
-        """Drag del borde derecho de `clave`: la vecina de la derecha absorbe o cede el diferencial."""
+        """
+        Drag del borde derecho de `clave`: la vecina de la derecha absorbe o
+        cede el diferencial, sea redimensionable o fija (ver docstring,
+        "Columnas").
+        """
         vecina = self._vecina(clave)
         if vecina is None:
             return
-        anchos = self._ui["anchos"]
-        delta = delta_px / self._escala()
+        px_izquierda, px_vecina = self._px(clave), self._px(vecina)
         # Ninguna de las dos baja de su mínimo; si una ya está por debajo
         # (ventana muy angosta), solo puede crecer.
-        delta = max(delta, min(0.0, self._minimo(clave) - anchos[clave]))
-        delta = min(delta, max(0.0, anchos[vecina] - self._minimo(vecina)))
+        delta = max(delta_px, min(0.0, self._minimo_px(clave) - px_izquierda))
+        delta = min(delta, max(0.0, px_vecina - self._minimo_px(vecina)))
         if not delta:
             return
-        anchos[clave] += delta
-        anchos[vecina] -= delta
-        for celdas in (self._celdas_header, self._celdas_alta):
-            for c in (clave, vecina):
-                if c in celdas:
-                    celdas[c].expand = self._flex(c)
+        if self._por_clave[clave].redimensionable and self._por_clave[vecina].redimensionable:
+            self._ui["anchos"][clave] += delta / self._escala()
+            self._ui["anchos"][vecina] -= delta / self._escala()
+        else:
+            # Alguna es fija: se trabaja en px. Las redimensionables pasan a
+            # guardar su ancho en px (misma proporción entre ellas) y el
+            # espacio flexible cambia lo mismo que las fijas, al revés: así
+            # la izquierda crece exactamente `delta` y la vecina lo cede.
+            flexibles = {c: self._px(c) for c in self._redimensionables()}
+            for c, px in ((clave, px_izquierda + delta), (vecina, px_vecina - delta)):
+                if self._por_clave[c].redimensionable:
+                    flexibles[c] = px
+                else:
+                    self._ui["fijos"][c] = px
+            self._ui["anchos"].update(flexibles)
+            self._recalcular_util()
+        self._aplicar_anchos(self._celdas_header)
+        self._aplicar_anchos(self._celdas_alta)
+        self._aplicar_unidas()
         self.refrescar(self._contenedor_header, self._contenedor_alta)
 
     def _repartir(self, proporciones: dict[str, float], total: float) -> dict[str, float]:
@@ -1467,6 +1747,18 @@ class TablaPlanilla:
         return max(len(t) for t in textos) * ANCHO_POR_CARACTER + PADDING_AJUSTE + columna.extra_ajuste
 
     def _ajustar_al_contenido(self, clave: str) -> None:
+        if not self._por_clave[clave].redimensionable:
+            # Fija: toma el ancho del contenido; las redimensionables se
+            # achican lo que haga falta, nunca por debajo de sus mínimos.
+            libre = 0.0
+            if self._ui["ancho_util"]:
+                libre = max(0.0, self._ui["ancho_util"] - sum(self._minimo_px(c) for c in self._redimensionables()))
+            actual = self._ui["fijos"][clave]
+            objetivo = max(self._minimo_px(clave), self._ancho_contenido_px(clave))
+            self._ui["fijos"][clave] = min(objetivo, actual + libre) if self._ui["ancho_util"] else objetivo
+            self._recalcular_util()
+            self._anchos_cambiaron()
+            return
         total = self._suma_anchos()
         otras = [c for c in self._redimensionables() if c != clave]
         maximo = total - sum(self._minimo(c) for c in otras)
@@ -1484,8 +1776,8 @@ class TablaPlanilla:
     def _on_tamanio_tabla(self, e: ft.LayoutSizeChangeEvent) -> None:
         # Solo se anota (el flex ya llena el ancho solo) — sin auto-update.
         sin_auto_update()
-        fijas = sum(c.ancho for c in self._columnas if not c.redimensionable)
-        self._ui["ancho_util"] = max(1.0, e.width - 2 * ANCHO_BORDE - ANCHO_COL_CHECK - ANCHO_COL_ACCION - fijas)
+        self._ui["ancho_tabla"] = e.width
+        self._recalcular_util()
 
     def _handle_resize(self, clave: str) -> ft.Control:
         linea = ft.Container(width=ANCHO_LINEA_RESIZE, height=ALTURA_HEADER, bgcolor=TEXT_ACCENT, visible=False)
@@ -1507,9 +1799,11 @@ class TablaPlanilla:
         def _soltar(e=None) -> None:
             arrastrando["activo"] = False
             linea.visible = False
-            # Recién ahora las filas de datos: ver docstring, "Columnas".
+            # Recién ahora las filas de datos (y las de pie): ver docstring, "Columnas".
             for ref in self._cache.values():
                 self._aplicar_anchos(ref["celdas"])
+            for celdas in self._celdas_pie:
+                self._aplicar_anchos(celdas)
             self._guardar_anchos()
             self.refrescar(linea, self._tabla_filas)
 
@@ -1660,7 +1954,6 @@ class TablaPlanilla:
                 [
                     self._item_menu(
                         ft.Icons.WIDTH_NORMAL, "AJUSTAR AL CONTENIDO", lambda: self._ajustar_al_contenido(clave),
-                        habilitado=self._por_clave[clave].redimensionable,
                     ),
                     self._item_menu(ft.Icons.VIEW_COLUMN_OUTLINED, "AJUSTAR TODAS LAS COLUMNAS", self._ajustar_todas),
                     self._separador_menu(),
@@ -1761,7 +2054,8 @@ class TablaPlanilla:
 
     def _alto_cuerpo(self) -> float:
         filas = len(self._mostradas)
-        return ALTURA_HEADER + ALTURA_FILA_ALTA + (filas * ALTURA_FILA if filas else ALTURA_VACIO)
+        pie = ALTURA_SEPARADOR_PIE + len(self._celdas_pie) * ALTURA_FILA if self._celdas_pie else 0
+        return ALTURA_HEADER + ALTURA_FILA_ALTA + (filas * ALTURA_FILA if filas else ALTURA_VACIO) + pie
 
     def _mostrar_sugerencias(self, duenio: Any, lista: ft.Container, x: float, y: float, ancho: float) -> None:
         self._sugerencias_duenio = duenio
@@ -1822,6 +2116,7 @@ class TablaPlanilla:
         else:
             self._ui["seleccion"].clear()
         self._ui["confirmando_eliminar"] = False
+        self._ui["aviso_barra"] = None
         self._redibujar()
         self.refrescar(self._contenedor_header, self._tabla_filas, self._barra)
 
@@ -1857,7 +2152,7 @@ class TablaPlanilla:
                 alignment=ft.Alignment.CENTER,
                 content=ft.Text(
                     columna.titulo, size=TypographyTokens.REGISTRO_FONT_HEADER, weight=PESO_HEADER,
-                    color=TEXT_SECONDARY, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+                    color=TEXT_SECONDARY, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=columna.titulo,
                 ),
             ),
         ]
@@ -1881,14 +2176,18 @@ class TablaPlanilla:
             partes.append(self._handle_resize(clave))
         # El título se centra en la celda entera, no solo en el espacio que
         # le dejan los íconos: a la izquierda va el mismo ancho que ocupan
-        # a la derecha (flecha de orden, ▼, handle y borde).
+        # a la derecha (flecha de orden, ▼, handle y borde). En columnas
+        # angostas (el título no entraría con ese relleno) se centra en el
+        # espacio que queda, sin relleno.
         ancho_iconos = (ICONO_MENU if ordenada else 0) + ICONO_HEADER + self._ancho_handle(clave) + ANCHO_BORDE
+        ancho_titulo = len(columna.titulo) * ANCHO_POR_CARACTER_HEADER
+        centrar = self._px(clave) >= ancho_titulo + 2 * ancho_iconos
 
         celda = ft.GestureDetector(
             on_secondary_tap_down=_click_derecho,
             content=ft.Container(
                 height=ALTURA_HEADER,
-                padding=ft.Padding.only(left=ancho_iconos),
+                padding=ft.Padding.only(left=ancho_iconos if centrar else PADDING_TITULO_ANGOSTO),
                 border=ft.Border.only(right=ft.BorderSide(width=ANCHO_BORDE, color=BORDER_HEADER)),
                 content=ft.Row(partes, spacing=0, vertical_alignment=ft.CrossAxisAlignment.CENTER),
             ),
@@ -1922,8 +2221,12 @@ class TablaPlanilla:
     # FILA DE ALTA
     # ------------------------------------------------------------
 
-    def _celda_alta(self, clave: str, contenido: Optional[ft.Control]) -> ft.Container:
-        """Alto fijo + recorte: todas las celdas del alta miden lo mismo (el borde lo da la celda)."""
+    def _celda_alta(self, clave: str, contenido: Optional[ft.Control], cantidad: int = 1) -> ft.Container:
+        """
+        Alto fijo + recorte: todas las celdas del alta miden lo mismo (el
+        borde lo da la celda). `cantidad` > 1: la celda ocupa esa cantidad
+        de columnas fijas a partir de `clave` (FilaAlta.unidas).
+        """
         celda = ft.Container(
             height=ALTURA_FILA,
             padding=ft.Padding.symmetric(horizontal=ALTA_PADDING),
@@ -1937,12 +2240,33 @@ class TablaPlanilla:
                 content=contenido,
             ),
         )
-        self._dimensionar(celda, clave)
-        self._celdas_alta[clave] = celda
+        if cantidad == 1:
+            self._dimensionar(celda, clave)
+            self._celdas_alta[clave] = celda
+            return celda
+        inicio = self._claves.index(clave)
+        claves = self._claves[inicio:inicio + cantidad]
+        if len(claves) != cantidad or any(self._por_clave[c].redimensionable for c in claves):
+            raise ValueError(f"FilaAlta.unidas['{clave}']: solo se pueden unir columnas fijas existentes.")
+        # Ancho = suma exacta de las columnas que ocupa (se re-aplica al
+        # arrastrar una de ellas): nunca tapa a las vecinas.
+        self._unidas_alta[clave] = (celda, claves)
+        self._aplicar_unidas()
         return celda
+
+    def _celdas_fila_alta(self) -> list[ft.Control]:
+        celdas: list[ft.Control] = []
+        indice = 0
+        while indice < len(self._claves):
+            clave = self._claves[indice]
+            cantidad = max(1, self._alta.unidas.get(clave, 1))
+            celdas.append(self._celda_alta(clave, self._alta.celdas.get(clave), cantidad))
+            indice += cantidad
+        return celdas
 
     def _construir_fila_alta(self) -> ft.Control:
         self._celdas_alta.clear()
+        self._unidas_alta.clear()
         self._foco_tab = None
         self._alta = self._construir_alta()
         return ft.Container(
@@ -1952,7 +2276,7 @@ class TablaPlanilla:
             content=ft.Row(
                 [
                     ft.Container(width=ANCHO_COL_CHECK),
-                    *[self._celda_alta(clave, self._alta.celdas.get(clave)) for clave in self._claves],
+                    *self._celdas_fila_alta(),
                     # height fijo: el IconButton (mínimo 40 px en Material 3)
                     # no puede estirar la fila más allá de ALTURA_FILA.
                     ft.Container(
@@ -1970,7 +2294,7 @@ class TablaPlanilla:
     def _al_tecla(self, e: ft.KeyboardEvent) -> None:
         if not self._ui["visible"] or self._ui["popup"] is not None or self._foco_tab is None:
             return
-        if e.shift or e.ctrl or e.alt or e.meta or e.key != TECLA_IR_A_CONFIRMAR:
+        if e.shift or e.ctrl or e.alt or e.meta or e.key not in TECLAS_IR_A_CONFIRMAR:
             return
         if self._foco_tab["activo"] and self._alta is not None:
             self.enfocar(self._alta.boton)
@@ -2019,6 +2343,7 @@ class TablaPlanilla:
         else:
             self._ui["seleccion"].discard(fila["id"])
         self._ui["confirmando_eliminar"] = False
+        self._ui["aviso_barra"] = None
         ref = self._cache[fila["id"]]
         ref["fila"].bgcolor = BG_FILA_SEL if seleccionada else ref["bg"]
         cambiados: list[ft.Control] = [ref["fila"]]
@@ -2041,13 +2366,15 @@ class TablaPlanilla:
             on_change=lambda e: self._toggle_seleccion(fila, bool(e.control.value)),
         )
         celdas = self._construir_celdas(fila)
+        accion = self._accion_fila(fila) if self._accion_fila else None
+        # Íconos de icono_accion() sin nada vinculado: solo con hover.
+        iconos_hover = _solo_hover(accion)
         contenido = ft.Row(
             [
                 ft.Container(width=ANCHO_COL_CHECK, height=ALTURA_FILA, alignment=ft.Alignment.CENTER, content=checkbox),
                 *[celdas[clave] for clave in self._claves],
                 ft.Container(
-                    width=ANCHO_COL_ACCION, height=ALTURA_FILA, alignment=ft.Alignment.CENTER,
-                    content=self._accion_fila(fila) if self._accion_fila else None,
+                    width=ANCHO_COL_ACCION, height=ALTURA_FILA, alignment=ft.Alignment.CENTER, content=accion,
                 ),
             ],
             spacing=0,
@@ -2065,6 +2392,8 @@ class TablaPlanilla:
             seleccionada = fila["id"] in self._ui["seleccion"]
             control.bgcolor = BG_FILA_SEL if seleccionada else (BG_FILA_HOVER if activo else ref["bg"])
             checkbox.visible = activo or bool(self._ui["seleccion"])
+            for icono in iconos_hover:
+                icono.visible = activo
             self.refrescar(control)
 
         control.on_hover = _hover
@@ -2089,6 +2418,7 @@ class TablaPlanilla:
         if not self._ui["seleccion"] <= ids_visibles:
             self._ui["seleccion"] &= ids_visibles
             self._ui["confirmando_eliminar"] = False
+            self._ui["aviso_barra"] = None
         # Filas que ya no están cargadas (borradas, otro período): fuera del cache.
         ids_cargados = {f["id"] for f in self._datos}
         for id_ in [i for i in self._cache if i not in ids_cargados]:
@@ -2104,7 +2434,7 @@ class TablaPlanilla:
             controles.append(ref["fila"])
         self._mostradas = [f["id"] for f in visibles]
 
-        self._tabla_filas.controls = controles or [
+        self._tabla_filas.controls = (controles or [
             ft.Container(
                 height=ALTURA_VACIO,
                 alignment=ft.Alignment.CENTER_LEFT,
@@ -2113,9 +2443,57 @@ class TablaPlanilla:
                     self._texto_vacio, italic=True, color=TEXT_MUTED, size=TypographyTokens.REGISTRO_FONT_CELDA,
                 ),
             )
-        ]
+        ]) + self._controles_pie()
         self._dibujar_header()
         self._actualizar_barra()
+
+    # --- Filas de pie (FilaPie: ej. SALDO ANTERIOR) ---
+
+    def _pie_visibles(self) -> list[FilaPie]:
+        """Las filas de pie que pasan los filtros por columna activos (comparación sin mayúsculas/minúsculas)."""
+        if self._filas_pie is None:
+            return []
+        filtros = {
+            clave: {valor.upper() for valor in valores} for clave, valores in self._ui["filtros"].items()
+        }
+        return [
+            fila for fila in self._filas_pie()
+            if all(
+                fila.valores_filtro[clave].upper() in valores
+                for clave, valores in filtros.items() if clave in fila.valores_filtro
+            )
+        ]
+
+    def _controles_pie(self) -> list[ft.Control]:
+        """Separador + una fila por FilaPie visible. Se rearman en cada redibujo (son pocas)."""
+        self._celdas_pie = []
+        filas = self._pie_visibles()
+        if not filas:
+            return []
+        controles: list[ft.Control] = [ft.Divider(height=ALTURA_SEPARADOR_PIE, thickness=ANCHO_BORDE, color=BORDER_DEFAULT)]
+        for fila in filas:
+            celdas: dict[str, ft.Control] = {}
+            for clave in self._claves:
+                celda = self._contenedor_celda(clave)
+                celda.content = texto_celda(
+                    fila.textos.get(clave, TEXTO_SIN_VALOR), color=TEXT_SECONDARY, tooltip=fila.tooltip,
+                )
+                celdas[clave] = celda
+            self._celdas_pie.append(celdas)
+            controles.append(ft.Container(
+                height=ALTURA_FILA,
+                bgcolor=BG_PIE_POSITIVO if fila.positiva else BG_PIE_NEGATIVO,
+                border=ft.Border.only(bottom=ft.BorderSide(width=ANCHO_BORDE, color=BORDER_HEADER)),
+                content=ft.Row(
+                    [
+                        ft.Container(width=ANCHO_COL_CHECK),  # sin checkbox: no se selecciona
+                        *[celdas[clave] for clave in self._claves],
+                        ft.Container(width=ANCHO_COL_ACCION),
+                    ],
+                    spacing=0,
+                ),
+            ))
+        return controles
 
     # ------------------------------------------------------------
     # BARRA FLOTANTE DE SELECCIÓN MÚLTIPLE (page.overlay)
@@ -2127,6 +2505,7 @@ class TablaPlanilla:
     def _cancelar_seleccion(self, e=None) -> None:
         self._ui["seleccion"].clear()
         self._ui["confirmando_eliminar"] = False
+        self._ui["aviso_barra"] = None
         self._redibujar()
         self.refrescar(self._contenedor_header, self._tabla_filas, self._barra)
 
@@ -2142,6 +2521,7 @@ class TablaPlanilla:
 
     def _pedir_confirmacion(self, e=None) -> None:
         self._ui["confirmando_eliminar"] = True
+        self._ui["aviso_barra"] = None
         self._actualizar_barra()
         self.refrescar(self._barra)
 
@@ -2160,6 +2540,11 @@ class TablaPlanilla:
         if self._on_compartir is None or not seleccionadas:
             return
         self._on_compartir(seleccionadas)
+
+    def _ejecutar_accion(self, accion: AccionBarra) -> None:
+        seleccionadas = self._seleccionadas()
+        if seleccionadas:
+            accion.on_click(seleccionadas)
 
     def _actualizar_barra(self) -> None:
         cantidad = len(self._ui["seleccion"])
@@ -2185,6 +2570,18 @@ class TablaPlanilla:
                 ),
                 ft.Text("COMPARTIR", size=tamanio, color=TEXT_PRIMARY),
             ]
+        if self._acciones_barra:
+            seleccionadas = self._seleccionadas()
+            for accion in self._acciones_barra:
+                motivo = accion.motivo_deshabilitada(seleccionadas) if accion.motivo_deshabilitada else None
+                controles += [
+                    self._boton_circular(
+                        accion.icono, accion.color, motivo or accion.texto,
+                        lambda e, a=accion: self._ejecutar_accion(a), habilitado=motivo is None,
+                    ),
+                    ft.Text(accion.texto, size=tamanio, color=TEXT_PRIMARY if motivo is None else TEXT_MUTED),
+                ]
+        aviso = self._ui.get("aviso_barra")
         if self._ui["confirmando_eliminar"]:
             avisos = self._avisos_eliminar(self._seleccionadas()) if self._avisos_eliminar else ""
             controles += [
@@ -2196,6 +2593,14 @@ class TablaPlanilla:
                 ),
                 _boton_texto("CONFIRMAR", self._eliminar_seleccion, relleno=BTN_ELIMINAR),
                 _boton_texto("CANCELAR", self._cancelar_confirmacion, relleno=None),
+            ]
+        elif aviso:
+            controles += [
+                ft.Container(width=ANCHO_BORDE, height=DIAMETRO_BOTON_FLOT, bgcolor=BORDER_BARRA),
+                ft.Text(
+                    aviso, size=tamanio, weight=PESO_MONTO, color=TEXT_NEGATIVO,
+                    max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=aviso, expand=True,
+                ),
             ]
         else:
             controles.append(ft.Container(expand=True))

@@ -79,6 +79,7 @@ from services.fees_service import FeesService
 from services.presupuestos_service import PresupuestosService
 from services.savings_service import SavingsService
 from services.shared_expenses_service import SharedExpensesService
+from services.snapshots_service import SnapshotsService
 from services.transaction_service import TransactionService
 from services.ingresos_proyectados_service import IngresosProyectadosService
 
@@ -88,8 +89,9 @@ from ui.screens import categorias as categorias_screen
 from ui.screens import compras_cuotas as compras_cuotas_screen
 from ui.screens import dashboard as dashboard_screen
 from ui.screens import cuentas as cuentas_screen
-from ui.screens import deudas_y_compartidos as deudas_y_compartidos_screen
+from ui.screens import deudas as deudas_screen
 from ui.screens import estadisticas as estadisticas_screen
+from ui.screens import gastos_compartidos as gastos_compartidos_screen
 from ui.screens import presupuestos as presupuestos_screen
 
 # --- Configuración de layout ---
@@ -132,6 +134,8 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     savings_service = SavingsService(db)
     debts_service = DebtsService(db)
     ingresos_service = IngresosProyectadosService(db)
+    # Snapshots de cierre de mes: fila SALDO ANTERIOR + ↻ de Registro, Deudas y Compartidos.
+    snapshots_service = SnapshotsService(db)
 
     # ------------------------------------------------------------
     # PANTALLAS PERSISTENTES (ver docstring del módulo, "Navegación")
@@ -161,6 +165,7 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             shared_expenses_service,
             savings_service,
             debts_service,
+            snapshots_service,
             on_ir_a_cuentas=mostrar_cuentas,
         ),
         "ingresos": lambda: ingresos_screen.build(
@@ -169,9 +174,10 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         "compras_cuotas": lambda: compras_cuotas_screen.build(
             page, accounts_service, categorias_service, fees_service, shared_expenses_service,
         ),
-        "deudas_y_compartidos": lambda: deudas_y_compartidos_screen.build(
-            page, debts_service, shared_expenses_service, accounts_service, on_volver=mostrar_dashboard,
+        "gastos_compartidos": lambda: gastos_compartidos_screen.build(
+            page, shared_expenses_service, transaction_service, fees_service, snapshots_service,
         ),
+        "deudas": lambda: deudas_screen.build(page, debts_service, accounts_service, snapshots_service),
         "estadisticas": lambda: estadisticas_screen.build(
             page, accounts_service, dashboard_service, on_volver=mostrar_dashboard,
         ),
@@ -276,8 +282,11 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     def mostrar_compras_cuotas(e=None) -> None:
         _navegar("compras_cuotas")
 
-    def mostrar_deudas_y_compartidos(e=None) -> None:
-        _navegar("deudas_y_compartidos")
+    def mostrar_gastos_compartidos(e=None) -> None:
+        _navegar("gastos_compartidos")
+
+    def mostrar_deudas(e=None) -> None:
+        _navegar("deudas")
 
     def mostrar_estadisticas(e=None) -> None:
         _navegar("estadisticas")
@@ -300,9 +309,9 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     # ------------------------------------------------------------
     # SIDEBAR (colapsable — ver docstring del módulo)
     # ------------------------------------------------------------
-    # "Cuentas"/"Categorías" no son ítems de primer nivel: viven dentro de
-    # "Configuración". "Compras en cuotas"/"Presupuestos"/"Estadísticas" sí
-    # son de primer nivel (pantallas de feature, no de configuración).
+    # Orden: Registro, Cuotas, Compartidos, Deudas, Ingresos, Presupuestos,
+    # Estadísticas; después "Configuración" con Cuentas y Categorías (no son
+    # de primer nivel).
 
     # Colapsada por default (pedido explícito) — solo el botón de flecha la
     # expande/contrae.
@@ -349,10 +358,11 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         controles: list[ft.Control] = [
             encabezado,
             _item_nav("REGISTRO", ft.Icons.RECEIPT_LONG, mostrar_dashboard, expandido),
+            _item_nav("CUOTAS", ft.Icons.CREDIT_CARD, mostrar_compras_cuotas, expandido),
+            _item_nav("COMPARTIDOS", ft.Icons.HOME, mostrar_gastos_compartidos, expandido),
+            _item_nav("DEUDAS", ft.Icons.HANDSHAKE, mostrar_deudas, expandido),
             _item_nav("INGRESOS", ft.Icons.TRENDING_UP, mostrar_ingresos, expandido),
             _item_nav("PRESUPUESTOS", ft.Icons.SAVINGS, mostrar_presupuestos, expandido),
-            _item_nav("COMPRAS EN CUOTAS", ft.Icons.CREDIT_CARD, mostrar_compras_cuotas, expandido),
-            _item_nav("DEUDAS Y COMPARTIDOS", ft.Icons.HANDSHAKE, mostrar_deudas_y_compartidos, expandido),
             _item_nav("ESTADÍSTICAS", ft.Icons.BAR_CHART, mostrar_estadisticas, expandido),
             ft.Container(expand=True),
             ft.Divider(),

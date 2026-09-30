@@ -1,18 +1,26 @@
 """
 verify/deudas/verify_debts_service.py
 
-Verifica DebtsService COMPLETO (no el repositorio pelado) después de la
-migración a DeudasRepository (Fase 2, bloque DEUDAS paso 2): que
-create()/get()/list_debts()/register_payment()/update()/write_off() siguen
-funcionando end-to-end con las validaciones y excepciones de negocio
-intactas (DebtNotFoundError, DebtAlreadySettledError,
-PaymentExceedsBalanceError).
+Verifica DebtsService sobre el LIBRO DE MOVIMIENTOS (reestructuración de
+deudas, docs/DATA_MODEL_DECISIONS.md sección 22): cada fila es un monto con
+dirección (a_favor / en_contra) y el saldo con una persona es la suma con
+signo de sus filas. Un pago es una fila de tipo opuesto.
 
-El caso que más importa de esta migración es el fix del bug donde
-update(concept=..., notes=...) pisaba ambos valores en la misma columna
-`notas` — acá se prueba explícitamente que, con valores DISTINTOS entre sí,
-get() después devuelve concepto y notas por separado, cada uno con su
-propio valor.
+Cubre:
+  - create(): normaliza la persona ("  noe " → "NOE"), concepto vacío →
+    NULL, monto negativo = tipo contrario (guarda el positivo), y rechaza
+    con DebtError persona vacía, tipo inválido, monto 0, fecha mal
+    formada, moneda inexistente y un doble-click (fila idéntica recién
+    creada).
+  - get() enriquecido con la moneda; list_by_period() (bordes del mes);
+    list_all().
+  - update(): cada campo, monto negativo invierte el tipo, campo no
+    editable → DebtError, id inexistente → DebtNotFoundError, sin campos →
+    success=False.
+  - delete() y delete() de un id inexistente.
+  - get_saldo_neto(): suma con signo, un pago (fila opuesta) lo baja,
+    hasta_fecha deja afuera lo posterior; summary_by_person() trae la moneda.
+  - register_payment()/write_off() ya no existen.
 
 Correlo con:
     python verify/deudas/verify_debts_service.py
@@ -25,13 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from services.debts_service import (
-    DebtsService,
-    DebtError,
-    DebtNotFoundError,
-    DebtAlreadySettledError,
-    PaymentExceedsBalanceError,
-)
+from services.debts_service import DebtError, DebtNotFoundError, DebtsService
 
 
 def main() -> None:
@@ -53,257 +55,110 @@ def main() -> None:
         try:
             callable_()
             print(f"❌ {descripcion} — esperaba {tipo_esperado.__name__}, no se lanzó ninguna excepción")
-        except tipo_esperado:
+        except tipo_esperado as e:
             casos_ok += 1
-            print(f"✅ {descripcion} — lanzó {tipo_esperado.__name__} como se esperaba")
+            print(f"✅ {descripcion} — lanzó {tipo_esperado.__name__} como se esperaba ({e})")
         except Exception as e:
             print(f"❌ {descripcion} — esperaba {tipo_esperado.__name__}, se lanzó {type(e).__name__}: {e!r}")
 
     db_path = crear_dummy_db()
     print(f"Dummy DB creada en: {db_path}\n")
-
     manager = DatabaseManager(db_path=db_path)
-    manager.inicializar()
+    manager.inicializar()  # reestructura `deudas` (base nueva, sin datos)
     svc = DebtsService(manager)
+    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
 
-    print("--- create() — camino feliz ---")
-    resultado = svc.create(
-        person="Noe",
-        debt_type="a_favor",
-        amount=5000.0,
-        currency_code="ARS",
-        date_str="2026-01-10",
-        concept="Shared dinner",
-        notes="Cena del viernes",
-    )
-    caso("create() devuelve success=True", True, resultado.success)
-    caso("create() devuelve un debt_id numérico", True, isinstance(resultado.debt_id, int))
-    debt_id = resultado.debt_id
+    # ============================================================
+    print("--- create() ---")
+    # ============================================================
+    prestamo = svc.create("  noe ", "Préstamo", "a_favor", 40000, ars, "2026-03-01")
+    caso("create() devuelve success e id", (True, True), (prestamo.success, prestamo.entity_id is not None))
+    fila = svc.get(prestamo.entity_id)
+    caso("persona normalizada: '  noe ' → 'NOE'", "NOE", fila["entidad_persona"])
+    caso("get() trae la moneda (currency_code/decimales)", ("ARS", 2), (fila["currency_code"], fila["decimales"]))
 
-    print("\n--- create() — validaciones de negocio intactas ---")
+    devolucion = svc.create("Noe", "", "a_favor", -10000, ars, "2026-03-15", notas="  ")
+    fila_dev = svc.get(devolucion.entity_id)
+    caso("monto negativo: se guarda positivo…", 10000, fila_dev["monto_minor"])
+    caso("… con el tipo contrario (en_contra)", "en_contra", fila_dev["tipo"])
+    caso("concepto y notas vacíos → NULL", (None, None), (fila_dev["concepto"], fila_dev["notas"]))
+
+    caso_excepcion("persona vacía → DebtError", DebtError, lambda: svc.create("  ", "x", "a_favor", 100, ars, "2026-03-01"))
+    caso_excepcion("tipo inválido → DebtError", DebtError, lambda: svc.create("A", "x", "prestado", 100, ars, "2026-03-01"))
+    caso_excepcion("monto 0 → DebtError", DebtError, lambda: svc.create("A", "x", "a_favor", 0, ars, "2026-03-01"))
+    caso_excepcion("monto no entero → DebtError", DebtError, lambda: svc.create("A", "x", "a_favor", 10.5, ars, "2026-03-01"))
+    caso_excepcion("fecha mal formada → DebtError", DebtError, lambda: svc.create("A", "x", "a_favor", 100, ars, "01/03/2026"))
+    caso_excepcion("moneda inexistente → DebtError", DebtError, lambda: svc.create("A", "x", "a_favor", 100, 99999, "2026-03-01"))
     caso_excepcion(
-        "create() con amount<=0 sigue lanzando ValueError",
-        ValueError,
-        lambda: svc.create(
-            person="Noe", debt_type="a_favor", amount=0.0, currency_code="ARS",
-            date_str="2026-01-10", concept="X",
-        ),
-    )
-    caso_excepcion(
-        "create() con person vacío sigue lanzando DebtError",
-        DebtError,
-        lambda: svc.create(
-            person="   ", debt_type="a_favor", amount=10.0, currency_code="ARS",
-            date_str="2026-01-10", concept="X",
-        ),
-    )
-    caso_excepcion(
-        "create() con concept vacío sigue lanzando DebtError",
-        DebtError,
-        lambda: svc.create(
-            person="Noe", debt_type="a_favor", amount=10.0, currency_code="ARS",
-            date_str="2026-01-10", concept="   ",
-        ),
-    )
-    caso_excepcion(
-        "create() con debt_type inválido sigue lanzando ValueError",
-        ValueError,
-        lambda: svc.create(
-            person="Noe", debt_type="ninguno", amount=10.0, currency_code="ARS",
-            date_str="2026-01-10", concept="X",
-        ),
-    )
-    caso_excepcion(
-        "create() con currency_code inexistente sigue lanzando ValueError",
-        ValueError,
-        lambda: svc.create(
-            person="Noe", debt_type="a_favor", amount=10.0, currency_code="XYZ",
-            date_str="2026-01-10", concept="X",
-        ),
+        "doble-click (fila idéntica recién creada) → DebtError", DebtError,
+        lambda: svc.create("Noe", "Préstamo", "a_favor", 40000, ars, "2026-03-01"),
     )
 
-    print("\n--- get() — enriquecido con JOIN a monedas ---")
-    fila = svc.get(debt_id)
-    caso("get() encuentra la deuda", "Noe", fila["entidad_persona"] if fila else None)
-    caso("get() trae currency_code vía JOIN", "ARS", fila["currency_code"] if fila else None)
-    caso("get() trae currency_symbol vía JOIN", "$", fila["currency_symbol"] if fila else None)
-    caso("get() ahora persiste y devuelve concepto (antes se descartaba)", "Shared dinner", fila["concepto"] if fila else None)
-    caso("get() sigue trayendo notas", "Cena del viernes", fila["notas"] if fila else None)
-    caso("get() de un id inexistente devuelve None", None, svc.get(999999))
+    # ============================================================
+    print("\n--- list_by_period() / list_all() ---")
+    # ============================================================
+    borde_inicio = svc.create("Kevin", "Cena", "en_contra", 5000, ars, "2026-04-01").entity_id
+    borde_fin = svc.create("Kevin", "Taxi", "en_contra", 1500, ars, "2026-04-30").entity_id
+    svc.create("Kevin", "Mayo", "en_contra", 999, ars, "2026-05-01")
+    caso("abril: incluye el 1 y el 30, no el 1 de mayo", {borde_inicio, borde_fin},
+         {f["id"] for f in svc.list_by_period(4, 2026)})
+    caso_excepcion("mes=13 → DebtError", DebtError, lambda: svc.list_by_period(13, 2026))
+    caso("list_all(): todas las filas", 5, len(svc.list_all()))
 
-    print("\n--- create() — origen_tipo/origen_id explícitos (categoría 'Deuda' del Registro) ---")
-    # docs/PROXIMOS_PASOS.md — corrección posterior a la Tarea 9 Parte B:
-    # ui/components/registro_transacciones.py vincula una deuda a la
-    # transacción real que la originó pasando origen_tipo='transaccion' +
-    # origen_id=<transaction_id>. create() ya soportaba estos dos
-    # parámetros desde antes (default 'manual'/None) — este caso confirma
-    # que, pasados explícitos, se persisten y se leen de vuelta tal cual.
-    resultado_con_origen = svc.create(
-        person="Vinculada a transacción", debt_type="a_favor", amount=2500.0, currency_code="ARS",
-        date_str="2026-01-12", concept="Le presté para el taxi",
-        origen_tipo="transaccion", origen_id=4242,
-    )
-    caso("create(origen_tipo=..., origen_id=...) devuelve success=True", True, resultado_con_origen.success)
-    caso(
-        "create(origen_tipo=..., origen_id=...) refleja origen_tipo en el resultado",
-        "transaccion",
-        resultado_con_origen.data["origen_tipo"],
-    )
-    caso(
-        "create(origen_tipo=..., origen_id=...) refleja origen_id en el resultado",
-        4242,
-        resultado_con_origen.data["origen_id"],
-    )
+    # ============================================================
+    print("\n--- update() ---")
+    # ============================================================
+    res = svc.update(borde_inicio, entidad_persona="kevin r", concepto="Cena de cumple", fecha="2026-04-02")
+    fila_upd = svc.get(borde_inicio)
+    caso("update() de persona (normalizada), concepto y fecha", ("KEVIN R", "Cena de cumple", "2026-04-02"),
+         (fila_upd["entidad_persona"], fila_upd["concepto"], fila_upd["fecha"]))
+    caso("update() devuelve success=True", True, res.success)
+    svc.update(borde_inicio, monto_minor=-6000)
+    fila_neg = svc.get(borde_inicio)
+    caso("monto negativo en update(): invierte el tipo actual (en_contra → a_favor)", ("a_favor", 6000),
+         (fila_neg["tipo"], fila_neg["monto_minor"]))
+    svc.update(borde_inicio, tipo="a_favor", monto_minor=-6000)
+    caso("tipo + monto negativo en la misma llamada: vale el tipo pasado, invertido", "en_contra",
+         svc.get(borde_inicio)["tipo"])
+    svc.update(borde_inicio, moneda_id=usd)
+    caso("update() de moneda", "USD", svc.get(borde_inicio)["currency_code"])
+    caso_excepcion("campo no editable (origen_tipo) → DebtError", DebtError,
+                   lambda: svc.update(borde_inicio, origen_tipo="transaccion"))
+    caso_excepcion("id inexistente → DebtNotFoundError", DebtNotFoundError, lambda: svc.update(999999, concepto="x"))
+    caso("update() sin campos → success=False", False, svc.update(borde_inicio).success)
 
-    fila_con_origen = svc.get(resultado_con_origen.debt_id)
-    caso("get() tras crear con origen explícito: origen_tipo persistido = 'transaccion'", "transaccion", fila_con_origen["origen_tipo"])
-    caso("get() tras crear con origen explícito: origen_id persistido = 4242", 4242, fila_con_origen["origen_id"])
+    # ============================================================
+    print("\n--- delete() ---")
+    # ============================================================
+    caso("delete() devuelve success=True", True, svc.delete(borde_fin).success)
+    caso("la fila ya no está", None, svc.get(borde_fin))
+    caso_excepcion("delete() de un id inexistente → DebtNotFoundError", DebtNotFoundError, lambda: svc.delete(borde_fin))
 
-    print("\n--- create() — sin origen_tipo/origen_id: sigue con el default 'manual'/None de siempre ---")
-    resultado_sin_origen = svc.create(
-        person="Deuda manual de siempre", debt_type="en_contra", amount=800.0, currency_code="ARS",
-        date_str="2026-01-13", concept="Préstamo cargado a mano",
-    )
-    fila_sin_origen = svc.get(resultado_sin_origen.debt_id)
-    caso("create() sin origen explícito: origen_tipo por default sigue siendo 'manual'", "manual", fila_sin_origen["origen_tipo"])
-    caso("create() sin origen explícito: origen_id por default sigue siendo None", None, fila_sin_origen["origen_id"])
+    # ============================================================
+    print("\n--- get_saldo_neto() / summary_by_person() ---")
+    # ============================================================
+    def saldo(persona: str, hasta: str | None = None) -> int | None:
+        return next(
+            (e["saldo_minor"] for e in svc.get_saldo_neto(hasta) if e["entidad_persona"] == persona and e["moneda_id"] == ars),
+            None,
+        )
 
-    print("\n--- list_debts() — filtros + shape enriquecido intactos ---")
-    listado = svc.list_debts(person="Noe")
-    ids_listado = [r["id"] for r in listado]
-    caso("list_debts(person='Noe') incluye la deuda creada", True, debt_id in ids_listado)
-    fila_lista = next((r for r in listado if r["id"] == debt_id), None)
-    caso("list_debts() trae currency_code enriquecido", True, "currency_code" in fila_lista.keys() if fila_lista else False)
+    caso("NOE: préstamo 400.00 − devolución 100.00", 30000, saldo("NOE", "2026-12-31"))
+    caso("NOE hasta el 10/03: todavía sin la devolución", 40000, saldo("NOE", "2026-03-10"))
+    svc.create("Noe", "Me devolvió el resto", "en_contra", 30000, ars, "2026-06-01")
+    caso("un pago (fila de tipo opuesto) deja a NOE en 0", 0, saldo("NOE", "2026-12-31"))
+    caso("KEVIN (en_contra): negativo", -999, saldo("KEVIN", "2026-12-31"))
+    caso_excepcion("hasta_fecha mal formada → DebtError", DebtError, lambda: svc.get_saldo_neto("31/12/2026"))
+    resumen = {e["entidad_persona"]: e for e in svc.summary_by_person("2026-12-31") if e["moneda_id"] == ars}
+    caso("summary_by_person() trae moneda_codigo y símbolo", ("ARS", "$"),
+         (resumen["KEVIN"]["moneda_codigo"], resumen["KEVIN"]["moneda_simbolo"]))
 
-    print("\n--- register_payment() — pago parcial ---")
-    res_pago_1 = svc.register_payment(
-        debt_id=debt_id, amount=2000.0, currency_code="ARS", date_str="2026-01-20",
-    )
-    caso("register_payment() parcial devuelve success=True", True, res_pago_1.success)
-    caso("register_payment() parcial no salda la deuda", False, res_pago_1.data["settled"])
-    caso("register_payment() parcial deja pending_amount correcto", 3000.0, res_pago_1.data["pending_amount"])
+    print("\n--- API vieja ---")
+    caso("register_payment() ya no existe", False, hasattr(svc, "register_payment"))
+    caso("write_off() ya no existe", False, hasattr(svc, "write_off"))
 
-    print("\n--- register_payment() — validaciones de negocio intactas ---")
-    caso_excepcion(
-        "register_payment() sobre id inexistente sigue lanzando DebtNotFoundError",
-        DebtNotFoundError,
-        lambda: svc.register_payment(debt_id=999999, amount=100.0, currency_code="ARS", date_str="2026-01-20"),
-    )
-    caso_excepcion(
-        "register_payment() que excede el saldo pendiente sigue lanzando PaymentExceedsBalanceError",
-        PaymentExceedsBalanceError,
-        lambda: svc.register_payment(debt_id=debt_id, amount=999999.0, currency_code="ARS", date_str="2026-01-20"),
-    )
-    caso_excepcion(
-        "register_payment() con amount<=0 sigue lanzando ValueError",
-        ValueError,
-        lambda: svc.register_payment(debt_id=debt_id, amount=0.0, currency_code="ARS", date_str="2026-01-20"),
-    )
-    caso_excepcion(
-        "register_payment() con payment_type inválido sigue lanzando ValueError",
-        ValueError,
-        lambda: svc.register_payment(debt_id=debt_id, amount=100.0, currency_code="ARS", date_str="2026-01-20", payment_type="invalido"),
-    )
-
-    print("\n--- register_payment() — pago que salda la deuda ---")
-    res_pago_2 = svc.register_payment(
-        debt_id=debt_id, amount=3000.0, currency_code="ARS", date_str="2026-01-25",
-    )
-    caso("register_payment() final salda la deuda (settled=True)", True, res_pago_2.data["settled"])
-    caso("get() refleja estado 'saldada' tras saldar", "saldada", svc.get(debt_id)["estado"])
-
-    caso_excepcion(
-        "register_payment() sobre una deuda ya saldada sigue lanzando DebtAlreadySettledError",
-        DebtAlreadySettledError,
-        lambda: svc.register_payment(debt_id=debt_id, amount=1.0, currency_code="ARS", date_str="2026-01-26"),
-    )
-
-    print("\n--- update() — FIX DEL BUG: concept y notes ya no se pisan ---")
-    resultado_2 = svc.create(
-        person="Papi",
-        debt_type="en_contra",
-        amount=1000.0,
-        currency_code="ARS",
-        date_str="2026-02-01",
-        concept="Concepto original",
-        notes="Notas originales",
-    )
-    debt_id_2 = resultado_2.debt_id
-
-    res_update = svc.update(debt_id_2, concept="Concepto ACTUALIZADO", notes="Notas ACTUALIZADAS")
-    caso("update(concept=X, notes=Y) devuelve success=True", True, res_update.success)
-
-    fila_2 = svc.get(debt_id_2)
-    caso(
-        "update(concept=X, notes=Y): concepto queda X — no pisado por Y",
-        "Concepto ACTUALIZADO",
-        fila_2["concepto"],
-    )
-    caso(
-        "update(concept=X, notes=Y): notas queda Y — no pisado por X",
-        "Notas ACTUALIZADAS",
-        fila_2["notas"],
-    )
-    caso(
-        "concept y notes son valores DISTINTOS entre sí (prueba real de que no colapsan a uno solo)",
-        True,
-        fila_2["concepto"] != fila_2["notas"],
-    )
-
-    print("\n--- update() — solo un campo, el otro no se toca ---")
-    svc.update(debt_id_2, person="Papi Nuevo")
-    fila_3 = svc.get(debt_id_2)
-    caso("update(person=...) solo: person cambia", "Papi Nuevo", fila_3["entidad_persona"])
-    caso("update(person=...) solo: concepto mantiene su valor previo", "Concepto ACTUALIZADO", fila_3["concepto"])
-    caso("update(person=...) solo: notas mantiene su valor previo", "Notas ACTUALIZADAS", fila_3["notas"])
-
-    print("\n--- update() — validaciones de negocio intactas ---")
-    caso_excepcion(
-        "update() sobre id inexistente sigue lanzando DebtNotFoundError",
-        DebtNotFoundError,
-        lambda: svc.update(999999, person="X"),
-    )
-    caso_excepcion(
-        "update() con person vacío sigue lanzando DebtError",
-        DebtError,
-        lambda: svc.update(debt_id_2, person="   "),
-    )
-
-    print("\n--- write_off() ---")
-    resultado_3 = svc.create(
-        person="Vecino",
-        debt_type="a_favor",
-        amount=500.0,
-        currency_code="ARS",
-        date_str="2026-03-01",
-        concept="Préstamo herramienta",
-    )
-    debt_id_3 = resultado_3.debt_id
-
-    res_write_off = svc.write_off(debt_id_3, notes="Se perdió contacto, se da de baja")
-    caso("write_off() devuelve success=True", True, res_write_off.success)
-    fila_write_off = svc.get(debt_id_3)
-    caso("write_off() deja estado 'incobrable'", "incobrable", fila_write_off["estado"])
-
-    caso_excepcion(
-        "write_off() sobre una deuda ya incobrable sigue lanzando DebtAlreadySettledError",
-        DebtAlreadySettledError,
-        lambda: svc.write_off(debt_id_3, notes="segundo intento"),
-    )
-    caso_excepcion(
-        "update() sobre una deuda ya incobrable sigue lanzando DebtAlreadySettledError",
-        DebtAlreadySettledError,
-        lambda: svc.update(debt_id_3, person="Otro"),
-    )
-    caso_excepcion(
-        "write_off() sobre id inexistente sigue lanzando DebtNotFoundError",
-        DebtNotFoundError,
-        lambda: svc.write_off(999999),
-    )
-
-    manager.desconectar()
-
-    print(f"\n--- Resumen: {casos_ok}/{casos_total} casos OK ---")
+    print(f"\n{casos_ok}/{casos_total} casos OK")
 
 
 if __name__ == "__main__":

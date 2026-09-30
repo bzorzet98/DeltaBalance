@@ -51,6 +51,7 @@ from services.dashboard_service import DashboardService
 from services.debts_service import DebtsService
 from services.savings_service import SavingsService
 from services.shared_expenses_service import SharedExpensesService
+from services.snapshots_service import SnapshotsService
 from services.transaction_service import TransactionService
 from ui.components import registro_transacciones
 from ui.theme.tokens import TypographyTokens
@@ -66,6 +67,7 @@ def build(
     shared_expenses_service: SharedExpensesService,
     savings_service: SavingsService,
     debts_service: DebtsService,
+    snapshots_service: SnapshotsService,
     on_ir_a_cuentas: Callable[[], None],
 ) -> ft.Control:
     hoy = date.today()
@@ -222,6 +224,7 @@ def build(
                 debts_service,
                 estado,
                 on_cambio=_refrescar_datos,
+                snapshots_service=snapshots_service,  # fila SALDO ANTERIOR + ↻ del Registro
             ),
         ]
         page.update()

@@ -136,9 +136,10 @@ def main() -> None:
     print("\n--- §4: una deuda generada desde la compra bloquea el borrado ---")
     # ============================================================
     compra_5 = nueva_compra("Con deuda")
+    ars_id = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
     debts_svc.create(
-        person="Ana", debt_type="a_favor", amount=1500.0, currency_code="ARS", date_str="2026-03-05",
-        concept="Mitad de la compra", origen_tipo="compra_cuotas", origen_id=compra_5,
+        entidad_persona="Ana", concepto="Mitad de la compra", tipo="a_favor", monto_minor=150000,
+        moneda_id=ars_id, fecha="2026-03-05", origen_tipo="compra_cuotas", origen_id=compra_5,
     )
     caso_excepcion("borrar una compra con deuda vinculada → FeesError", FeesError, lambda: svc.delete_purchase(compra_5))
     caso("la compra con deuda sigue existiendo", True, existe_compra(compra_5))

@@ -2,7 +2,7 @@
 DeltaBalance — db/database.py
 
 Clase de conexión a la base de datos SQLite: apertura/cierre, transacciones,
-inicialización (schema + seed + migraciones de columna), backup, y las
+inicialización (schema + seed + migraciones de columna y de tabla), backup, y las
 utilidades crudas (fetchall/fetchone/execute) que usan repositories/ y
 services/ para ejecutar SQL directo cuando hace falta.
 
@@ -133,8 +133,11 @@ class DatabaseManager:
         with open(self.schema_path, "r", encoding="utf-8") as f:
             conn.executescript(f.read())
 
-        # Migraciones de columna sobre tablas existentes (ver db/schema_migrations.py)
+        # Migraciones de columna sobre tablas existentes, y después las tablas
+        # nuevas sobre bases existentes (snapshots mensuales) — ver
+        # db/schema_migrations.py.
         schema_migrations.aplicar_migraciones_columna(conn)
+        schema_migrations.aplicar_migraciones_tabla(conn)
 
         # Aplicar seed solo si la DB era nueva
         if not ya_existia:

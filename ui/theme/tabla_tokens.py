@@ -2,8 +2,8 @@
 DeltaBalance — ui/theme/tabla_tokens.py
 
 Paleta de las pantallas estilo planilla (tema oscuro): el Registro de
-transacciones y Compras en cuotas importan estos valores de acá — nunca
-los redefinen —, así las dos pantallas se ven idénticas. Los tamaños de
+transacciones, Compras en cuotas, Gastos compartidos y Deudas importan
+estos valores de acá — nunca los redefinen —, así todas se ven idénticas. Los tamaños de
 fuente están en ui/theme/tokens.py (TypographyTokens.REGISTRO_FONT_*) y
 el alto de fila en LayoutTokens.ALTURA_FILA_TABLA; el layout propio de la
 tabla vive en ui/components/tabla_planilla.py.
@@ -24,6 +24,9 @@ BG_BARRA_FLOT = "#1e1e1e"
 BG_OVERLAY = "#2c2c2c"
 BG_MENU_CTX = "#2c2c2c"
 BG_ITEM_HOVER = "#383838"
+# Filas de pie (SALDO ANTERIOR): verde / rojo muy sutil según el signo.
+BG_PIE_POSITIVO = "#1e2a1e"
+BG_PIE_NEGATIVO = "#2a1e1e"
 
 # Bordes
 BORDER_DEFAULT = "#3a3a3a"
@@ -43,6 +46,8 @@ TEXT_SOBRE_BOTON = "#ffffff"
 # Botones de la barra flotante
 BTN_ELIMINAR = "#e53935"
 BTN_COMPARTIR = "#1976d2"
+BTN_REGISTRAR_PAGO = "#43a047"
+BTN_INCOBRABLE = "#616161"
 
 # Pesos de fuente
 PESO_HEADER = ft.FontWeight.W_500
