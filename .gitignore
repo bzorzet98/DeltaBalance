@@ -221,6 +221,10 @@ __marimo__/
 # Migrations
 migration/sources/
 
+# DeltaBalance — credenciales de Supabase para la app empaquetada (las
+# genera .github/workflows/build-linux.yml desde los secrets del repo)
+sync/credenciales_build.py
+
 # DeltaBalance — datos y preferencias locales
 .deltabalance_prefs.json
 data/*.db

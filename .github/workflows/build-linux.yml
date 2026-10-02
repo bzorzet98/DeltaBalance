@@ -1,0 +1,65 @@
+name: Build Linux
+
+on:
+  push:
+    branches: [main, MVP]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python dependencies
+        run: |
+          pip install flet==0.86.5 flet-cli supabase python-dotenv
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y cmake clang ninja-build pkg-config libgtk-3-dev
+
+      # flet build no mete las variables de entorno del build en el bundle:
+      # las credenciales viajan en un .py generado (fuera de git, ver
+      # sync/supabase_client.py). Sin los secrets, el build falla acá en vez
+      # de producir una app sin Supabase.
+      - name: Write Supabase credentials
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_ANON_KEY" ]; then
+            echo "::error::Faltan los secrets SUPABASE_URL y/o SUPABASE_ANON_KEY del repo."
+            exit 1
+          fi
+          python - <<'EOF'
+          import os
+          with open("sync/credenciales_build.py", "w", encoding="utf-8") as f:
+              f.write("# Generado por .github/workflows/build-linux.yml. No editar ni commitear.\n")
+              for nombre in ("SUPABASE_URL", "SUPABASE_ANON_KEY"):
+                  f.write(f"{nombre} = {os.environ[nombre]!r}\n")
+          EOF
+
+      - name: Build Linux
+        run: |
+          echo 'y' | flet build linux
+
+      - name: Package
+        run: |
+          tar czf DeltaBalance-linux-ubuntu22.tar.gz \
+            install.sh uninstall.sh README_INSTALACION.md build/linux
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeltaBalance-linux-ubuntu22
+          path: DeltaBalance-linux-ubuntu22.tar.gz
+          retention-days: 30
