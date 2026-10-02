@@ -147,6 +147,7 @@ USUARIO_PADDING_V = 4
 USUARIO_ESPACIADO = 2
 USUARIO_TAMANIO_NOMBRE = 14
 USUARIO_TAMANIO_EMAIL = 11
+USUARIO_TAMANIO_CERRAR_SESION = 10
 
 
 def _recorrer_controles(control: ft.Control) -> Iterator[ft.Control]:
@@ -434,7 +435,11 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
         )
         if auth.is_logged_in():
-            boton = ft.TextButton(content=ft.Text("CERRAR SESIÓN"), on_click=_cerrar_sesion)
+            # _cerrar_sesion es async: va directo como handler (con un lambda la corrutina nunca correría).
+            boton = ft.TextButton(
+                content=ft.Text("CERRAR SESIÓN", size=USUARIO_TAMANIO_CERRAR_SESION, color=ft.Colors.ERROR),
+                on_click=_cerrar_sesion,
+            )
         else:
             boton = ft.TextButton(content=ft.Text("INICIAR SESIÓN"), on_click=lambda e: _mostrar_login())
         return ft.Container(
