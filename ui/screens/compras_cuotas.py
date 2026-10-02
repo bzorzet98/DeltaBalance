@@ -31,7 +31,9 @@ de saldo del Registro: un chip por tarjeta de crédito activa (más las
 archivadas que tengan algo a pagar ese mes) con el total del período según
 FeesService.resumen_por_tarjeta() — cuotas que vencen ese mes + cargos
 extra del resumen — en la moneda elegida con las pills de la derecha.
-Verde si no queda nada a pagar (0 o a favor), color neutro si hay monto.
+El total neto (compras − reintegros) se muestra siempre sin signo (valor
+absoluto). Verde si no queda nada a pagar (0 o a favor), color neutro si
+hay monto.
 La sección "Cargos extra de este resumen" que se abría desde esa tarjeta
 se sacó (pedido explícito): los cargos se siguen cargando desde la fila de
 alta con las categorías especiales, y cuentan en el total de la barra.
@@ -46,8 +48,9 @@ está; con uno solo, es un error.
 
 --- Fila de alta ---
 
-Concepto, Tarjeta y Categoría (CampoFiltrable, sugerencias flotantes), Monto
-(CampoMonto, persistir_formula=True), Cuotas (default 1), 1ª cuota, Fecha y
+Concepto, Tarjeta y Categoría (CampoFiltrable, sugerencias flotantes), Tag
+(opcional, texto libre: TablaPlanilla.campo_tag_alta()), Monto (CampoMonto,
+persistir_formula=True), Cuotas (default 1), 1ª cuota, Fecha y
 Moneda (las monedas de la tarjeta elegida). Enter nunca guarda la fila
 salvo con el foco en el ✓: cada campo pasa al siguiente (igual que Tab) y
 en Moneda, el último, Enter o Tab llevan el foco al ✓ sin activarlo; ahí
@@ -63,41 +66,48 @@ de ahí queda la elegida). No aplica a un cargo extra (se deshabilita como
 Cuotas).
 
 Routing por CATEGORÍA al confirmar (sin cambios):
-- Categoría NORMAL: FeesService.create_purchase() con el monto y la
-  cantidad de cuotas tal cual se cargaron. El monto DEBE ser positivo.
+- Categoría NORMAL: FeesService.create_purchase() con el monto, la
+  cantidad de cuotas y el tag (vacío = None) tal cual se cargaron. El monto
+  DEBE ser positivo.
 - Categoría ESPECIAL ("Impuesto tarjeta"/"Recargo tarjeta"/
   "Ajuste/Reintegro tarjeta", services/fees_service.py
   CATEGORIAS_CARGO_EXTRA): NO crea una compra — resuelve el resumen de esa
   tarjeta y el mes/año de la fecha (FeesService.open_statement(),
   idempotente) y carga un cargo extra (add_extra_charge()) con el monto CON
-  su signo. Cuotas se deshabilita al elegir una de estas categorías.
+  su signo. Cuotas se deshabilita al elegir una de estas categorías. El tag
+  no se usa: los cargos extra no tienen.
 
 --- Filas ---
 
 Devoluciones y reintegros (monto_total_minor negativo, típicamente
-migrados desde el Excel) son filas normales: el monto se muestra "+" en
-TEXT_POSITIVO (plata que vuelve); las compras, "−" en TEXT_NEGATIVO — mismo
-lenguaje visual que el Registro.
+migrados desde el Excel) son filas normales: el monto se muestra "−" en
+TEXT_NEGATIVO; las compras (monto_total_minor positivo, lo que se paga),
+"+" en TEXT_POSITIVO (pedido explícito).
 
 Edición inline (CLAUDE.md §10): todas las columnas — Concepto, Banco,
-Categoría, Cuota del mes, Cuotas, Fecha y Moneda (entre las monedas de la
+Categoría, Tag (TablaPlanilla.celda_tag(): vacía la borra), Monto (la
+cuota del mes), Cuotas, Fecha y Moneda (entre las monedas de la
 tarjeta de la fila; el service mantiene el importe mostrado) —, todas vía
 FeesService.update_purchase() salvo Cuotas (update_purchase_cuotas(),
 regenera el cronograma con el mismo total). La cuota del mes se edita con
-el signo que se ve (− compra, + reintegro): un negativo es válido y el
+el signo que se ve (+ compra, − reintegro): un negativo es válido y el
 signo se puede dar vuelta; el nuevo total es cuota × cantidad de cuotas
 (update_purchase() acepta totales negativos). Solo mientras TODAS las
 cuotas siguen pendientes; si vence más de una este mes, no se edita desde
 acá. Qué se puede corregir lo decide el service (CLAUDE.md
 §4): si rechaza, su FeesError se muestra tal cual y la celda vuelve al
 valor anterior. Reglas replicadas en la UI:
-- Cuotas y Cuota del mes se muestran bloqueadas, con el motivo en el
+- Cuotas y Monto se muestran bloqueadas, con el motivo en el
   tooltip, si alguna cuota ya no está 'pendiente' (pedido explícito).
 - Una compra cancelada se muestra atenuada, con todas sus celdas de solo
   lectura y un ícono en la columna de acción.
 El selector de Categoría inline excluye las 3 categorías especiales (una
 compra ya cargada no puede convertirse en cargo extra). 1ª cuota es de solo
 lectura: se cambia desde el cronograma.
+
+Barra flotante: además de eliminar / compartir, la suma (Σ) de la cuota del
+mes (lo que muestra la columna Monto) de las compras seleccionadas, con su
+signo y una por moneda.
 
 Columna de acción: 📅 (TablaPlanilla.icono_accion(), visible al pasar el
 mouse) abre el cronograma de la compra — cada cuota con su mes y su
@@ -175,14 +185,15 @@ from utils.money import amount_display, amount_to_minor
 
 # --- Configuración de layout ---
 
-# Concepto/Banco/Categoría redimensionables (proporción inicial); el resto,
-# ancho fijo en px.
+# Concepto/Banco/Categoría/Tag redimensionables (proporción inicial); el
+# resto, ancho fijo en px.
 COLUMNAS = [
     Columna("concepto", "CONCEPTO", 200),
     Columna("banco", "BANCO", 130, extra_ajuste=EXTRA_AJUSTE_DOT),
     Columna("categoria", "CATEGORÍA", 140),
+    Columna("tag", "TAG", 100),
     # Monto: la cuota que vence en el mes elegido (lo que se cobra ese mes), no el total.
-    Columna("monto", "CUOTA DEL MES", 120, redimensionable=False, alineacion=ft.Alignment.CENTER_RIGHT),
+    Columna("monto", "MONTO", 120, redimensionable=False, alineacion=ft.Alignment.CENTER_RIGHT),
     Columna("cuotas", "CUOTAS", 70, redimensionable=False),
     # Mes de la cuota 1 (MM/AAAA): en el alta se elige; en las filas, solo lectura.
     Columna("primera", "1ª CUOTA", 110, redimensionable=False),
@@ -342,8 +353,8 @@ def build(
         return compra["monto_total_minor"] < 0
 
     def _monto_texto(compra: dict) -> str:
-        # La cuota del mes. Compra = plata que sale (−); reintegro/devolución = plata que vuelve (+).
-        signo = "+" if _es_reintegro(compra) else "-"
+        # La cuota del mes. Compra = lo que se paga (+); reintegro/devolución (−).
+        signo = "-" if _es_reintegro(compra) else "+"
         cuota = abs(compra["monto_cuota_mes_minor"])
         return f"{signo} {amount_display(cuota, compra['decimales'], _moneda(compra).get('simbolo') or '')}"
 
@@ -360,6 +371,8 @@ def build(
             return compra["account_name"] or ""
         if columna == "categoria":
             return compra["category_name"] or ""
+        if columna == "tag":
+            return compra["tag"] or ""
         if columna == "monto":
             return _monto_texto(compra)
         if columna == "cuotas":
@@ -384,7 +397,7 @@ def build(
         """Todo lo que la fila muestra: si no cambió, la fila cacheada se reusa tal cual."""
         return (
             compra["concepto"], compra["cuenta_id"], compra["account_name"], compra["categoria_id"],
-            compra["category_name"], compra["monto_total_minor"], compra["monto_cuota_mes_minor"],
+            compra["category_name"], compra["tag"], compra["monto_total_minor"], compra["monto_cuota_mes_minor"],
             tuple(compra["numeros_cuota_mes"]), compra["total_cuotas"], compra["fecha_compra"],
             compra["currency_code"], compra["decimales"], compra["estado"], compra["todas_pendientes"],
             compra["procesada"], compra["compartida"], compra["primera_cuota"],
@@ -401,6 +414,8 @@ def build(
         moneda_sel = monedas_por_codigo.get(codigo_sel, {})
         resumen = fees_service.resumen_por_tarjeta(ui["mes"], ui["anio"])
         totales: dict[int, int] = {}
+        # monto_total_minor viene con signo: las compras (+) suman y los
+        # reintegros/devoluciones (−) restan. El chip muestra el neto sin signo.
         for fila in resumen:
             if fila["currency_code"] == codigo_sel:
                 totales[fila["cuenta_id"]] = totales.get(fila["cuenta_id"], 0) + fila["monto_total_minor"]
@@ -414,7 +429,7 @@ def build(
             chips.append(ChipResumen(
                 color=color_cuenta(tarjeta, tarjeta["nombre"]),
                 nombre=tarjeta["nombre"],
-                monto=amount_display(total, moneda_sel.get("decimales", 2), moneda_sel.get("simbolo") or ""),
+                monto=amount_display(abs(total), moneda_sel.get("decimales", 2), moneda_sel.get("simbolo") or ""),
                 color_monto=TEXT_POSITIVO if total <= 0 else TEXT_PRIMARY,
                 moneda=codigo_sel,
             ))
@@ -648,10 +663,11 @@ def build(
 
         categoria_inicial = opciones_categoria_alta[0][0] if opciones_categoria_alta else None
         tarjeta_inicial = opciones_tarjeta[0][0] if opciones_tarjeta else None
+        campo_tag = tabla.campo_tag_alta()
         campo_categoria = tabla.campo_filtrable_alta(
             "categoria", opciones_categoria_alta, _on_categoria,
             placeholder="CATEGORÍA", valor_inicial_id=categoria_inicial,
-            on_avanzar=lambda: tabla.enfocar(campo_monto.control),
+            on_avanzar=lambda: tabla.enfocar(campo_tag),
         )
         campo_tarjeta = tabla.campo_filtrable_alta(
             "banco", opciones_tarjeta, _on_tarjeta,
@@ -684,7 +700,7 @@ def build(
         boton_confirmar = tabla.boton_confirmar_alta("AGREGAR", _confirmar_alta)
 
         alta_refs.update(
-            concepto=campo_concepto, tarjeta=campo_tarjeta, categoria=campo_categoria, monto=campo_monto,
+            concepto=campo_concepto, tarjeta=campo_tarjeta, categoria=campo_categoria, tag=campo_tag, monto=campo_monto,
             cuotas=campo_cuotas, primera=campo_primera, fecha=campo_fecha, moneda=dropdown_moneda,
             boton=boton_confirmar, sugerir_primera=_sugerir_primera,
         )
@@ -693,6 +709,7 @@ def build(
         # on_avanzar de CampoFiltrable) y nunca guarda la fila; en Moneda, el
         # último, Enter o Tab llevan al ✓ sin activarlo (ahí Enter confirma).
         campo_concepto.on_submit = lambda e: tabla.enfocar(campo_tarjeta.campo_texto)
+        campo_tag.on_submit = lambda e: tabla.enfocar(campo_monto.control)
         campo_cuotas.on_submit = lambda e: tabla.enfocar(campo_primera)
         campo_primera.on_submit = lambda e: tabla.enfocar(campo_fecha)
         tabla.tab_a_confirmar(dropdown_moneda)
@@ -702,6 +719,7 @@ def build(
                 "concepto": campo_concepto,
                 "banco": campo_tarjeta.control,
                 "categoria": campo_categoria.control,
+                "tag": campo_tag,
                 "monto": campo_monto.control,
                 "cuotas": campo_cuotas,
                 "primera": celda_primera,
@@ -806,6 +824,7 @@ def build(
                     total_fees=cantidad_cuotas,
                     first_fee_month=mes_primera,
                     first_fee_year=anio_primera,
+                    tag=alta_refs["tag"].value,  # el service lo recorta; vacío = None
                 )
             except (FeesError, ValueError) as err:
                 _mostrar_error(str(err))
@@ -842,7 +861,7 @@ def build(
 
     def _construir_celdas(compra: dict) -> dict[str, ft.Control]:
         cuenta = cuentas_por_id.get(compra["cuenta_id"])
-        color_monto = TEXT_POSITIVO if _es_reintegro(compra) else TEXT_NEGATIVO
+        color_monto = TEXT_NEGATIVO if _es_reintegro(compra) else TEXT_POSITIVO
         texto_monto = _monto_texto(compra)
 
         def _banco() -> ft.Control:
@@ -864,6 +883,7 @@ def build(
                 ),
                 "banco": tabla.celda_lectura("banco", _banco()),
                 "categoria": tabla.celda_lectura("categoria", texto_celda(compra["category_name"] or "")),
+                "tag": tabla.celda_lectura("tag", texto_celda(compra["tag"] or "", color=TEXT_MUTED)),
                 "monto": tabla.celda_lectura(
                     "monto",
                     texto_celda(texto_monto, color=color_monto, size=TypographyTokens.REGISTRO_FONT_MONTO),
@@ -886,14 +906,14 @@ def build(
             return _guardar(concepto=nuevo.strip())
 
         def _guardar_monto(monto_minor: int) -> str:
-            # Se edita la cuota del mes con el signo que se ve: − compra,
-            # + reintegro/devolución. Un negativo es válido y el signo se
+            # Se edita la cuota del mes con el signo que se ve: + compra,
+            # − reintegro/devolución. Un negativo es válido y el signo se
             # puede dar vuelta (update_purchase() acepta totales negativos).
             # Todas las cuotas de la compra valen lo mismo (split default):
             # nuevo total = cuota × cantidad de cuotas.
             if monto_minor == 0:
                 raise ValueError("EL MONTO NO PUEDE SER 0.")
-            return _guardar(monto_total_minor=-monto_minor * compra["total_cuotas"])
+            return _guardar(monto_total_minor=monto_minor * compra["total_cuotas"])
 
         def _guardar_moneda(nuevo_codigo: str) -> str:
             return _guardar(moneda_codigo=nuevo_codigo)
@@ -939,7 +959,7 @@ def build(
         else:
             celda_monto = tabla.celda_monto(
                 compra, "monto", texto_monto, color_monto,
-                -compra["monto_cuota_mes_minor"],  # con el signo que se ve (− compra, + reintegro)
+                compra["monto_cuota_mes_minor"],  # con el signo que se ve (+ compra, − reintegro)
                 compra["decimales"], _guardar_monto,
             )
 
@@ -966,6 +986,8 @@ def build(
                 opciones_categoria_edicion, str(compra["categoria_id"]),
                 lambda id_: _guardar(categoria_id=id_),
             ),
+            # update_purchase() borra el tag con "" (lo guarda como NULL).
+            "tag": tabla.celda_tag(compra, "tag", compra["tag"], lambda nuevo: _guardar(tag=nuevo)),
             "monto": celda_monto,
             "cuotas": celda_cuotas,
             "primera": celda_primera,
@@ -1191,6 +1213,8 @@ def build(
         al_recargar=_al_recargar,
         errores_esperados=(FeesError,),
         texto_vacio="NO HAY COMPRAS EN CUOTAS PARA ESTE PERÍODO.",
+        # Σ de lo que muestra la columna Monto: la cuota del mes (pedido explícito), con su signo.
+        columna_suma="monto_cuota_mes_minor",
     )
     control_tabla = tabla.construir()
     contenedor_totales.content = _barra_totales()

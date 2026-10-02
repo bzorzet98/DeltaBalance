@@ -18,8 +18,8 @@ no cambió.
 --- Indicador de sincronización ---
 
 A la derecha del título, el estado de la sincronización con Supabase
-(_indicador_sync(): SINCRONIZADO / SINCRONIZANDO… / SIN CONEXIÓN; click =
-sincronizar ahora). Toma el SyncEngine que registró ui/app.py
+(_indicador_sync(): ícono de nube + "SINC" — verde sincronizado, amarillo
+sincronizando, rojo sin conexión; click = sincronizar ahora). Toma el SyncEngine que registró ui/app.py
 (sync.sync_engine.motor_registrado()), así que no hizo falta cambiar la
 firma de build() ni la del dashboard.
 
@@ -36,12 +36,16 @@ on_cambio() (queda en la firma para no romper al dashboard).
 --- Fila de alta ---
 
 Signo del monto: negativo = egreso, positivo = ingreso. Enter nunca guarda
-la fila salvo con el foco en el ✓: Concepto → Banco → Categoría → Monto →
-Fecha → Moneda (en Banco/Categoría Enter elige la sugerencia; en Monto
+la fila salvo con el foco en el ✓: Concepto → Banco → Categoría → Tag →
+Monto → Fecha → Moneda (en Banco/Categoría Enter elige la sugerencia; en Monto
 resuelve la fórmula) y en Moneda, el último campo, Enter o Tab llevan el
 foco al ✓ sin activarlo; ahí Enter o un click confirman (TablaPlanilla.
 tab_a_confirmar()). Al guardar, la fila se reconstruye vacía con el foco en
 Concepto.
+
+Tag: etiqueta libre y opcional (vacía = None), solo en el guardado normal
+(TransactionService.create(tag=)) — la autotransferencia y el ahorro no la
+usan (create_transfer() pone su propio tag).
 
 Categorías especiales (_CATEGORIAS_ROUTING_ESPECIAL), sin cambios de
 comportamiento:
@@ -63,8 +67,9 @@ comportamiento:
 --- Filas ---
 
 Edición inline (CLAUDE.md §10): todas las columnas — Concepto, Banco,
-Categoría, Monto (con el signo que se ve, − gasto / + ingreso: un negativo
-es válido; lo que todavía no se puede es dar vuelta el signo, porque
+Categoría, Tag (TablaPlanilla.celda_tag(): vacía la borra), Monto (con el
+signo que se ve, − gasto / + ingreso: un negativo es válido; lo que
+todavía no se puede es dar vuelta el signo, porque
 TransactionService.update() no cambia tipo_movimiento), Fecha y
 Moneda (entre las monedas de la cuenta de la fila; mantiene el importe
 mostrado, TransactionService.update() recibe monto + moneda juntos). Banco
@@ -94,6 +99,8 @@ coeficiente de 0 a 1) — mismo hogar y mismo coeficiente para todas,
 salteando las ya compartidas; los ingresos se registran como pago
 recibido (coeficiente 100%, monto base negativo), igual que en el flujo de
 una fila.
+La barra muestra además la suma (Σ) de los montos seleccionados, con el
+signo que se ve (− gasto, + ingreso) y una por moneda.
 
 --- Saldo anterior (snapshots de cierre de mes) ---
 
@@ -176,6 +183,7 @@ COLUMNAS = [
     Columna("concepto", "CONCEPTO", 220),
     Columna("banco", "BANCO", 130, extra_ajuste=EXTRA_AJUSTE_DOT),
     Columna("categoria", "CATEGORÍA", 150),
+    Columna("tag", "TAG", 100),
     Columna("monto", "MONTO", 120, alineacion=ft.Alignment.CENTER_RIGHT),
     Columna("fecha", "FECHA", 110),
     Columna("moneda", "MONEDA", 80, ancho_min=60),
@@ -193,17 +201,19 @@ MENSAJE_SIGNO_NO_EDITABLE = (
 )
 
 # Indicador de sincronización con Supabase (barra superior, a la derecha del título).
-COLOR_SYNC_EN_CURSO = "#f5b942"  # amarillo: no hay token de "en curso" en ui/theme/tabla_tokens.py
-DIAMETRO_PUNTO_SYNC = 10
-PADDING_INDICADOR_H = 12
+COLOR_SYNC_EN_CURSO = "#FFC107"  # amarillo: no hay token de "en curso" en ui/theme/tabla_tokens.py
+TEXTO_INDICADOR_SYNC = "SINC"
+TAMANIO_ICONO_SYNC = 16
+ESPACIO_ICONO_SYNC = 4
+PADDING_INDICADOR_H = 10
 ALTURA_INDICADOR = 36
 RADIO_INDICADOR = 18
-# estado de SyncEngine → (texto, color).
+# estado de SyncEngine → (ícono, color, tooltip corto).
 ESTADOS_INDICADOR_SYNC = {
-    ESTADO_SINCRONIZADO: ("SINCRONIZADO", TEXT_POSITIVO),
-    ESTADO_SINCRONIZANDO: ("SINCRONIZANDO…", COLOR_SYNC_EN_CURSO),
-    ESTADO_SIN_CONEXION: ("SIN CONEXIÓN", TEXT_NEGATIVO),
-    ESTADO_SIN_SESION: ("SIN CONEXIÓN", TEXT_NEGATIVO),
+    ESTADO_SINCRONIZADO: (ft.Icons.CLOUD_DONE, TEXT_POSITIVO, "SINCRONIZADO"),
+    ESTADO_SINCRONIZANDO: (ft.Icons.CLOUD_SYNC, COLOR_SYNC_EN_CURSO, "SINCRONIZANDO…"),
+    ESTADO_SIN_CONEXION: (ft.Icons.CLOUD_OFF, TEXT_NEGATIVO, "SIN CONEXIÓN"),
+    ESTADO_SIN_SESION: (ft.Icons.CLOUD_OFF, TEXT_NEGATIVO, "SIN SESIÓN"),
 }
 
 # Categorías especiales de routing de la fila de alta — clave:
@@ -230,7 +240,7 @@ _ESTADOS_UI: dict[int, dict] = {}
 def _alta_vacia() -> dict:
     return {
         "concepto": "", "cuenta_id": None, "categoria_id": None,
-        "monto": "", "fecha": date.today().isoformat(), "moneda": None,
+        "tag": "", "monto": "", "fecha": date.today().isoformat(), "moneda": None,
     }
 
 
@@ -352,6 +362,8 @@ def build(
             return t["account_name"] or ""
         if columna == "categoria":
             return t["category_name"] or ""
+        if columna == "tag":
+            return t["tag"] or ""
         if columna == "monto":
             return _monto_con_signo(t)
         if columna == "fecha":
@@ -367,7 +379,7 @@ def build(
     def _firma(t: dict) -> tuple:
         """Todo lo que la fila muestra: si no cambió, la fila cacheada se reusa tal cual."""
         return (
-            t["concepto"], t["cuenta_id"], t["account_name"], t["categoria_id"], t["category_name"],
+            t["concepto"], t["cuenta_id"], t["account_name"], t["categoria_id"], t["category_name"], t["tag"],
             t["monto_minor"], t["tipo_movimiento"], t["fecha"], t["currency_code"], t["decimales"],
             t["currency_symbol"], t["id"] in datos["compartidos"],
             tuple(d["id"] for d in datos["deudas"].get(t["id"], [])),
@@ -478,6 +490,7 @@ def build(
             "concepto": alta_refs["concepto"].value or "",
             "cuenta_id": alta_refs["cuenta"].id_seleccionado,
             "categoria_id": alta_refs["categoria"].id_seleccionado,
+            "tag": alta_refs["tag"].value or "",
             "monto": alta_refs["monto"].texto,
             "fecha": alta_refs["fecha"].value or "",
             "moneda": alta_refs["moneda"].value,
@@ -515,10 +528,11 @@ def build(
                 _refrescar_monedas(id_cuenta)
             _guardar_borrador_alta()
 
+        campo_tag = tabla.campo_tag_alta(borrador.get("tag") or "")
         campo_categoria = tabla.campo_filtrable_alta(
             "categoria", opciones_categoria, lambda id_: _guardar_borrador_alta(),
             placeholder="CATEGORÍA", valor_inicial_id=categoria_inicial,
-            on_avanzar=lambda: tabla.enfocar(campo_monto.control),
+            on_avanzar=lambda: tabla.enfocar(campo_tag),
         )
         campo_cuenta = tabla.campo_filtrable_alta(
             "banco", opciones_cuenta, _on_cuenta,
@@ -550,7 +564,7 @@ def build(
         boton_confirmar = tabla.boton_confirmar_alta("AGREGAR MOVIMIENTO", _confirmar_alta)
 
         alta_refs.update(
-            concepto=campo_concepto, cuenta=campo_cuenta, categoria=campo_categoria,
+            concepto=campo_concepto, cuenta=campo_cuenta, categoria=campo_categoria, tag=campo_tag,
             monto=campo_monto, fecha=campo_fecha, moneda=dropdown_moneda, boton=boton_confirmar,
         )
 
@@ -560,6 +574,8 @@ def build(
         # sin activarlo — ahí Enter (o un click) confirma.
         campo_concepto.on_submit = lambda e: tabla.enfocar(campo_cuenta.campo_texto)
         campo_concepto.on_change = _on_cambio_borrador
+        campo_tag.on_submit = lambda e: tabla.enfocar(campo_monto.control)
+        campo_tag.on_change = _on_cambio_borrador
         dropdown_moneda.on_select = _on_cambio_borrador
         tabla.tab_a_confirmar(dropdown_moneda)
 
@@ -568,6 +584,7 @@ def build(
                 "concepto": campo_concepto,
                 "banco": campo_cuenta.control,
                 "categoria": campo_categoria.control,
+                "tag": campo_tag,
                 "monto": campo_monto.control,
                 "fecha": celda_fecha,
                 "moneda": ft.Row([dropdown_moneda], spacing=0),
@@ -665,6 +682,7 @@ def build(
                 currency_code=moneda_codigo,
                 amount=abs(monto_con_signo),
                 movement_type="egreso" if monto_con_signo < 0 else "ingreso",
+                tag=(alta_refs["tag"].value or "").strip() or None,
             )
         except (TransactionError, ValueError) as err:
             _mostrar_error(str(err))  # la fila queda como estaba para corregir
@@ -948,6 +966,8 @@ def build(
                 opciones_categoria, str(t["categoria_id"]),
                 lambda id_: _guardar(t, category_id=id_),
             ),
+            # update() borra el tag con "" (lo guarda como NULL).
+            "tag": tabla.celda_tag(t, "tag", t["tag"], lambda nuevo: _guardar(t, tag=nuevo.strip())),
             "monto": tabla.celda_monto(
                 t, "monto", _monto_con_signo(t), TEXT_NEGATIVO if _es_egreso(t) else TEXT_POSITIVO,
                 -t["monto_minor"] if _es_egreso(t) else t["monto_minor"], decimales, _guardar_monto,
@@ -1173,6 +1193,9 @@ def build(
         filas_pie=_filas_pie,
         errores_esperados=(TransactionError,),
         texto_vacio="NO HAY MOVIMIENTOS PARA MOSTRAR.",
+        # monto_minor se guarda en positivo: el signo sale de tipo_movimiento (− gasto, + ingreso).
+        columna_suma="monto_minor",
+        signo_suma=lambda t: -1 if _es_egreso(t) else 1,
     )
     control_tabla = tabla.construir()
     contenedor_saldos.content = _barra_saldos()
@@ -1197,17 +1220,19 @@ def build(
 def _indicador_sync(page: ft.Page) -> ft.Control:
     """
     Estado de la sincronización con Supabase (sync/sync_engine.py, el motor
-    que registró ui/app.py): verde SINCRONIZADO, amarillo SINCRONIZANDO…,
-    rojo SIN CONEXIÓN (también trabajando sin sesión). Tooltip: la última
-    sincronización y su resultado. Click: fuerza una sincronización completa
-    en otro hilo. El motor avisa cada cambio de estado desde el hilo de la
-    sync: el repintado pasa a la UI con page.run_task(). El oyente se
-    registra con una clave fija ("registro"): cuando el Registro se
-    reconstruye, el indicador nuevo reemplaza al viejo.
+    que registró ui/app.py), compacto: ícono de nube + "SINC" — verde
+    CLOUD_DONE sincronizado, amarillo CLOUD_SYNC sincronizando, rojo
+    CLOUD_OFF sin conexión (también trabajando sin sesión). Tooltip de una
+    línea: el estado, la hora de la última sincronización y, si la hubo, la
+    cantidad de errores. Click: fuerza una sincronización completa en otro
+    hilo. El motor avisa cada cambio de estado desde el hilo de la sync: el
+    repintado pasa a la UI con page.run_task(). El oyente se registra con una
+    clave fija ("registro"): cuando el Registro se reconstruye, el indicador
+    nuevo reemplaza al viejo.
     """
     motor = motor_registrado()
-    punto = ft.Container(width=DIAMETRO_PUNTO_SYNC, height=DIAMETRO_PUNTO_SYNC, border_radius=DIAMETRO_PUNTO_SYNC / 2)
-    texto = ft.Text(size=TypographyTokens.REGISTRO_FONT_SALDO_BAR, weight=ft.FontWeight.W_500)
+    icono = ft.Icon(ft.Icons.CLOUD_OFF, size=TAMANIO_ICONO_SYNC)  # _pintar() pone el del estado
+    texto = ft.Text(TEXTO_INDICADOR_SYNC, size=TypographyTokens.REGISTRO_FONT_SALDO_BAR, weight=ft.FontWeight.W_500)
     indicador = ft.Container(
         height=ALTURA_INDICADOR,
         padding=ft.Padding.symmetric(horizontal=PADDING_INDICADOR_H),
@@ -1215,32 +1240,30 @@ def _indicador_sync(page: ft.Page) -> ft.Control:
         border=ft.Border.all(1, BORDER_DEFAULT),
         border_radius=RADIO_INDICADOR,
         alignment=ft.Alignment.CENTER,
-        content=ft.Row([punto, texto], spacing=ESPACIADO, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER),
+        content=ft.Row(
+            [icono, texto], spacing=ESPACIO_ICONO_SYNC, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        ),
     )
 
     def _estado() -> str:
         return motor.estado if motor is not None and motor.hay_sesion() else ESTADO_SIN_SESION
 
-    def _tooltip(estado: str) -> str:
-        if estado == ESTADO_SIN_SESION:
-            return "TRABAJANDO SIN CONEXIÓN: INICIÁ SESIÓN DESDE LA BARRA LATERAL PARA SINCRONIZAR."
-        if estado == ESTADO_SINCRONIZANDO:
-            return "SINCRONIZANDO CON SUPABASE…"
-        partes = []
-        if motor.ultima_sync is not None:
-            partes.append(f"ÚLTIMA SINCRONIZACIÓN: {motor.ultima_sync:%H:%M}")
-        if motor.ultimo_resultado is not None:
-            partes.append(motor.ultimo_resultado.mensaje)
-        partes.append("CLICK PARA SINCRONIZAR AHORA.")
-        return "\n".join(partes)
+    def _tooltip(estado: str, etiqueta: str) -> str:
+        partes = [etiqueta]
+        if estado in (ESTADO_SINCRONIZADO, ESTADO_SIN_CONEXION) and motor.ultima_sync is not None:
+            partes.append(f"{motor.ultima_sync:%H:%M}")
+        resultado = motor.ultimo_resultado if motor is not None else None
+        if estado == ESTADO_SINCRONIZADO and resultado is not None and resultado.errores:
+            partes.append(f"{resultado.errores} ERROR(ES)")
+        return " · ".join(partes)
 
     def _pintar() -> None:
         estado = _estado()
-        etiqueta, color = ESTADOS_INDICADOR_SYNC.get(estado, ESTADOS_INDICADOR_SYNC[ESTADO_SIN_CONEXION])
-        punto.bgcolor = color
-        texto.value = etiqueta
+        nube, color, etiqueta = ESTADOS_INDICADOR_SYNC.get(estado, ESTADOS_INDICADOR_SYNC[ESTADO_SIN_CONEXION])
+        icono.icon = nube
+        icono.color = color
         texto.color = color
-        indicador.tooltip = _tooltip(estado)
+        indicador.tooltip = _tooltip(estado, etiqueta)
 
     async def _repintar() -> None:
         _pintar()

@@ -126,6 +126,11 @@ los anchos de columna. Mientras la capa tapa todo, el dashboard no puede
 scrollear, así que esa posición no queda vieja. (Flet no tiene
 page.on_click ni stop_propagation: la capa cumple ese rol.)
 
+Filtro de columna (▼): la lista de valores con checkbox elige valores
+exactos. Con texto en BUSCAR…, APLICAR deja solo los marcados que la lista
+muestra (como en Google Sheets): así se filtra también por coincidencia
+parcial (ej. todos los tags que contienen "viaje").
+
 La barra flotante de selección vive en page.overlay por el mismo motivo
 (fija abajo de la ventana, no al final de la tabla), una por tabla, y se
 esconde cuando la pantalla se oculta (hook data["al_ocultar"] del control
@@ -184,6 +189,11 @@ el campo va sin ✓ (no entra): confirma con Enter o al salir.
 fila_atenuada(fila) (ej. compras canceladas) dibuja la fila con
 OPACIDAD_FILA_ATENUADA; qué celdas se pueden editar lo decide la pantalla.
 
+TAG (etiqueta libre, Registro / Compras en cuotas / Deudas): celda_tag()
+y campo_tag_alta() — mismo estilo en las tres. Vacía, la celda muestra
+TEXTO_TAG_VACIO en TEXT_MUTED; la edición arranca vacía y guardar "" la
+borra (la pantalla pasa None al service).
+
 Filas de pie (filas_pie → FilaPie, ej. SALDO ANTERIOR): van al final, después
 de un ft.Divider, con fondo verde/rojo muy sutil según el signo y texto
 tenue; sin checkbox, no se editan ni se seleccionan (no están en _datos, así
@@ -215,6 +225,15 @@ agrega botones circulares propios de la pantalla (AccionBarra: ej.
 "Registrar pago"); motivo_deshabilitada(filas) los deja grises con el
 motivo en el tooltip. aviso_barra(mensaje) muestra un error en la misma
 barra (en lugar de un SnackBar) hasta que cambia la selección.
+
+Σ (columna_suma): con una columna de monto en minor units, la barra suma
+la de las filas seleccionadas y la muestra junto a la cantidad, con el
+mismo formato que los montos de la tabla ("+ $45,320.00 ARS"). Una suma
+por moneda si hay varias (ARS primero, separadas por SEPARADOR_SUMA); el
+signo se respeta (neto). signo_suma(fila) → 1 / -1 da el signo cuando la
+columna lo guarda en positivo (el Registro: tipo_movimiento). Las filas
+traen currency_code, currency_symbol y decimales, como las devuelven los
+services.
 
 --- Sin confirmar corriendo la app (docs/FLET_API_NOTES.md, regla 2) ---
 
@@ -277,6 +296,7 @@ from ui.theme.tabla_tokens import (
 )
 from ui.theme.tokens import LayoutTokens, TypographyTokens
 from ui.utils.prefs import escribir_pref, leer_pref
+from utils.money import amount_display
 
 # --- Configuración de layout ---
 
@@ -307,6 +327,7 @@ ALTURA_FILA_ALTA = ALTURA_FILA + 2 * ALTA_PADDING + ANCHO_BORDE
 ALTURA_VACIO = 48  # fila "no hay filas para mostrar"
 ALTURA_SEPARADOR_PIE = 8  # ft.Divider antes de las filas de pie (FilaPie)
 TEXTO_SIN_VALOR = "—"  # celda de una FilaPie sin texto propio
+TEXTO_TAG_VACIO = "ETIQUETA..."  # celda TAG vacía y placeholder del alta (celda_tag() / campo_tag_alta())
 ALTA_RADIO_CAMPO = 4
 ICONO_HEADER = 16
 ICONO_CALENDARIO = 14
@@ -358,6 +379,7 @@ PILL_ALTURA = 32
 PILL_PADDING_H = 12
 PILL_RADIO = 16
 MONEDA_DEFAULT = "ARS"
+SEPARADOR_SUMA = " · "  # entre las sumas por moneda de la barra flotante (columna_suma)
 
 # Overlay de filtro
 ANCHO_OVERLAY_FILTRO = 240
@@ -1047,6 +1069,11 @@ class TablaPlanilla:
         errores_esperados: excepciones de dominio que rechazan un valor
                           editado (además de ValueError).
         texto_vacio:      Fila que se muestra si no hay filas visibles.
+        columna_suma:     Columna de las filas (monto en minor units) que la
+                          barra flotante suma (Σ) sobre las seleccionadas. None
+                          = sin suma. Ver docstring, "Barra flotante".
+        signo_suma:       fila → 1 o -1, si el signo no está en columna_suma
+                          (ej. el Registro). None = el valor tal cual.
     """
 
     def __init__(
@@ -1073,6 +1100,8 @@ class TablaPlanilla:
         filas_pie: Optional[Callable[[], list[FilaPie]]] = None,
         errores_esperados: tuple[type[Exception], ...] = (),
         texto_vacio: str = "NO HAY FILAS PARA MOSTRAR.",
+        columna_suma: Optional[str] = None,
+        signo_suma: Optional[Callable[[dict], int]] = None,
     ):
         self._page = page
         self._clave = clave
@@ -1097,6 +1126,8 @@ class TablaPlanilla:
         self._filas_pie = filas_pie
         self._errores = (ValueError, *errores_esperados)
         self._texto_vacio = texto_vacio
+        self._columna_suma = columna_suma
+        self._signo_suma = signo_suma
 
         self._ui = _estado_tabla(page, clave, columnas, pref_anchos)
         self._datos: list[dict] = []
@@ -1398,6 +1429,19 @@ class TablaPlanilla:
 
         _mostrar(actualizar=False)
         return celda
+
+    def celda_tag(
+        self, fila: dict, clave: str, tag: Optional[str], on_guardar: Callable[[str], Optional[str]],
+    ) -> ft.Container:
+        """Celda TAG (texto libre): vacía muestra TEXTO_TAG_VACIO tenue; on_guardar recibe "" para borrarla."""
+        return self.celda_texto(
+            fila, clave, tag or TEXTO_TAG_VACIO, on_guardar, valor_inicial=tag or "",
+            color=TEXT_PRIMARY if tag else TEXT_MUTED,
+        )
+
+    def campo_tag_alta(self, valor: str = "") -> ft.TextField:
+        """Campo TAG de la fila de alta (opcional): la pantalla lo encadena con on_submit/on_change."""
+        return ft.TextField(value=valor, hint_text=TEXTO_TAG_VACIO, text_align=ft.TextAlign.CENTER, **estilo_campo())
 
     def celda_filtrable(
         self, fila: dict, clave: str, contenido_lectura: Callable[[], ft.Control],
@@ -2007,10 +2051,13 @@ class TablaPlanilla:
             self.refrescar(lista)
 
         def _aplicar(e=None) -> None:
-            if marcados >= set(valores):
+            # Con texto en BUSCAR…, solo cuenta lo que la lista muestra (coincidencia parcial).
+            texto = texto_busqueda["valor"].lower()
+            elegidos = {v for v in marcados if texto in v.lower()} if texto else set(marcados)
+            if elegidos >= set(valores):
                 self._ui["filtros"].pop(clave, None)
             else:
-                self._ui["filtros"][clave] = set(marcados)
+                self._ui["filtros"][clave] = elegidos
             self._cerrar_popups()
             self._redibujar()
             self.refrescar(self._contenedor_header, self._tabla_filas, self._barra)
@@ -2546,6 +2593,22 @@ class TablaPlanilla:
         if seleccionadas:
             accion.on_click(seleccionadas)
 
+    def _texto_suma(self) -> str:
+        """Σ de columna_suma sobre las filas seleccionadas, una por moneda (ver docstring, "Barra flotante")."""
+        totales: dict[str, list] = {}  # codigo → [minor, decimales, símbolo]
+        for fila in self._seleccionadas():
+            signo = self._signo_suma(fila) if self._signo_suma else 1
+            codigo = fila.get("currency_code") or ""
+            total = totales.setdefault(codigo, [0, fila.get("decimales", 2), fila.get("currency_symbol") or ""])
+            total[0] += signo * (fila.get(self._columna_suma) or 0)
+        partes = [
+            f"{'-' if minor < 0 else '+'} {amount_display(abs(minor), decimales, simbolo)} {codigo}"
+            for codigo, (minor, decimales, simbolo) in sorted(
+                totales.items(), key=lambda par: (par[0] != MONEDA_DEFAULT, par[0]),
+            )
+        ]
+        return "Σ " + SEPARADOR_SUMA.join(partes) if partes else ""
+
     def _actualizar_barra(self) -> None:
         cantidad = len(self._ui["seleccion"])
         self._barra.visible = cantidad > 0 and self._ui["visible"]
@@ -2557,6 +2620,11 @@ class TablaPlanilla:
             ft.IconButton(icon=ft.Icons.CLOSE, icon_color=TEXT_SECONDARY, tooltip="CANCELAR SELECCIÓN",
                           on_click=self._cancelar_seleccion),
             ft.Text(f"{cantidad} FILA{plural} SELECCIONADA{plural}", size=tamanio, weight=PESO_MONTO, color=TEXT_PRIMARY),
+        ]
+        suma = self._texto_suma() if self._columna_suma is not None else ""
+        if suma:
+            controles.append(ft.Text(suma, size=tamanio, weight=PESO_MONTO, color=TEXT_PRIMARY))
+        controles += [
             ft.Container(width=ANCHO_BORDE, height=DIAMETRO_BOTON_FLOT, bgcolor=BORDER_BARRA),
             self._boton_circular(ft.Icons.DELETE_OUTLINE, BTN_ELIMINAR, "ELIMINAR", self._pedir_confirmacion),
             ft.Text("ELIMINAR", size=tamanio, color=TEXT_PRIMARY),

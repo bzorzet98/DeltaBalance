@@ -7,40 +7,51 @@ revés.
 
 --- Qué se guarda en Supabase ---
 
-Una tabla genérica, `deltabalance_filas` (sync/supabase_schema.sql): una
-fila remota por fila local, con clave (usuario_id, tabla, clave) — la clave
-primaria local como texto: el UUID de la fila, o '<uuid>|1' si la clave
-primaria es compuesta (cuentas_saldos, hogar_miembros) — y la
-fila entera en `datos` (jsonb). Por qué genérica y no una tabla remota por
+Dos tablas genéricas, una fila remota por fila local, con la fila entera en
+`datos` (texto JSON, json.dumps):
+- `deltabalance_filas` (uuid, usuario_id, tabla, datos, created_at,
+  updated_at): las tablas privadas, con el usuario_id de la sesión.
+- `deltabalance_compartidos` (uuid, hogar_uuid, tabla, datos, created_at,
+  updated_at): TABLAS_COMPARTIDAS, con el id del hogar de la fila (hogares:
+  el propio; gasto_compartido_pagos: el de su gasto).
+`uuid` (la clave del upsert) es el id de la fila — ya es un UUID (sección
+25), el mismo en toda computadora —, o uuid_compuesto() si la clave
+primaria es compuesta (CLAVES_SYNC: cuentas_saldos, hogar_miembros): un
+UUID v5 de la tabla y la clave local, el mismo cálculo que
+migration/subir_a_supabase.py. Dentro de `datos` viajan dos marcas que no
+son columnas (SyncRepository.guardar_fila() las ignora): MARCA_BORRADO (un
+borrado local sube como {clave primaria, "_borrado": true}) y
+MARCA_MODIFICADO (cuándo cambió la fila en su computadora: el reloj de
+last-write-wins). `updated_at` es la hora del servidor de la última
+escritura — desde dónde bajar —: la app no la manda, Supabase la tiene que
+actualizar en cada upsert. Por qué genéricas y no una tabla remota por
 tabla local: el schema local cambia seguido (columnas nuevas vía
 db/schema_migrations.py), y con tablas espejo cada columna nueva rompería
-la subida hasta tocar Supabase a mano. Además: `borrado` (un borrado local
-viaja como marca), `actualizado_local` (cuándo cambió la fila en su
-computadora: el reloj de last-write-wins), `hogar_codigo` (solo tablas
-compartidas: el codigo_invitacion del hogar, para que RLS deje ver la fila
-a los miembros del hogar) y `subido_en` (hora del servidor: desde dónde
-bajar). La pertenencia a un hogar vive en `deltabalance_hogar_miembros`
-(codigo, usuario_id), que se llena al subir cada hogar.
+la subida hasta tocar Supabase a mano.
 
 --- Qué se sube y qué se baja (decisiones con el usuario) ---
 
 - Se SUBE todo lo pendiente de TABLAS_SINCRONIZADAS: lo que registraron los
   triggers en sync_cambios (altas, ediciones y borrados) y las filas que
   nunca se sincronizaron (sincronizado_en NULL, las anteriores a los
-  triggers). Después: sincronizado_en = ahora y fuera de sync_cambios.
-- Se BAJA solo lo PROPIO (usuario_id = el de la sesión): sirve para
-  recuperar la base en otra computadora. Los ids son UUID (sección 25),
-  así que la clave remota de una fila es su id y es la misma en toda
-  computadora. Las filas del otro miembro del hogar NO se bajan todavía:
-  un gasto suyo apunta a una transacción que solo existe en su base y la
-  pantalla de Compartidos no sabe mostrarlo (otra tarea).
+  triggers). Después: sincronizado_en = ahora y fuera de sync_cambios. Una
+  fila compartida sin hogar encontrable no se sube (cuenta como error).
+- Se BAJA lo PROPIO de deltabalance_filas (usuario_id = el de la sesión) —
+  sirve para recuperar la base en otra computadora — y, de
+  deltabalance_compartidos, las filas de los hogares que YA están en esta
+  base, incluidas las del otro miembro del hogar. Un hogar que todavía no
+  está acá no se baja: restaurar en una computadora nueva no trae las
+  compartidas. Una fila del otro miembro que apunta a algo que solo existe
+  en su base (ej. gasto_compartido_pagos.transaccion_id) falla por FK y se
+  cuenta como error.
 - Restaurar sobre una base nueva: el seed ya trae categorías y "Caja
   Efectivo" con UUIDs propios. SyncRepository.guardar_fila() las reconoce
   por clave natural (CLAVES_NATURALES) y les pone el id remoto, en vez de
   chocar con el UNIQUE.
 - Conflicto (la fila cambió de los dos lados): last-write-wins por
-  actualizado_local — _resolver_conflicto(). Una fila sin fecha conocida
-  (nunca editada desde que existen los triggers) pierde siempre.
+  MARCA_MODIFICADO (o updated_en / creada_en de `datos`) —
+  _resolver_conflicto(). Una fila sin fecha conocida (nunca editada desde
+  que existen los triggers) pierde siempre.
 - PRIMERA sincronización de un usuario en una computadora (sin marca en
   prefs "sync_ultima_bajada"): primero se baja y lo remoto GANA todo
   conflicto — es una restauración; si no, las categorías que carga el seed
@@ -59,15 +70,17 @@ avisa a los oyentes (escuchar()) desde el hilo de la sync: el oyente tiene
 que pasar a la UI con page.run_task().
 """
 
+import json
 import sqlite3
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, Optional
 
 from db.database import DatabaseManager
-from db.schema_migrations import TABLAS_SINCRONIZADAS
+from db.schema_migrations import CLAVES_SYNC, TABLAS_SINCRONIZADAS, claves_primarias
 from repositories.sync_repository import COLUMNAS_LOCALES, SyncRepository
 from sync.auth import AuthService
 from sync.supabase_client import get_client
@@ -84,15 +97,22 @@ TABLAS_COMPARTIDAS = [
     "gastos_compartidos", "hogares", "hogar_miembros", "gasto_compartido_pagos",
 ]
 
-TABLA_REMOTA = "deltabalance_filas"
-TABLA_MIEMBROS_REMOTA = "deltabalance_hogar_miembros"
-CONFLICTO_REMOTO = "usuario_id,tabla,clave"
-CONFLICTO_MIEMBROS = "codigo,usuario_id"
+TABLA_REMOTA = "deltabalance_filas"  # las privadas
+TABLA_COMPARTIDA_REMOTA = "deltabalance_compartidos"
+CONFLICTO_REMOTO = "uuid"
 LOTE = 500
 # No cuentan al comparar una fila bajada con la local (las reescribe la
 # propia base: sincronizado_en y el trigger de updated_en).
 COLUMNAS_SIN_COMPARAR = ("sincronizado_en", "updated_en")
 MAX_ERRORES_EN_MENSAJE = 3
+
+# Marcas dentro de `datos` (no son columnas: guardar_fila() las ignora).
+MARCA_BORRADO = "_borrado"
+MARCA_MODIFICADO = "_modificado_en"
+# Espacio de nombres de uuid_compuesto(). Tiene que ser el mismo que el de
+# migration/subir_a_supabase.py (NAMESPACE_URL): con otro, la misma fila
+# caería en otra fila remota.
+NAMESPACE_CLAVE_COMPUESTA = uuid.NAMESPACE_URL
 
 PREF_ULTIMA_BAJADA = "sync_ultima_bajada"
 # Marca de "ya sincronizó" cuando no se vio ninguna fila remota todavía.
@@ -126,8 +146,8 @@ class _Contadores:
     conflictos: int = 0
     errores: int = 0
     detalle_errores: list[str] = field(default_factory=list)
-    # Mayor subido_en visto (hora del servidor): desde dónde bajar la próxima vez.
-    ultimo_subido_en: Optional[str] = None
+    # Mayor updated_at visto (hora del servidor): desde dónde bajar la próxima vez.
+    ultimo_updated_at: Optional[str] = None
     # Borrados bajados: se aplican al final, de hijos a padres (FK).
     borrados: list[tuple[str, dict]] = field(default_factory=list)
 
@@ -135,9 +155,9 @@ class _Contadores:
         self.errores += 1
         self.detalle_errores.append(texto)
 
-    def ver_subido_en(self, valor: Optional[str]) -> None:
-        if valor and (self.ultimo_subido_en is None or valor > self.ultimo_subido_en):
-            self.ultimo_subido_en = valor
+    def ver_updated_at(self, valor: Optional[str]) -> None:
+        if valor and (self.ultimo_updated_at is None or valor > self.ultimo_updated_at):
+            self.ultimo_updated_at = valor
 
 
 class _SinSesion(Exception):
@@ -145,7 +165,7 @@ class _SinSesion(Exception):
 
 
 class MarcasEnPrefs:
-    """Desde dónde bajar, por usuario: prefs "sync_ultima_bajada" = {usuario_id: subido_en}."""
+    """Desde dónde bajar, por usuario: prefs "sync_ultima_bajada" = {usuario_id: updated_at}."""
 
     def leer(self, usuario_id: str) -> Optional[str]:
         marcas = leer_pref(PREF_ULTIMA_BAJADA, {})
@@ -172,6 +192,45 @@ def _valor_json(valor: Any) -> Any:
     return valor.hex() if isinstance(valor, (bytes, bytearray)) else valor
 
 
+def uuid_compuesto(tabla: str, clave: str) -> str:
+    """UUID v5 de una fila con clave primaria compuesta (clave local: '<uuid>|1'). Mismo cálculo que migration/subir_a_supabase.py."""
+    return str(uuid.uuid5(NAMESPACE_CLAVE_COMPUESTA, f"deltabalance://{tabla}/{clave}"))
+
+
+def uuid_remoto(tabla: str, clave: str) -> str:
+    """El `uuid` de una fila en Supabase: su id (ya es un UUID), o uuid_compuesto() si su clave primaria es compuesta."""
+    return uuid_compuesto(tabla, clave) if tabla in CLAVES_SYNC else clave.lower()
+
+
+def _tabla_remota(tabla: str) -> str:
+    return TABLA_COMPARTIDA_REMOTA if tabla in TABLAS_COMPARTIDAS else TABLA_REMOTA
+
+
+def _normalizar_remota(tabla: str, remota: dict) -> dict:
+    """
+    Deja `datos` como dict — la app lo sube como texto JSON (json.dumps);
+    migration/subir_a_supabase.py, como objeto — y agrega "clave_local"
+    (la clave primaria local como texto, sacada de `datos`; None si `datos`
+    no la trae).
+    """
+    datos = remota.get("datos")
+    if isinstance(datos, str):
+        try:
+            datos = json.loads(datos) if datos else {}
+        except ValueError:
+            datos = {}
+    remota["datos"] = datos if isinstance(datos, dict) else {}
+    try:
+        remota["clave_local"] = SyncRepository.clave_de(tabla, remota["datos"])
+    except KeyError:
+        remota["clave_local"] = None
+    return remota
+
+
+def _es_borrado(remota: dict) -> bool:
+    return bool(remota["datos"].get(MARCA_BORRADO))
+
+
 # El motor que usa la app (lo registra ui/app.py): el indicador del Registro
 # lo busca acá, sin cambiar la firma de las pantallas.
 _MOTOR: Optional["SyncEngine"] = None
@@ -196,7 +255,7 @@ class SyncEngine:
         motor = SyncEngine(db, auth)
         page.run_thread(motor.sync_completo)
 
-    Usage (migration/subir_a_supabase.py, service_role, sin sesión):
+    Usage (service_role, sin sesión):
         motor = SyncEngine(db, None, cliente=get_service_client(), usuario_id=uuid)
         motor.subir_todo(tablas)
     """
@@ -255,7 +314,7 @@ class SyncEngine:
     def sync_completo(self) -> SyncResult:
         """
         1. Subir lo pendiente (sync_cambios + sincronizado_en IS NULL).
-        2. Bajar lo propio cambiado en Supabase desde la última sync.
+        2. Bajar lo propio y lo de mis hogares cambiado en Supabase desde la última sync.
         3. Conflictos: last-write-wins (_resolver_conflicto()).
         En la primera sincronización de esta computadora, al revés: bajar
         primero, con lo remoto ganando (ver docstring del módulo).
@@ -304,11 +363,12 @@ class SyncEngine:
 
     def subir_todo(self, tablas: Iterable[str]) -> dict[str, int]:
         """
-        Migración inicial (migration/subir_a_supabase.py): sube TODAS las
-        filas de esas tablas, sin mirar conflictos, las marca como
-        sincronizadas y deja la marca de bajada (esta computadora ya no hace
-        la "primera sincronización"). Devuelve cuántas filas subió por tabla.
-        Lanza la excepción de red o de Supabase tal cual.
+        Subida inicial: sube TODAS las filas de esas tablas, sin mirar
+        conflictos, las marca como sincronizadas y deja la marca de bajada
+        (esta computadora ya no hace la "primera sincronización"). Devuelve
+        cuántas filas subió por tabla. Lanza la excepción de red o de
+        Supabase tal cual, y RuntimeError al final si alguna fila no se pudo
+        subir (ej. una compartida sin hogar).
         """
         usuario_id = self._usuario_para_sync()
         db = DatabaseManager(db_path=self._db_path)
@@ -325,7 +385,9 @@ class SyncEngine:
                 subidas[tabla] = self._subir_entradas(repo, tabla, usuario_id, entradas, leido_en, c)
         finally:
             db.desconectar()
-        self._marcas.escribir(usuario_id, c.ultimo_subido_en or EPOCA)
+        if c.detalle_errores:
+            raise RuntimeError(f"{c.errores} fila(s) sin subir: " + " | ".join(c.detalle_errores[:MAX_ERRORES_EN_MENSAJE]))
+        self._marcas.escribir(usuario_id, c.ultimo_updated_at or EPOCA)
         return subidas
 
     # ----------------------------------------------------------
@@ -395,7 +457,7 @@ class SyncEngine:
             for tabla in TABLAS_SINCRONIZADAS:
                 c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, desde, c)
             self._aplicar_borrados(repo, c)
-        self._marcas.escribir(usuario_id, max(filter(None, [desde, c.ultimo_subido_en]), default=EPOCA))
+        self._marcas.escribir(usuario_id, max(filter(None, [desde, c.ultimo_updated_at]), default=EPOCA))
 
     # ----------------------------------------------------------
     # SUBIR
@@ -417,11 +479,11 @@ class SyncEngine:
         solo_clave: Optional[str] = None,
     ) -> int:
         """
-        Sube las filas pendientes de una tabla (con usuario_id). Antes mira
-        lo que ya hay en Supabase: si la versión remota es más nueva (o es
-        la primera sincronización), gana la remota y se aplica acá en vez de
-        subir. Después de subir: sincronizado_en = ahora. Devuelve cuántas
-        filas subió.
+        Sube las filas pendientes de una tabla. Antes mira lo que ya hay en
+        Supabase: si la versión remota es más nueva (o es la primera
+        sincronización), gana la remota y se aplica acá en vez de subir.
+        Después de subir: sincronizado_en = ahora. Devuelve cuántas filas
+        subió.
         """
         leido_en = _ahora_local()
         pendientes = repo.pendientes(tabla)
@@ -429,11 +491,11 @@ class SyncEngine:
             pendientes = [p for p in pendientes if p["clave"] == solo_clave]
         subidas = 0
         for lote in _lotes(pendientes, LOTE):
-            remotos = self._remotos_por_clave(tabla, usuario_id, [p["clave"] for p in lote])
+            remotos = self._remotos_por_uuid(tabla, usuario_id, [uuid_remoto(tabla, p["clave"]) for p in lote])
             a_subir: list[dict] = []
             with repo.escritura_sync() as conn:
                 for entrada in lote:
-                    remoto = remotos.get(entrada["clave"])
+                    remoto = remotos.get(uuid_remoto(tabla, entrada["clave"]))
                     if remoto is not None and self._resolver_conflicto(entrada, remoto, primera) is remoto:
                         # Gana Supabase: se aplica acá, salvo que la fila haya vuelto a cambiar recién.
                         c.conflictos += 1
@@ -445,7 +507,7 @@ class SyncEngine:
                     if entrada["operacion"] == "borrado" and remoto is None:
                         repo.quitar_cambio(conn, tabla, entrada["clave"])  # nunca llegó a subir: no hay nada que borrar
                         continue
-                    entrada["hogar_codigo_remoto"] = (remoto or {}).get("hogar_codigo")
+                    entrada["hogar_uuid_remoto"] = (remoto or {}).get("hogar_uuid")
                     a_subir.append(entrada)
             subidas += self._subir_entradas(repo, tabla, usuario_id, a_subir, leido_en, c)
         return subidas
@@ -456,72 +518,99 @@ class SyncEngine:
         """Upsert de esas entradas en Supabase y las marca sincronizadas acá."""
         subidas = 0
         for lote in _lotes(entradas, LOTE):
-            filas = [self._fila_remota(repo, tabla, usuario_id, entrada) for entrada in lote]
-            respuesta = self._cliente().table(TABLA_REMOTA).upsert(filas, on_conflict=CONFLICTO_REMOTO).execute()
+            pares: list[tuple[dict, dict]] = []
+            for entrada in lote:
+                remota = self._fila_remota(repo, tabla, usuario_id, entrada)
+                if remota is None:
+                    c.error(f"{tabla} {entrada['clave']}: no se encontró su hogar")
+                    continue
+                pares.append((entrada, remota))
+            if not pares:
+                continue
+            respuesta = (
+                self._cliente().table(_tabla_remota(tabla))
+                .upsert([remota for _, remota in pares], on_conflict=CONFLICTO_REMOTO).execute()
+            )
             for fila in respuesta.data or []:
-                c.ver_subido_en(fila.get("subido_en"))
+                c.ver_updated_at(fila.get("updated_at"))
             momento = _ahora_local()
             with repo.escritura_sync() as conn:
-                for entrada in lote:
+                for entrada, _ in pares:
                     repo.marcar_sincronizada(conn, tabla, entrada["clave"], entrada["modificado_en"] or leido_en, momento)
-            if tabla == "hogares":
-                self._subir_membresias(usuario_id, filas)
-            subidas += len(lote)
+            subidas += len(pares)
         return subidas
 
-    def _fila_remota(self, repo: SyncRepository, tabla: str, usuario_id: str, entrada: dict) -> dict:
+    def _fila_remota(self, repo: SyncRepository, tabla: str, usuario_id: str, entrada: dict) -> Optional[dict]:
+        """La fila para el upsert, o None si es compartida y no se encuentra su hogar."""
         fila = entrada.get("fila")
+        clave = entrada["clave"]
         borrado = entrada["operacion"] == "borrado" or fila is None
-        datos = {} if borrado else {c: _valor_json(v) for c, v in fila.items() if c not in COLUMNAS_LOCALES}
-        if tabla not in TABLAS_COMPARTIDAS:
-            hogar_codigo = None
-        elif borrado:
-            hogar_codigo = entrada.get("hogar_codigo_remoto")  # el del hogar donde estaba: el otro miembro ve el borrado
+        if borrado:
+            # Viaja la clave primaria: con ella la otra computadora sabe qué
+            # fila borrar (el uuid de una clave compuesta no se puede invertir).
+            datos = dict(zip(claves_primarias(tabla), repo.valores_de_clave(tabla, clave)))
+            datos[MARCA_BORRADO] = True
         else:
-            hogar_codigo = repo.hogar_codigo(tabla, fila)
-        return {
-            "usuario_id": usuario_id,
-            "tabla": tabla,
-            "clave": entrada["clave"],
-            "datos": datos,
-            "hogar_codigo": hogar_codigo,
-            "borrado": borrado,
-            "actualizado_local": self._marca_local(entrada) or None,
-        }
+            datos = {col: _valor_json(v) for col, v in fila.items() if col not in COLUMNAS_LOCALES}
+        marca = self._marca_local(entrada)
+        if marca:
+            datos[MARCA_MODIFICADO] = marca
+        remota: dict[str, Any] = {"uuid": uuid_remoto(tabla, clave), "tabla": tabla, "datos": json.dumps(datos)}
+        if tabla not in TABLAS_COMPARTIDAS:
+            remota["usuario_id"] = usuario_id
+            return remota
+        # Borrado: el hogar donde estaba, así el otro miembro ve el borrado.
+        hogar_uuid = entrada.get("hogar_uuid_remoto") if borrado else self._hogar_de(repo, tabla, fila)
+        if not hogar_uuid:
+            return None
+        remota["hogar_uuid"] = hogar_uuid
+        return remota
 
-    def _subir_membresias(self, usuario_id: str, filas_hogares: list[dict]) -> None:
-        """Quien sube un hogar es miembro de ese hogar en Supabase (por su codigo_invitacion)."""
-        membresias = [
-            {"codigo": fila["hogar_codigo"], "usuario_id": usuario_id}
-            for fila in filas_hogares if not fila["borrado"] and fila["hogar_codigo"]
-        ]
-        if membresias:
-            self._cliente().table(TABLA_MIEMBROS_REMOTA).upsert(membresias, on_conflict=CONFLICTO_MIEMBROS).execute()
+    @staticmethod
+    def _hogar_de(repo: SyncRepository, tabla: str, fila: dict) -> Optional[str]:
+        """El id del hogar de una fila compartida (None si no se encuentra)."""
+        if tabla == "hogares":
+            return fila.get("id")
+        if tabla == "gasto_compartido_pagos":
+            gasto = repo.fila("gastos_compartidos", str(fila.get("gasto_compartido_id")))
+            return gasto.get("hogar_id") if gasto is not None else None
+        return fila.get("hogar_id")
 
-    def _remotos_por_clave(self, tabla: str, usuario_id: str, claves: list[str]) -> dict[str, dict]:
-        if not claves:
+    def _remotos_por_uuid(self, tabla: str, usuario_id: str, uuids: list[str]) -> dict[str, dict]:
+        if not uuids:
             return {}
-        respuesta = (
-            self._cliente().table(TABLA_REMOTA)
-            .select("clave,datos,borrado,actualizado_local,hogar_codigo,subido_en")
-            .eq("usuario_id", usuario_id).eq("tabla", tabla).in_("clave", claves)
-            .execute()
-        )
-        return {fila["clave"]: fila for fila in respuesta.data or []}
+        consulta = self._cliente().table(_tabla_remota(tabla)).select("*").eq("tabla", tabla)
+        if tabla not in TABLAS_COMPARTIDAS:
+            consulta = consulta.eq("usuario_id", usuario_id)
+        respuesta = consulta.in_("uuid", uuids).execute()
+        return {str(fila["uuid"]).lower(): _normalizar_remota(tabla, fila) for fila in respuesta.data or []}
 
     # ----------------------------------------------------------
     # BAJAR
     # ----------------------------------------------------------
 
-    def _filas_remotas(self, tabla: str, usuario_id: str, desde: Optional[str]) -> Iterator[dict]:
+    @staticmethod
+    def _mis_hogares(repo: SyncRepository) -> list[str]:
+        return [hogar["id"] for hogar in repo.todas("hogares")]
+
+    def _filas_remotas(self, repo: SyncRepository, tabla: str, usuario_id: str, desde: Optional[str]) -> Iterator[dict]:
+        """Las propias (privadas) o las de mis hogares (compartidas) de esa tabla, con updated_at posterior a `desde`."""
+        hogares = self._mis_hogares(repo) if tabla in TABLAS_COMPARTIDAS else []
+        if tabla in TABLAS_COMPARTIDAS and not hogares:
+            return
         inicio = 0
         while True:
-            consulta = self._cliente().table(TABLA_REMOTA).select("*").eq("usuario_id", usuario_id).eq("tabla", tabla)
+            consulta = self._cliente().table(_tabla_remota(tabla)).select("*").eq("tabla", tabla)
+            if tabla in TABLAS_COMPARTIDAS:
+                consulta = consulta.in_("hogar_uuid", hogares)
+            else:
+                consulta = consulta.eq("usuario_id", usuario_id)
             if desde:
-                consulta = consulta.gt("subido_en", desde)
-            respuesta = consulta.order("subido_en").order("clave").range(inicio, inicio + LOTE - 1).execute()
+                consulta = consulta.gt("updated_at", desde)
+            respuesta = consulta.order("updated_at").order("uuid").range(inicio, inicio + LOTE - 1).execute()
             filas = respuesta.data or []
-            yield from filas
+            for fila in filas:
+                yield _normalizar_remota(tabla, fila)
             if len(filas) < LOTE:
                 return
             inicio += LOTE
@@ -531,17 +620,20 @@ class SyncEngine:
         primera: bool = False,
     ) -> int:
         """
-        Baja las filas propias de una tabla subidas después de `desde` (None
-        = todas) y las inserta o actualiza acá. Los borrados se guardan para
+        Baja las filas de una tabla escritas después de `desde` (None =
+        todas) y las inserta o actualiza acá. Los borrados se guardan para
         el final (_aplicar_borrados()). Devuelve cuántas filas cambió.
         """
         bajadas = 0
-        remotas = list(self._filas_remotas(tabla, usuario_id, desde))
+        remotas = list(self._filas_remotas(repo, tabla, usuario_id, desde))
         for lote in _lotes(remotas, LOTE):
             with repo.escritura_sync() as conn:
                 for remota in lote:
-                    c.ver_subido_en(remota.get("subido_en"))
-                    if remota.get("borrado"):
+                    c.ver_updated_at(remota.get("updated_at"))
+                    if remota["clave_local"] is None:
+                        c.error(f"{tabla} {remota.get('uuid')}: `datos` sin clave primaria")
+                        continue
+                    if _es_borrado(remota):
                         c.borrados.append((tabla, remota))
                         continue
                     if self._debe_aplicarse(repo, tabla, remota, c, primera) and self._aplicar(repo, conn, tabla, remota, c):
@@ -557,16 +649,16 @@ class SyncEngine:
             return
         with repo.escritura_sync() as conn:
             for tabla, remota in borrados:
-                if repo.fila(tabla, remota["clave"]) is None:
-                    repo.quitar_cambio(conn, tabla, remota["clave"])
+                if repo.fila(tabla, remota["clave_local"]) is None:
+                    repo.quitar_cambio(conn, tabla, remota["clave_local"])
                     continue
                 if self._debe_aplicarse(repo, tabla, remota, c, primera) and self._aplicar(repo, conn, tabla, remota, c):
                     c.bajadas += 1
 
     def _debe_aplicarse(self, repo: SyncRepository, tabla: str, remota: dict, c: _Contadores, primera: bool) -> bool:
         """¿La fila bajada pisa la local? No si es igual (el eco de lo que subió esta misma computadora) o si pierde el conflicto."""
-        local = repo.fila(tabla, remota["clave"])
-        cambio = repo.cambio(tabla, remota["clave"])
+        local = repo.fila(tabla, remota["clave_local"])
+        cambio = repo.cambio(tabla, remota["clave_local"])
         pendiente = cambio is not None or (local is not None and local.get("sincronizado_en") is None)
         if not pendiente:
             return not self._iguales(local, remota)
@@ -576,22 +668,24 @@ class SyncEngine:
 
     @staticmethod
     def _iguales(local: Optional[dict], remota: dict) -> bool:
-        if local is None or remota.get("borrado"):
+        if local is None or _es_borrado(remota):
             return False
-        datos = remota.get("datos") or {}
         return all(
             local.get(columna) == _valor_json(valor) if columna in local else True
-            for columna, valor in datos.items() if columna not in COLUMNAS_SIN_COMPARAR
+            for columna, valor in remota["datos"].items() if columna not in COLUMNAS_SIN_COMPARAR
         )
 
     def _aplicar(self, repo: SyncRepository, conn: sqlite3.Connection, tabla: str, remota: dict, c: _Contadores) -> bool:
         """Escribe acá la versión remota (o la borra). False si no se pudo (ej. una FK): se cuenta como error."""
-        clave = remota["clave"]
+        clave = remota["clave_local"]
+        if clave is None:
+            c.error(f"{tabla} {remota.get('uuid')}: `datos` sin clave primaria")
+            return False
         try:
-            if remota.get("borrado"):
+            if _es_borrado(remota):
                 repo.borrar_fila(conn, tabla, clave)
             else:
-                repo.guardar_fila(conn, tabla, remota.get("datos") or {}, _ahora_local())
+                repo.guardar_fila(conn, tabla, remota["datos"], _ahora_local())
         except sqlite3.Error as err:
             c.error(f"{tabla} {clave}: {err}")
             return False
@@ -602,14 +696,20 @@ class SyncEngine:
     # CONFLICTOS
     # ----------------------------------------------------------
 
+    @staticmethod
+    def _marca_remota(remota: dict) -> str:
+        """Cuándo cambió la fila remota en su computadora: MARCA_MODIFICADO, o updated_en/creada_en de `datos`; "" si no se sabe."""
+        datos = remota["datos"]
+        return datos.get(MARCA_MODIFICADO) or datos.get("updated_en") or datos.get("creada_en") or ""
+
     def _resolver_conflicto(self, local: dict, remoto: dict, primera: bool = False) -> dict:
         """
-        Last-write-wins: devuelve el que gana — `remoto` si su
-        actualizado_local es posterior al de la fila local, si no `local`
+        Last-write-wins: devuelve el que gana — `remoto` si su marca
+        (_marca_remota()) es posterior a la de la fila local, si no `local`
         (empate: local, que se vuelve a subir). Una fila sin fecha conocida
         pierde. En la primera sincronización de la computadora gana siempre
         la remota (restauración: ver docstring del módulo).
         """
         if primera:
             return remoto
-        return remoto if (remoto.get("actualizado_local") or "") > self._marca_local(local) else local
+        return remoto if self._marca_remota(remoto) > self._marca_local(local) else local

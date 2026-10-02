@@ -17,6 +17,7 @@ código nuevo (para una entidad nueva, el patrón correcto sigue siendo un
 repositorio dedicado).
 """
 
+import os
 import sqlite3
 import shutil
 from datetime import datetime
@@ -36,6 +37,34 @@ DATA_DIR    = BASE_DIR / "data"
 SCHEMA_PATH = BASE_DIR / "db" / "schema.sql"
 SEED_PATH   = BASE_DIR / "db" / "seed.sql"
 DB_PATH     = DATA_DIR / "deltabalanceBZ.db"
+
+# App empaquetada (flet build): la base va en la carpeta de datos de la app.
+VARIABLE_DATOS_APP = "FLET_APP_STORAGE_DATA"  # la define Flet
+NOMBRE_DB_APP      = "deltabalance.db"
+
+
+def get_db_path(app_dir: Optional[str] = None) -> Path:
+    """
+    Ruta de la base según cómo corre la app:
+
+    - app_dir explícito → <app_dir>/deltabalance.db.
+    - App empaquetada (flet build: Linux/Windows/macOS, Android, iOS):
+      Flet define FLET_APP_STORAGE_DATA con la carpeta de datos de la app,
+      que se conserva al actualizarla → <esa carpeta>/deltabalance.db. La
+      primera vez está vacía: se copia una .db ahí o se restaura desde
+      Supabase. (Flet 0.86.5 no tiene page.app_dir: por eso se lee la
+      variable, que además no necesita la página.)
+    - Desde el código (python main.py o flet run): DB_PATH
+      (data/deltabalanceBZ.db), como siempre. `flet run` también define
+      FLET_APP_STORAGE_DATA, pero dentro del proyecto (.flet/storage/data):
+      ahí se ignora — si no, la base de desarrollo pasaría a una vacía.
+    """
+    if app_dir:
+        return Path(app_dir) / NOMBRE_DB_APP
+    datos_app = os.environ.get(VARIABLE_DATOS_APP)
+    if datos_app and not Path(datos_app).resolve().is_relative_to(BASE_DIR):
+        return Path(datos_app) / NOMBRE_DB_APP
+    return DB_PATH
 
 
 # =============================================================

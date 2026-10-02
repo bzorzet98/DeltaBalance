@@ -89,6 +89,7 @@ class DeudasRepository:
         notas: Optional[str] = None,
         origen_tipo: str = "manual",
         origen_id: Optional[str] = None,
+        tag: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> str:
         """
@@ -105,10 +106,10 @@ class DeudasRepository:
         deuda_id = nuevo_id()
         sql = """
             INSERT INTO deudas
-                (id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                (id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id, tag)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
-        params = (deuda_id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
+        params = (deuda_id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id, tag)
         if conn is not None:
             conn.execute(sql, params)
         else:
@@ -187,15 +188,16 @@ class DeudasRepository:
         notas: Any = NO_CAMBIAR,
         entidad_persona: Any = NO_CAMBIAR,
         moneda_id: Any = NO_CAMBIAR,
+        tag: Any = NO_CAMBIAR,
     ) -> bool:
         """
         Update parcial: NO_CAMBIAR = no tocar ese campo; None explícito
-        escribe NULL (concepto/notas). Devuelve True si actualizó una fila.
+        escribe NULL (concepto/notas/tag). Devuelve True si actualizó una fila.
         """
         campos, valores = [], []
         for columna, valor in (
             ("entidad_persona", entidad_persona), ("concepto", concepto), ("tab", tab),
-            ("monto_minor", monto_minor), ("moneda_id", moneda_id), ("fecha", fecha), ("notas", notas),
+            ("monto_minor", monto_minor), ("moneda_id", moneda_id), ("fecha", fecha), ("notas", notas), ("tag", tag),
         ):
             if valor is not NO_CAMBIAR:
                 campos.append(f"{columna} = ?")

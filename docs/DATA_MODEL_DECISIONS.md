@@ -881,3 +881,24 @@ para aplicar).
 **Guarda:** con una base que todavía tiene ids enteros, `inicializar()` frena
 (`exigir_ids_uuid()`) con el mensaje de qué script correr, en vez de romperse en el
 primer alta.
+
+## 26. Etiqueta `tag` en compras en cuotas y deudas — ✅ implementado (vía `db/schema_migrations.py`)
+
+`compras_cuotas.tag` y `deudas.tag`: `TEXT`, nullable, texto libre — el mismo
+criterio que `transacciones.tag`, que ya existía. Vacío = `NULL` (lo
+normaliza el service: `FeesService.create_purchase()` / `update_purchase()`,
+`DebtsService.create()` / `update()`; en los `update`, `''` borra la
+etiqueta). Las tres pantallas la muestran como columna TAG, editable inline.
+
+- Se agregan con `MigracionColumna` y no en `schema.sql` (pedido explícito de
+  no tocar `schema.sql`). `compras_cuotas.tag` va en `MIGRACIONES_COLUMNA`;
+  `deudas.tag`, en `MIGRACIONES_COLUMNA_DEUDAS`, que corre después de
+  `reestructurar_deudas()`: en una base vieja esa función rearma la tabla
+  desde `DDL_DEUDAS_FINAL`, y una columna agregada antes se perdería en esa
+  misma corrida.
+- Sin dependencias con estado propio: se edita y se borra siempre
+  (CLAUDE.md §4).
+- Sincronización: viaja en `datos` como cualquier otra columna; no hace falta
+  tocar Supabase.
+- Los cargos extra de un resumen (`resumen_cargos_extra`) no tienen tag: en
+  Compras en cuotas, el tag del alta solo se usa con una categoría normal.

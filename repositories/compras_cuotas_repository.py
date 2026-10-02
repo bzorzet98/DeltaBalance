@@ -117,6 +117,7 @@ class ComprasCuotasRepository:
         total_cuotas: int,
         monto_por_cuota_minor: int,
         notas: Optional[str] = None,
+        tag: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> str:
         """
@@ -146,12 +147,12 @@ class ComprasCuotasRepository:
         sql = """
             INSERT INTO compras_cuotas
                 (id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
-                 monto_total_minor, total_cuotas, monto_por_cuota_minor, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                 monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             compra_id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
-            monto_total_minor, total_cuotas, monto_por_cuota_minor, notas,
+            monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag,
         )
         if conn is not None:
             conn.execute(sql, params)
@@ -269,13 +270,14 @@ class ComprasCuotasRepository:
         notas: Any = NO_CAMBIAR,
         monto_reintegro_minor: Any = NO_CAMBIAR,
         modo_deuda: Any = NO_CAMBIAR,
+        tag: Any = NO_CAMBIAR,
         conn: Optional[sqlite3.Connection] = None,
     ) -> bool:
         """
         Update parcial. Default NO_CAMBIAR = no tocar ese campo. Pasar None
         explícito escribe NULL a propósito (solo tiene sentido hoy para
-        `notas`, la única columna nullable de esta lista — el resto son
-        NOT NULL en el schema). Lo usan FeesService.update_purchase()/
+        `notas` y `tag`, las únicas columnas nullable de esta lista — el
+        resto son NOT NULL en el schema). Lo usan FeesService.update_purchase()/
         update_purchase_cuotas() (edición de compras, ventana de corrección
         temprana de CLAUDE.md sección 4) — este método no decide qué campo
         se puede editar ni regenera las cuotas; eso es del service.
@@ -293,6 +295,7 @@ class ComprasCuotasRepository:
         if notas                   is not NO_CAMBIAR: campos.append("notas = ?");                   valores.append(notas)
         if monto_reintegro_minor   is not NO_CAMBIAR: campos.append("monto_reintegro_minor = ?");   valores.append(monto_reintegro_minor)
         if modo_deuda              is not NO_CAMBIAR: campos.append("modo_deuda = ?");               valores.append(modo_deuda)
+        if tag                     is not NO_CAMBIAR: campos.append("tag = ?");                     valores.append(tag)
         if not campos:
             return False
         valores.append(compra_id)
