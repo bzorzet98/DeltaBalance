@@ -32,7 +32,7 @@ from services.fees_service import (
     FeeAlreadyConfirmedError,
 )
 
-from tests.helpers import make_purchase, full_statement_cycle
+from sync.tests.helpers import make_purchase, full_statement_cycle
 
 # =============================================================
 # PATHS

@@ -26,7 +26,7 @@ from services.debts_service import (
     DebtAlreadySettledError,
     PaymentExceedsBalanceError,
 )
-from tests.helpers import make_debt, make_payment
+from sync.tests.helpers import make_debt, make_payment
 
 # =============================================================
 # PATHS

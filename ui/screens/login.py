@@ -27,7 +27,6 @@ from ui.theme.tabla_tokens import (
     BG_APP,
     BG_SUPERFICIE,
     BORDER_DEFAULT,
-    TEXT_ACCENT,
     TEXT_MUTED,
     TEXT_NEGATIVO,
     TEXT_PRIMARY,
@@ -41,7 +40,10 @@ PADDING_TARJETA = 32
 RADIO_TARJETA = 12
 ANCHO_BORDE_TARJETA = 1
 ESPACIADO_TARJETA = 16
-ICONO_LOGO = 56
+# Logo de la app: relativo a assets_dir, el mismo que la sidebar (ui/app.py).
+LOGO_SRC = "icon.png"
+TAMANIO_LOGO = 80
+RADIO_LOGO = 12
 TAMANIO_TITULO = 28
 TAMANIO_PUNTO_OFFLINE = 8
 
@@ -102,7 +104,10 @@ def build(
                     "DeltaBalance", size=TAMANIO_TITULO, weight=ft.FontWeight.BOLD, color=TEXT_PRIMARY,
                     text_align=ft.TextAlign.CENTER,
                 ),
-                ft.Icon(ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED, size=ICONO_LOGO, color=TEXT_ACCENT),
+                ft.Image(
+                    src=LOGO_SRC, width=TAMANIO_LOGO, height=TAMANIO_LOGO,
+                    border_radius=RADIO_LOGO, fit=ft.BoxFit.CONTAIN,
+                ),
                 campo_email,
                 campo_password,
                 ft.Row([boton_ingresar]),

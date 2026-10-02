@@ -680,12 +680,18 @@ def barra_titulo(
     periodo: dict,
     on_cambio_periodo: Callable[[], None],
     hint_busqueda: str,
+    acciones: Optional[list[ft.Control]] = None,
 ) -> ft.Control:
     """
     Título de la pantalla (tamaño de título de página) + buscador + selector
     de mes. `periodo` es un dict con "mes"/"anio" que se muta en el lugar
     al cambiar de mes; después se llama a on_cambio_periodo(). El buscador
     filtra la tabla (TablaPlanilla.buscar()).
+
+    acciones (opcional): al extremo derecho, después del selector de mes (ej.
+    el indicador de sync del Registro). Van en la MISMA fila: con la ventana
+    angosta se achica el espacio libre primero y nada se superpone — en una
+    fila aparte, esta se desbordaba por debajo de ellas.
     """
     texto_periodo = ft.Text(size=TypographyTokens.REGISTRO_FONT_SALDO_BAR, color=TEXT_PRIMARY)
 
@@ -756,6 +762,7 @@ def barra_titulo(
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                 ),
+                *(acciones or []),
             ],
             spacing=ESPACIADO * 2,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,

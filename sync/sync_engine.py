@@ -52,12 +52,24 @@ la subida hasta tocar Supabase a mano.
   MARCA_MODIFICADO (o updated_en / creada_en de `datos`) —
   _resolver_conflicto(). Una fila sin fecha conocida (nunca editada desde
   que existen los triggers) pierde siempre.
-- PRIMERA sincronización de un usuario en una computadora (sin marca en
-  prefs "sync_ultima_bajada"): primero se baja y lo remoto GANA todo
-  conflicto — es una restauración; si no, las categorías que carga el seed
-  de una base nueva (recién creadas: más nuevas) pisarían las de Supabase.
-  Después se sube lo que no estaba. migration/subir_a_supabase.py deja la
-  marca, así su computadora nunca pasa por este caso.
+- Marca de bajada (prefs "sync_ultima_bajada"): el mayor updated_at visto
+  del servidor, con clave usuario + archivo de base (_clave_marca()). El
+  prefs vive en el directorio de trabajo, así que dos bases pueden
+  compartirlo (ej. la de desarrollo y la app empaquetada lanzada desde la
+  raíz del proyecto): con una marca solo por usuario, cada una usaría la de
+  la otra y se salteaba lo subido en el medio — o, si era nueva, se creía al
+  día y no bajaba nada. Se escribe al final de sync_completo(), recién con
+  todo bajado (si algo falla, no se mueve).
+- PRIMERA sincronización de una base (_es_primera()): ninguna fila de ESTA
+  base se sincronizó nunca (sincronizado_en NULL en todas) — app recién
+  instalada o empaquetada, base reemplazada. Se baja TODO y lo remoto GANA
+  todo conflicto — es una restauración; si no, las categorías que carga el
+  seed de una base nueva (recién creadas: más nuevas) pisarían las de
+  Supabase. Después se sube lo que no estaba.
+- Base que YA sincronizó pero no tiene marca propia (la marca vieja, solo
+  por usuario; o migration/subir_a_supabase.py, que marca las filas y deja
+  una marca de ese formato): se baja todo desde EPOCA con last-write-wins
+  normal — no como restauración, que pisaría lo editado acá sin subir.
 
 --- Hilos ---
 
@@ -77,6 +89,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional
 
 from db.database import DatabaseManager
@@ -105,6 +118,8 @@ LOTE = 500
 # propia base: sincronizado_en y el trigger de updated_en).
 COLUMNAS_SIN_COMPARAR = ("sincronizado_en", "updated_en")
 MAX_ERRORES_EN_MENSAJE = 3
+# Log de consola (mismo estilo que db/database.py): qué sube y baja cada tabla.
+PREFIJO_LOG = "[DeltaBalance][SYNC]"
 
 # Marcas dentro de `datos` (no son columnas: guardar_fila() las ignora).
 MARCA_BORRADO = "_borrado"
@@ -165,16 +180,20 @@ class _SinSesion(Exception):
 
 
 class MarcasEnPrefs:
-    """Desde dónde bajar, por usuario: prefs "sync_ultima_bajada" = {usuario_id: updated_at}."""
+    """
+    Desde dónde bajar: prefs "sync_ultima_bajada" = {clave: updated_at}. El
+    motor usa como clave usuario + archivo de base (SyncEngine._clave_marca());
+    las claves viejas, solo con el usuario, quedan en el archivo sin usarse.
+    """
 
-    def leer(self, usuario_id: str) -> Optional[str]:
+    def leer(self, clave: str) -> Optional[str]:
         marcas = leer_pref(PREF_ULTIMA_BAJADA, {})
-        return marcas.get(usuario_id) if isinstance(marcas, dict) else None
+        return marcas.get(clave) if isinstance(marcas, dict) else None
 
-    def escribir(self, usuario_id: str, valor: str) -> None:
+    def escribir(self, clave: str, valor: str) -> None:
         marcas = leer_pref(PREF_ULTIMA_BAJADA, {})
         marcas = marcas if isinstance(marcas, dict) else {}
-        marcas[usuario_id] = valor
+        marcas[clave] = valor
         escribir_pref(PREF_ULTIMA_BAJADA, marcas)
 
 
@@ -342,9 +361,9 @@ class SyncEngine:
         elegidas = [t for t in TABLAS_SINCRONIZADAS if t in set(tablas)]
 
         def _trabajo(repo: SyncRepository, usuario_id: str, c: _Contadores) -> None:
-            desde = self._marcas.leer(usuario_id)
-            if desde is None:
-                return  # nunca hubo una sync completa en esta computadora: primero esa
+            desde = self._marcas.leer(self._clave_marca(usuario_id))
+            if desde is None or self._es_primera(repo):
+                return  # todavía no hubo una sync completa de esta base: primero esa
             for tabla in elegidas:
                 c.subidas += self._subir_pendientes(repo, tabla, usuario_id, c)
             for tabla in elegidas:
@@ -387,7 +406,7 @@ class SyncEngine:
             db.desconectar()
         if c.detalle_errores:
             raise RuntimeError(f"{c.errores} fila(s) sin subir: " + " | ".join(c.detalle_errores[:MAX_ERRORES_EN_MENSAJE]))
-        self._marcas.escribir(usuario_id, c.ultimo_updated_at or EPOCA)
+        self._marcas.escribir(self._clave_marca(usuario_id), c.ultimo_updated_at or EPOCA)
         return subidas
 
     # ----------------------------------------------------------
@@ -439,25 +458,53 @@ class SyncEngine:
             mensaje=mensaje, duracion_segundos=time.perf_counter() - inicio,
         )
         self.ultimo_resultado = resultado
+        print(f"{PREFIJO_LOG} TOTAL: {mensaje} ({resultado.duracion_segundos:.1f} s)")
         self._cambiar_estado(estado)
         return resultado
 
+    @staticmethod
+    def _base_ya_sincronizo(repo: SyncRepository) -> bool:
+        """¿Alguna fila de ESTA base ya se sincronizó (sincronizado_en no NULL)? Corta en la primera tabla que tenga una."""
+        return any(fila.get("sincronizado_en") for tabla in TABLAS_SINCRONIZADAS for fila in repo.todas(tabla))
+
+    def _es_primera(self, repo: SyncRepository) -> bool:
+        """¿Primera sincronización de ESTA base? Ninguna fila sincronizada nunca (ver docstring del módulo, PRIMERA)."""
+        return not self._base_ya_sincronizo(repo)
+
+    def _clave_marca(self, usuario_id: str) -> str:
+        """La marca es de un usuario EN una base: el mismo prefs puede servir a dos bases (ver docstring, PRIMERA)."""
+        return f"{usuario_id}|{Path(self._db_path).resolve()}"
+
     def _completo(self, repo: SyncRepository, usuario_id: str, c: _Contadores) -> None:
-        desde = self._marcas.leer(usuario_id)
-        primera = desde is None
+        clave_marca = self._clave_marca(usuario_id)
+        desde = self._marcas.leer(clave_marca)
+        primera = self._es_primera(repo)
         if primera:
+            print(f"{PREFIJO_LOG} usuario {usuario_id}: PRIMERA sincronización de esta base — se baja TODO (gana lo remoto)")
+            desde = None  # una marca suelta no vale para una base que nunca sincronizó
             for tabla in TABLAS_SINCRONIZADAS:
                 c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, None, c, primera=True)
             self._aplicar_borrados(repo, c, primera=True)
             for tabla in TABLAS_SINCRONIZADAS:
                 c.subidas += self._subir_pendientes(repo, tabla, usuario_id, c, primera=True)
         else:
+            if desde is None:
+                # Ya sincronizó, pero sin marca propia (formato anterior de la
+                # marca, o migration/subir_a_supabase.py): se baja todo, con
+                # last-write-wins — NO como restauración, que pisaría con lo
+                # remoto lo editado acá que todavía no subió.
+                desde = EPOCA
+                print(f"{PREFIJO_LOG} usuario {usuario_id}: sin marca de esta base — se baja TODO (last-write-wins)")
+            else:
+                print(f"{PREFIJO_LOG} usuario {usuario_id}: se bajan los cambios posteriores a {desde}")
             for tabla in TABLAS_SINCRONIZADAS:
                 c.subidas += self._subir_pendientes(repo, tabla, usuario_id, c)
             for tabla in TABLAS_SINCRONIZADAS:
                 c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, desde, c)
             self._aplicar_borrados(repo, c)
-        self._marcas.escribir(usuario_id, max(filter(None, [desde, c.ultimo_updated_at]), default=EPOCA))
+        # Al final, recién con todo bajado: si algo falla antes, la excepción
+        # salta esta línea y la próxima vuelve a bajar desde la marca anterior.
+        self._marcas.escribir(clave_marca, max(filter(None, [desde, c.ultimo_updated_at]), default=EPOCA))
 
     # ----------------------------------------------------------
     # SUBIR
@@ -510,6 +557,8 @@ class SyncEngine:
                     entrada["hogar_uuid_remoto"] = (remoto or {}).get("hogar_uuid")
                     a_subir.append(entrada)
             subidas += self._subir_entradas(repo, tabla, usuario_id, a_subir, leido_en, c)
+        if pendientes:
+            print(f"{PREFIJO_LOG} {tabla}: {len(pendientes)} pendiente(s), {subidas} subida(s)")
         return subidas
 
     def _subir_entradas(
@@ -624,7 +673,7 @@ class SyncEngine:
         todas) y las inserta o actualiza acá. Los borrados se guardan para
         el final (_aplicar_borrados()). Devuelve cuántas filas cambió.
         """
-        bajadas = 0
+        bajadas = insertadas = 0
         remotas = list(self._filas_remotas(repo, tabla, usuario_id, desde))
         for lote in _lotes(remotas, LOTE):
             with repo.escritura_sync() as conn:
@@ -636,8 +685,19 @@ class SyncEngine:
                     if _es_borrado(remota):
                         c.borrados.append((tabla, remota))
                         continue
+                    existia = repo.fila(tabla, remota["clave_local"]) is not None  # solo para el log
                     if self._debe_aplicarse(repo, tabla, remota, c, primera) and self._aplicar(repo, conn, tabla, remota, c):
                         bajadas += 1
+                        insertadas += 0 if existia else 1
+        if tabla in TABLAS_COMPARTIDAS and not remotas and not self._mis_hogares(repo):
+            print(f"{PREFIJO_LOG} {tabla}: no se consulta Supabase (esta base no tiene ningún hogar)")
+            return bajadas
+        borradas = sum(1 for t, _ in c.borrados if t == tabla)
+        print(
+            f"{PREFIJO_LOG} {tabla}: {len(remotas)} fila(s) en Supabase → {insertadas} insertada(s), "
+            f"{bajadas - insertadas} actualizada(s)"
+            + (f", {borradas} borrado(s) a aplicar" if borradas else "")
+        )
         return bajadas
 
     def _aplicar_borrados(self, repo: SyncRepository, c: _Contadores, primera: bool = False) -> None:

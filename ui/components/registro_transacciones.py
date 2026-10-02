@@ -1205,16 +1205,14 @@ def build(
         estado["mes"], estado["anio"] = ui["mes"], ui["anio"]
         tabla.recargar(limpiar_seleccion=True)
 
+    # El indicador de sync va al extremo derecho, en la MISMA fila que el
+    # buscador y el selector de mes: en una fila aparte, con la ventana
+    # angosta la barra de título se desbordaba por debajo del indicador.
     titulo = barra_titulo(
         page, "REGISTRO DE TRANSACCIONES", tabla, ui, _al_cambiar_periodo, "BUSCAR EN EL REGISTRO…",
+        acciones=[_indicador_sync(page)],
     )
-    # El indicador de sync va a la derecha del título (barra_titulo() no tiene lugar para controles extra).
-    barra_superior = ft.Row(
-        [ft.Container(content=titulo, expand=True), _indicador_sync(page)],
-        spacing=ESPACIADO * 2,
-        vertical_alignment=ft.CrossAxisAlignment.CENTER,
-    )
-    return pantalla_planilla([barra_superior, contenedor_saldos, control_tabla])
+    return pantalla_planilla([titulo, contenedor_saldos, control_tabla])
 
 
 def _indicador_sync(page: ft.Page) -> ft.Control:

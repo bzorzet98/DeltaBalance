@@ -5,6 +5,15 @@ Cliente Supabase singleton para DeltaBalance. Credenciales en `.env` (en la
 raíz del proyecto, fuera de git): SUPABASE_URL, SUPABASE_ANON_KEY y, solo
 para migraciones, SUPABASE_SERVICE_KEY.
 
+App empaquetada (flet build): el .env no viaja en el paquete (pyproject.toml
+lo excluye: tiene la service key). Ahí la URL y la anon (publishable) key
+salen de VALORES_POR_DEFECTO — son públicas por diseño, lo que protege los
+datos es RLS. Una variable de entorno o del .env siempre manda sobre el
+default. load_dotenv() va con la ruta explícita: sin ruta llama a
+find_dotenv(), que busca el .py que lo llamó en el disco y en el paquete
+(solo .pyc, en una carpeta temporal) no encuentra ninguno y falla con
+AssertionError.
+
 Un único cliente por proceso (functools.lru_cache): la sesión del usuario
 vive en el cliente (supabase-py actualiza el header Authorization de
 PostgREST al iniciar sesión o refrescar el token), así que AuthService y
@@ -19,20 +28,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
-load_dotenv()  # carga .env si existe, no falla si no existe
-
-SUPABASE_URL = os.environ.get(
-    "SUPABASE_URL",
-    "https://cytvrechqghsbaaxckxy.supabase.co/"  # reemplazar con la URL real
-)
-SUPABASE_ANON_KEY = os.environ.get(
-    "SUPABASE_ANON_KEY", 
-    "sb_publishable_9dOsUYsdDo2KsXQ7iUdZSg_3mUUZ-bv"  # reemplazar con la anon key real
-)
-
-def get_client() -> Client:
-    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+# Con ruta explícita: sin ruta, load_dotenv() llama a find_dotenv(), que en
+# la app empaquetada falla (ver docstring). Si el archivo no existe, no pasa nada.
 load_dotenv(Path(__file__).parent.parent / ".env")
+
+# Para la app empaquetada, que no lleva .env (ver docstring). Solo lo
+# público: la service key nunca tiene default.
+VALORES_POR_DEFECTO = {
+    "SUPABASE_URL": "https://cytvrechqghsbaaxckxy.supabase.co",
+    "SUPABASE_ANON_KEY": "sb_publishable_9dOsUYsdDo2KsXQ7iUdZSg_3mUUZ-bv",
+}
 
 
 class ConfiguracionSupabaseError(Exception):
@@ -40,7 +45,7 @@ class ConfiguracionSupabaseError(Exception):
 
 
 def _variable(nombre: str) -> str:
-    valor = os.environ.get(nombre)
+    valor = os.environ.get(nombre) or VALORES_POR_DEFECTO.get(nombre)
     if not valor:
         raise ConfiguracionSupabaseError(f"Falta {nombre} en el archivo .env de la raíz del proyecto.")
     return valor
