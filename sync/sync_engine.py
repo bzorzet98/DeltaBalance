@@ -60,6 +60,14 @@ la subida hasta tocar Supabase a mano.
   la otra y se salteaba lo subido en el medio — o, si era nueva, se creía al
   día y no bajaba nada. Se escribe al final de sync_completo(), recién con
   todo bajado (si algo falla, no se mueve).
+- Supabase RECHAZA una tabla compartida (APIError, ej. RLS de
+  deltabalance_compartidos): se cuenta como error y la sync sigue con las
+  demás — las privadas se sincronizan igual y el indicador queda en
+  SINCRONIZADO, con los errores en el tooltip. Si la que falló fue una
+  BAJADA, la marca no se mueve: avanzaría con lo bajado de las privadas y
+  la próxima se saltearía las compartidas escritas en el medio. Una privada
+  rechazada, o un error de red (no es APIError), corta la sync como antes
+  (SIN CONEXIÓN).
 - PRIMERA sincronización de una base (_es_primera()): ninguna fila de ESTA
   base se sincronizó nunca (sincronizado_en NULL en todas) — app recién
   instalada o empaquetada, base reemplazada. Se baja TODO y lo remoto GANA
@@ -91,6 +99,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Optional
+
+from postgrest.exceptions import APIError
 
 from db.database import DatabaseManager
 from db.schema_migrations import CLAVES_SYNC, TABLAS_SINCRONIZADAS, claves_primarias
@@ -364,10 +374,8 @@ class SyncEngine:
             desde = self._marcas.leer(self._clave_marca(usuario_id))
             if desde is None or self._es_primera(repo):
                 return  # todavía no hubo una sync completa de esta base: primero esa
-            for tabla in elegidas:
-                c.subidas += self._subir_pendientes(repo, tabla, usuario_id, c)
-            for tabla in elegidas:
-                c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, desde, c)
+            self._subir_tablas(repo, elegidas, usuario_id, c)
+            self._bajar_tablas(repo, elegidas, usuario_id, desde, c)  # no mueve la marca: da igual si quedó incompleta
             self._aplicar_borrados(repo, c)
 
         return self._correr(_trabajo)
@@ -416,9 +424,15 @@ class SyncEngine:
     def _usuario_para_sync(self) -> str:
         if self._usuario_fijo is not None:
             return self._usuario_fijo
+        # TODO: DEBUG temporal para diagnosticar la app empaquetada — sacar junto
+        # con los print("[DEBUG] ...") de sync/supabase_client.py.
+        print(f"{PREFIJO_LOG}[DEBUG] sesión guardada: {self._auth is not None and self._auth.is_logged_in()}", flush=True)
+        print(f"{PREFIJO_LOG}[DEBUG] user_id: {self._auth.get_user_id() if self._auth else None}", flush=True)
         if self._auth is None or not self._auth.is_logged_in():
             raise _SinSesion()
-        if not self._auth.refresh_session():  # sin conexión: la excepción sube
+        renovada = self._auth.refresh_session()  # sin conexión: la excepción sube
+        print(f"{PREFIJO_LOG}[DEBUG] refresh_session: {renovada}", flush=True)
+        if not renovada:
             raise _SinSesion()
         usuario_id = self._auth.get_user_id()
         if not usuario_id:
@@ -482,11 +496,9 @@ class SyncEngine:
         if primera:
             print(f"{PREFIJO_LOG} usuario {usuario_id}: PRIMERA sincronización de esta base — se baja TODO (gana lo remoto)")
             desde = None  # una marca suelta no vale para una base que nunca sincronizó
-            for tabla in TABLAS_SINCRONIZADAS:
-                c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, None, c, primera=True)
+            bajada_completa = self._bajar_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, None, c, primera=True)
             self._aplicar_borrados(repo, c, primera=True)
-            for tabla in TABLAS_SINCRONIZADAS:
-                c.subidas += self._subir_pendientes(repo, tabla, usuario_id, c, primera=True)
+            self._subir_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, c, primera=True)
         else:
             if desde is None:
                 # Ya sincronizó, pero sin marca propia (formato anterior de la
@@ -497,14 +509,56 @@ class SyncEngine:
                 print(f"{PREFIJO_LOG} usuario {usuario_id}: sin marca de esta base — se baja TODO (last-write-wins)")
             else:
                 print(f"{PREFIJO_LOG} usuario {usuario_id}: se bajan los cambios posteriores a {desde}")
-            for tabla in TABLAS_SINCRONIZADAS:
-                c.subidas += self._subir_pendientes(repo, tabla, usuario_id, c)
-            for tabla in TABLAS_SINCRONIZADAS:
-                c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, desde, c)
+            self._subir_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, c)
+            bajada_completa = self._bajar_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, desde, c)
             self._aplicar_borrados(repo, c)
+        if not bajada_completa:
+            # Una compartida quedó sin bajar (ver docstring del módulo): la
+            # marca no se mueve. Volver a bajar lo demás no cambia nada
+            # (_debe_aplicarse() saltea lo que ya está igual).
+            print(f"{PREFIJO_LOG} usuario {usuario_id}: bajada incompleta — la marca de bajada no se mueve")
+            return
         # Al final, recién con todo bajado: si algo falla antes, la excepción
         # salta esta línea y la próxima vuelve a bajar desde la marca anterior.
         self._marcas.escribir(clave_marca, max(filter(None, [desde, c.ultimo_updated_at]), default=EPOCA))
+
+    def _subir_tablas(
+        self, repo: SyncRepository, tablas: list[str], usuario_id: str, c: _Contadores, primera: bool = False,
+    ) -> None:
+        """Sube lo pendiente de esas tablas, en ese orden. Una compartida rechazada no corta: _rechazo_compartida()."""
+        for tabla in tablas:
+            try:
+                c.subidas += self._subir_pendientes(repo, tabla, usuario_id, c, primera=primera)
+            except APIError as err:
+                if tabla not in TABLAS_COMPARTIDAS:
+                    raise
+                self._rechazo_compartida(tabla, "subir", err, c)
+
+    def _bajar_tablas(
+        self, repo: SyncRepository, tablas: list[str], usuario_id: str, desde: Optional[str], c: _Contadores,
+        primera: bool = False,
+    ) -> bool:
+        """Baja los cambios de esas tablas, en ese orden. False si alguna compartida fue rechazada (quedó sin bajar)."""
+        completa = True
+        for tabla in tablas:
+            try:
+                c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, desde, c, primera=primera)
+            except APIError as err:
+                if tabla not in TABLAS_COMPARTIDAS:
+                    raise
+                self._rechazo_compartida(tabla, "bajar", err, c)
+                completa = False
+        return completa
+
+    @staticmethod
+    def _rechazo_compartida(tabla: str, paso: str, err: APIError, c: _Contadores) -> None:
+        """Supabase rechazó una tabla compartida: cuenta como error y la sync sigue (ver docstring del módulo)."""
+        c.error(f"{tabla}: Supabase rechazó {paso} ({err.code}: {err.message})")
+        print(
+            f"{PREFIJO_LOG} {tabla}: ADVERTENCIA — Supabase rechazó {paso} la tabla compartida, "
+            f"se sigue con las demás. {err.code}: {err.message}",
+            flush=True,
+        )
 
     # ----------------------------------------------------------
     # SUBIR
