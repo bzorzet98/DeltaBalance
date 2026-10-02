@@ -7,9 +7,15 @@ para migraciones, SUPABASE_SERVICE_KEY.
 
 App empaquetada (flet build): el .env no viaja en el paquete (pyproject.toml
 lo excluye: tiene la service key). Ahí la URL y la anon (publishable) key
-salen de VALORES_POR_DEFECTO — son públicas por diseño, lo que protege los
-datos es RLS. Una variable de entorno o del .env siempre manda sobre el
-default. load_dotenv() va con la ruta explícita: sin ruta llama a
+salen de sync/credenciales_build.py, que NO está en git: lo genera
+.github/workflows/build-linux.yml desde los secrets del repo antes de
+`flet build`. Para un build local, crearlo a mano con las dos constantes
+(SUPABASE_URL = "...", SUPABASE_ANON_KEY = "..."). Son públicas por diseño —
+lo que protege los datos es RLS —, pero no van en el código. Una variable de
+entorno o del .env siempre manda sobre ese archivo. Si no hay ninguna de las
+tres fuentes, el error salta recién al pedir el cliente
+(ConfiguracionSupabaseError), no al importar: la app abre igual y el login
+avisa. load_dotenv() va con la ruta explícita: sin ruta llama a
 find_dotenv(), que busca el .py que lo llamó en el disco y en el paquete
 (solo .pyc, en una carpeta temporal) no encuentra ninguno y falla con
 AssertionError.
@@ -33,21 +39,28 @@ from supabase import Client, create_client
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 # Para la app empaquetada, que no lleva .env (ver docstring). Solo lo
-# público: la service key nunca tiene default.
-VALORES_POR_DEFECTO = {
-    "SUPABASE_URL": "https://cytvrechqghsbaaxckxy.supabase.co",
-    "SUPABASE_ANON_KEY": "sb_publishable_9dOsUYsdDo2KsXQ7iUdZSg_3mUUZ-bv",
-}
+# público: la service key nunca va en este archivo.
+try:
+    from sync import credenciales_build as _build
+    VALORES_DEL_BUILD = {
+        "SUPABASE_URL": getattr(_build, "SUPABASE_URL", None),
+        "SUPABASE_ANON_KEY": getattr(_build, "SUPABASE_ANON_KEY", None),
+    }
+except ImportError:  # desarrollo: no hay archivo generado, las variables salen del .env
+    VALORES_DEL_BUILD = {}
 
 
 class ConfiguracionSupabaseError(Exception):
-    """Falta alguna variable de Supabase en .env."""
+    """Falta alguna variable de Supabase (.env o sync/credenciales_build.py)."""
 
 
 def _variable(nombre: str) -> str:
-    valor = os.environ.get(nombre) or VALORES_POR_DEFECTO.get(nombre)
+    valor = os.environ.get(nombre) or VALORES_DEL_BUILD.get(nombre)
     if not valor:
-        raise ConfiguracionSupabaseError(f"Falta {nombre} en el archivo .env de la raíz del proyecto.")
+        raise ConfiguracionSupabaseError(
+            f"Falta {nombre} (en el .env de la raíz del proyecto o en "
+            f"sync/credenciales_build.py, que genera el build)."
+        )
     return valor
 
 
