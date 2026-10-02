@@ -28,6 +28,7 @@ haría las consultas sin sesión y RLS no le devolvería nada.
 """
 
 import os
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -38,6 +39,11 @@ from supabase import Client, create_client
 # la app empaquetada falla (ver docstring). Si el archivo no existe, no pasa nada.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
+# TODO: DEBUG temporal para diagnosticar la conexión en la app empaquetada —
+# sacar todos los print("[DEBUG] ...") de este archivo cuando conecte.
+print(f"[DEBUG] Python: {sys.executable}", flush=True)
+print(f"[DEBUG] SUPABASE_URL env: {os.environ.get('SUPABASE_URL', 'NO ENCONTRADA')}", flush=True)
+
 # Para la app empaquetada, que no lleva .env (ver docstring). Solo lo
 # público: la service key nunca va en este archivo.
 try:
@@ -46,8 +52,18 @@ try:
         "SUPABASE_URL": getattr(_build, "SUPABASE_URL", None),
         "SUPABASE_ANON_KEY": getattr(_build, "SUPABASE_ANON_KEY", None),
     }
-except ImportError:  # desarrollo: no hay archivo generado, las variables salen del .env
+    print(
+        f"[DEBUG] credenciales_build cargado OK, URL: {(VALORES_DEL_BUILD['SUPABASE_URL'] or 'NONE')[:20]}...",
+        flush=True,
+    )
+except ImportError as e:  # desarrollo: no hay archivo generado, las variables salen del .env
     VALORES_DEL_BUILD = {}
+    print(f"[DEBUG] Error cargando credenciales_build: {e}", flush=True)
+
+_url_final = os.environ.get("SUPABASE_URL") or VALORES_DEL_BUILD.get("SUPABASE_URL")
+_hay_anon_key = bool(os.environ.get("SUPABASE_ANON_KEY") or VALORES_DEL_BUILD.get("SUPABASE_ANON_KEY"))
+print(f"[DEBUG] SUPABASE_URL final: {_url_final[:20] if _url_final else 'NONE'}...", flush=True)
+print(f"[DEBUG] SUPABASE_ANON_KEY presente: {_hay_anon_key}", flush=True)
 
 
 class ConfiguracionSupabaseError(Exception):
