@@ -99,7 +99,7 @@ class AccountsResult:
     written.
     """
     success:    bool
-    account_id: Optional[int] = None
+    account_id: Optional[str] = None
     data:       dict          = field(default_factory=dict)
     message:    str           = ""
 
@@ -155,7 +155,7 @@ class AccountsService:
     # INTERNAL HELPERS
     # ----------------------------------------------------------
 
-    def _get_cuenta(self, account_id: int) -> sqlite3.Row:
+    def _get_cuenta(self, account_id: str) -> sqlite3.Row:
         row = self._repo.obtener_por_id(account_id)
         if row is None:
             raise AccountNotFoundError(f"Account id={account_id} not found.")
@@ -194,7 +194,7 @@ class AccountsService:
             )
         return color_hex
 
-    def _validate_cuenta_pago(self, cuenta_pago_id: Optional[int], propio_id: Optional[int] = None) -> None:
+    def _validate_cuenta_pago(self, cuenta_pago_id: Optional[str], propio_id: Optional[str] = None) -> None:
         """
         Valida cuenta_pago_id: debe existir y no puede ser la propia cuenta
         (propio_id es None en create_account, donde la auto-referencia
@@ -244,7 +244,7 @@ class AccountsService:
         nombre: str,
         tipo: str,
         monedas: Optional[list[int]] = None,
-        cuenta_pago_id: Optional[int] = None,
+        cuenta_pago_id: Optional[str] = None,
         notas: Optional[str] = None,
         color_hex: Optional[str] = None,
     ) -> AccountsResult:
@@ -325,7 +325,7 @@ class AccountsService:
             message=f"Cuenta '{nombre.strip()}' creada.",
         )
 
-    def add_currency_to_account(self, account_id: int, moneda_id: int) -> AccountsResult:
+    def add_currency_to_account(self, account_id: str, moneda_id: int) -> AccountsResult:
         """
         Adds a new currency to an already-existing account (e.g. "this card
         now also operates in USD"), with saldo starting at 0.
@@ -366,7 +366,7 @@ class AccountsService:
     # READ
     # ----------------------------------------------------------
 
-    def get_account(self, account_id: int) -> dict:
+    def get_account(self, account_id: str) -> dict:
         """
         Fetches a single account, enriched with its list of saldos (one per
         moneda operativa — ver _enrich()).
@@ -395,7 +395,7 @@ class AccountsService:
 
     def update_account(
         self,
-        account_id: int,
+        account_id: str,
         nombre: Any = NO_CAMBIAR,
         notas: Any = NO_CAMBIAR,
         cuenta_pago_id: Any = NO_CAMBIAR,
@@ -505,7 +505,7 @@ class AccountsService:
     # ARCHIVE
     # ----------------------------------------------------------
 
-    def archive_account(self, account_id: int) -> AccountsResult:
+    def archive_account(self, account_id: str) -> AccountsResult:
         """
         Archives (soft-deletes) an account. Only allowed when its current
         balance is exactly 0 in EVERY currency it operates in — otherwise
@@ -543,7 +543,7 @@ class AccountsService:
     # DELETE (físico — ventana de corrección temprana, CLAUDE.md §4)
     # ----------------------------------------------------------
 
-    def delete_account(self, account_id: int) -> AccountsResult:
+    def delete_account(self, account_id: str) -> AccountsResult:
         """
         Physically deletes an account and its cuentas_saldos rows. Only
         allowed when the account never had any real activity:

@@ -26,6 +26,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
@@ -38,25 +39,28 @@ class ActivosFinancierosRepository:
     # CREATE
     # ----------------------------------------------------------
 
-    def crear(self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[int] = None) -> int:
+    def crear(self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[str] = None) -> str:
         """
-        Inserta un activo financiero. activa arranca en 1 (default de
+        Inserta un activo financiero y devuelve su id (UUID,
+        repositories/_ids.py). activa arranca en 1 (default de
         columna). cuenta_id (Tarea 6g, docs/PROXIMOS_PASOS.md) vincula el
         activo a una cuenta real — opcional, nullable en schema — usado
         por SavingsService.register_purchase()/register_sale() para
         resolver sola la cuenta a descontar/acreditar sin que el caller
         tenga que pasarla en cada movimiento.
         """
-        return self._db.execute(
-            "INSERT INTO activos_financieros (nombre, tipo, moneda_id, cuenta_id) VALUES (?, ?, ?, ?);",
-            (nombre, tipo, moneda_id, cuenta_id),
+        activo_id = nuevo_id()
+        self._db.execute(
+            "INSERT INTO activos_financieros (id, nombre, tipo, moneda_id, cuenta_id) VALUES (?, ?, ?, ?, ?);",
+            (activo_id, nombre, tipo, moneda_id, cuenta_id),
         )
+        return activo_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, activo_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, activo_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("activos_financieros", include_deleted=True)
             .where("id", activo_id)
@@ -76,7 +80,7 @@ class ActivosFinancierosRepository:
 
     def actualizar(
         self,
-        activo_id: int,
+        activo_id: str,
         nombre: Any = NO_CAMBIAR,
         tipo: Any = NO_CAMBIAR,
         moneda_id: Any = NO_CAMBIAR,
@@ -106,9 +110,9 @@ class ActivosFinancierosRepository:
     # SOFT-DELETE
     # ----------------------------------------------------------
 
-    def desactivar(self, activo_id: int) -> None:
+    def desactivar(self, activo_id: str) -> None:
         """Soft-delete: activa = 0. No valida si el activo tiene movimientos asociados."""
         self._db.execute("UPDATE activos_financieros SET activa = 0 WHERE id = ?;", (activo_id,))
 
-    def activar(self, activo_id: int) -> None:
+    def activar(self, activo_id: str) -> None:
         self._db.execute("UPDATE activos_financieros SET activa = 1 WHERE id = ?;", (activo_id,))

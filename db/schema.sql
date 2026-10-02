@@ -7,6 +7,17 @@
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
+-- IDs: UUID v4 en texto ('8f14e45f-ceea-4a7b-9c3e-…') en TODAS las tablas,
+-- salvo monedas (datos de referencia iguales en toda base: sigue con su id
+-- entero, y moneda_id / moneda_*_id siguen siendo INTEGER). Así una fila
+-- tiene la misma identidad en cualquier computadora (sincronización,
+-- docs/DATA_MODEL_DECISIONS.md sección 25). Los repositorios generan el
+-- UUID en Python (uuid.uuid4()) y lo devuelven; el DEFAULT de cada `id` es
+-- la red de seguridad para un INSERT sin id (seed.sql, scripts de
+-- migration/). NOT NULL explícito: en SQLite una PRIMARY KEY que no es
+-- INTEGER acepta NULL si no se lo prohíbe. Una base con ids enteros se
+-- convierte con migration/migrar_a_uuid_pk.py.
+
 -- =============================================================
 -- MONEDAS
 -- =============================================================
@@ -21,7 +32,7 @@ CREATE TABLE IF NOT EXISTS monedas (
 -- CUENTAS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuentas (
-    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                  TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
     nombre              TEXT NOT NULL UNIQUE,
 
     tipo                TEXT NOT NULL
@@ -33,7 +44,7 @@ CREATE TABLE IF NOT EXISTS cuentas (
                             'inversion'
                         )),
 
-    cuenta_pago_id      INTEGER REFERENCES cuentas(id),
+    cuenta_pago_id      TEXT REFERENCES cuentas(id),
 
     activa              INTEGER NOT NULL DEFAULT 1,
     notas               TEXT,
@@ -46,7 +57,7 @@ CREATE TABLE IF NOT EXISTS cuentas (
 -- CUENTAS SALDOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuentas_saldos (
-    cuenta_id               INTEGER NOT NULL,
+    cuenta_id               TEXT NOT NULL,
     moneda_id               INTEGER NOT NULL,
 
     saldo_inicial_minor     INTEGER NOT NULL DEFAULT 0,
@@ -63,7 +74,7 @@ CREATE TABLE IF NOT EXISTS cuentas_saldos (
 -- CATEGORIAS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS categorias (
-    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                      TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     categoria_principal     TEXT NOT NULL,
     subcategoria            TEXT NOT NULL,
@@ -82,7 +93,7 @@ CREATE TABLE IF NOT EXISTS categorias (
 -- EMPLEOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS empleos (
-    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     nombre_empresa              TEXT NOT NULL,
     puesto                      TEXT,
@@ -105,15 +116,15 @@ CREATE TABLE IF NOT EXISTS empleos (
 -- TRANSACCIONES
 -- =============================================================
 CREATE TABLE IF NOT EXISTS transacciones (
-    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     fecha                       TEXT NOT NULL
                                 CHECK(fecha GLOB '????-??-??'),
 
     concepto                    TEXT NOT NULL,
 
-    cuenta_id                   INTEGER NOT NULL,
-    categoria_id                INTEGER NOT NULL,
+    cuenta_id                   TEXT NOT NULL,
+    categoria_id                TEXT NOT NULL,
     moneda_id                   INTEGER NOT NULL,
 
     tipo_movimiento             TEXT NOT NULL
@@ -146,10 +157,10 @@ CREATE TABLE IF NOT EXISTS transacciones (
 -- legacy de db/database.py ya asumía su existencia e insertaba contra
 -- ella, pero nunca había sido creada en este schema.
 CREATE TABLE IF NOT EXISTS autotransferencias (
-    id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    transaccion_salida_id       INTEGER NOT NULL REFERENCES transacciones(id),
-    transaccion_entrada_id      INTEGER NOT NULL REFERENCES transacciones(id),
+    transaccion_salida_id       TEXT NOT NULL REFERENCES transacciones(id),
+    transaccion_entrada_id      TEXT NOT NULL REFERENCES transacciones(id),
 
     notas                       TEXT,
 
@@ -163,9 +174,9 @@ CREATE TABLE IF NOT EXISTS autotransferencias (
 -- RESUMENES TARJETA
 -- =============================================================
 CREATE TABLE IF NOT EXISTS resumenes_tarjeta (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    cuenta_id                       INTEGER NOT NULL,
+    cuenta_id                       TEXT NOT NULL,
 
     mes                             INTEGER NOT NULL
                                     CHECK(mes BETWEEN 1 AND 12),
@@ -204,15 +215,15 @@ CREATE TABLE IF NOT EXISTS resumenes_tarjeta (
 -- COMPRAS CUOTAS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS compras_cuotas (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     fecha_compra                   TEXT NOT NULL
                                     CHECK(fecha_compra GLOB '????-??-??'),
 
     concepto                       TEXT NOT NULL,
 
-    cuenta_id                      INTEGER NOT NULL REFERENCES cuentas(id),
-    categoria_id                   INTEGER NOT NULL REFERENCES categorias(id),
+    cuenta_id                      TEXT NOT NULL REFERENCES cuentas(id),
+    categoria_id                   TEXT NOT NULL REFERENCES categorias(id),
     moneda_id                      INTEGER NOT NULL REFERENCES monedas(id),
 
     monto_total_minor              INTEGER NOT NULL,
@@ -249,10 +260,10 @@ CREATE TABLE IF NOT EXISTS compras_cuotas (
 -- CUOTAS CREDITO
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuotas_credito (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    compra_id                       INTEGER NOT NULL REFERENCES compras_cuotas(id),
-    resumen_id                      INTEGER REFERENCES resumenes_tarjeta(id),
+    compra_id                       TEXT NOT NULL REFERENCES compras_cuotas(id),
+    resumen_id                      TEXT REFERENCES resumenes_tarjeta(id),
 
     numero_cuota                    INTEGER NOT NULL,
 
@@ -290,9 +301,9 @@ CREATE TABLE IF NOT EXISTS cuotas_credito (
 -- (impuestos, recargos, ajustes). Ver docs/DATA_MODEL_DECISIONS.md sobre el
 -- rediseño de cómo se calculan los totales de resumenes_tarjeta.
 CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    resumen_id                      INTEGER NOT NULL REFERENCES resumenes_tarjeta(id),
+    resumen_id                      TEXT NOT NULL REFERENCES resumenes_tarjeta(id),
 
     concepto                        TEXT NOT NULL,
 
@@ -325,7 +336,7 @@ CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
 -- columnas nuevas: en una base todavía sin convertir, un CREATE INDEX
 -- sobre `tab` fallaría antes de llegar a la migración.
 CREATE TABLE IF NOT EXISTS deudas (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
     entidad_persona TEXT NOT NULL,
     concepto        TEXT,
     tab             TEXT NOT NULL CHECK(tab IN ('me_deben', 'debo')),
@@ -334,7 +345,7 @@ CREATE TABLE IF NOT EXISTS deudas (
     fecha           TEXT NOT NULL CHECK(fecha GLOB '????-??-??'),
     notas           TEXT,
     origen_tipo     TEXT DEFAULT 'manual',
-    origen_id       INTEGER,
+    origen_id       TEXT,
     sincronizado_en TEXT DEFAULT NULL,
     creada_en       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -343,9 +354,9 @@ CREATE TABLE IF NOT EXISTS deudas (
 -- PRESUPUESTOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS presupuestos (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    categoria_id                    INTEGER NOT NULL,
+    categoria_id                    TEXT NOT NULL,
     moneda_id                       INTEGER NOT NULL,
 
     mes                             INTEGER NOT NULL
@@ -369,7 +380,7 @@ CREATE TABLE IF NOT EXISTS presupuestos (
 -- INGRESOS PROYECTADOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS ingresos_proyectados (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     concepto                        TEXT NOT NULL,
 
@@ -397,9 +408,9 @@ CREATE TABLE IF NOT EXISTS ingresos_proyectados (
 -- RECIBOS SUELDO
 -- =============================================================
 CREATE TABLE IF NOT EXISTS recibos_sueldo (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    empleo_id                       INTEGER NOT NULL REFERENCES empleos(id),
+    empleo_id                       TEXT NOT NULL REFERENCES empleos(id),
 
     mes                             INTEGER NOT NULL,
     anio                            INTEGER NOT NULL,
@@ -413,7 +424,7 @@ CREATE TABLE IF NOT EXISTS recibos_sueldo (
 
     monto_neto_final_minor          INTEGER NOT NULL,
 
-    transaccion_id                  INTEGER REFERENCES transacciones(id),
+    transaccion_id                  TEXT REFERENCES transacciones(id),
 
     creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -425,7 +436,7 @@ CREATE TABLE IF NOT EXISTS recibos_sueldo (
 -- DESCUENTOS PROGRAMADOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS descuentos_programados (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     concepto                        TEXT NOT NULL,
 
@@ -436,7 +447,7 @@ CREATE TABLE IF NOT EXISTS descuentos_programados (
 
     anio_aplicacion                 INTEGER NOT NULL,
 
-    recibo_id                       INTEGER REFERENCES recibos_sueldo(id),
+    recibo_id                       TEXT REFERENCES recibos_sueldo(id),
 
     estado                          TEXT NOT NULL DEFAULT 'pendiente'
                                     CHECK(estado IN (
@@ -455,7 +466,7 @@ CREATE TABLE IF NOT EXISTS descuentos_programados (
 -- TIPOS DE CAMBIO
 -- =============================================================
 CREATE TABLE IF NOT EXISTS tipos_cambio (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     fecha                           TEXT NOT NULL
                                     CHECK(fecha GLOB '????-??-??'),
@@ -477,7 +488,7 @@ CREATE TABLE IF NOT EXISTS tipos_cambio (
 -- ACTIVOS FINANCIEROS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS activos_financieros (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     nombre                          TEXT NOT NULL,
 
@@ -502,9 +513,9 @@ CREATE TABLE IF NOT EXISTS activos_financieros (
 -- MOVIMIENTOS DE ACTIVO
 -- =============================================================
 CREATE TABLE IF NOT EXISTS movimientos_activo (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    activo_id                       INTEGER NOT NULL REFERENCES activos_financieros(id),
+    activo_id                       TEXT NOT NULL REFERENCES activos_financieros(id),
 
     tipo                            TEXT NOT NULL
                                     CHECK(tipo IN (
@@ -532,7 +543,7 @@ CREATE TABLE IF NOT EXISTS movimientos_activo (
 -- OBJETIVOS DE AHORRO
 -- =============================================================
 CREATE TABLE IF NOT EXISTS objetivos_ahorro (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     nombre                          TEXT NOT NULL,
 
@@ -562,10 +573,10 @@ CREATE TABLE IF NOT EXISTS objetivos_ahorro (
 -- validación queda a cargo de la capa de servicio (SavingsService, fase
 -- futura) antes de insertar/actualizar en esta tabla.
 CREATE TABLE IF NOT EXISTS asignaciones (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    movimiento_id                   INTEGER NOT NULL REFERENCES movimientos_activo(id),
-    objetivo_id                     INTEGER NOT NULL REFERENCES objetivos_ahorro(id),
+    movimiento_id                   TEXT NOT NULL REFERENCES movimientos_activo(id),
+    objetivo_id                     TEXT NOT NULL REFERENCES objetivos_ahorro(id),
 
     porcentaje                      REAL NOT NULL
                                     CHECK(porcentaje > 0 AND porcentaje <= 100),
@@ -579,7 +590,7 @@ CREATE TABLE IF NOT EXISTS asignaciones (
 -- HOGARES
 -- =============================================================
 CREATE TABLE IF NOT EXISTS hogares (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     codigo_invitacion               TEXT NOT NULL UNIQUE,
     nombre                          TEXT,
@@ -591,7 +602,7 @@ CREATE TABLE IF NOT EXISTS hogares (
 -- HOGAR MIEMBROS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS hogar_miembros (
-    hogar_id                        INTEGER NOT NULL,
+    hogar_id                        TEXT NOT NULL,
 
     -- String simple, no FK a una tabla de usuarios: todavía no existe auth
     -- real (eso llega con sync/ + Supabase Auth, fase futura). Ver nota en
@@ -609,9 +620,9 @@ CREATE TABLE IF NOT EXISTS hogar_miembros (
 -- GASTOS COMPARTIDOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS gastos_compartidos (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    hogar_id                        INTEGER NOT NULL REFERENCES hogares(id),
+    hogar_id                        TEXT NOT NULL REFERENCES hogares(id),
 
     -- String simple, no FK a una tabla de usuarios real todavía (ídem
     -- hogar_miembros.usuario_local). Ver nota en DATA_MODEL_DECISIONS.md #2.
@@ -629,9 +640,9 @@ CREATE TABLE IF NOT EXISTS gastos_compartidos (
                                         'compra_cuotas',
                                         'cuota_credito'
                                     )),
-    origen_id                       INTEGER NOT NULL,
+    origen_id                       TEXT NOT NULL,
 
-    categoria_id                    INTEGER NOT NULL REFERENCES categorias(id),
+    categoria_id                    TEXT NOT NULL REFERENCES categorias(id),
 
     -- Monto base ya con el reintegro descontado (si aplica).
     monto_base_minor                INTEGER NOT NULL,
@@ -674,10 +685,10 @@ CREATE TABLE IF NOT EXISTS gastos_compartidos (
 -- agrega vía db/schema_migrations.py, no acá (mismo motivo que el resto de
 -- las columnas de esa lista: gastos_compartidos ya es una tabla existente).
 CREATE TABLE IF NOT EXISTS gasto_compartido_pagos (
-    id                               INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                               TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    gasto_compartido_id              INTEGER NOT NULL REFERENCES gastos_compartidos(id),
-    transaccion_id                   INTEGER REFERENCES transacciones(id),
+    gasto_compartido_id              TEXT NOT NULL REFERENCES gastos_compartidos(id),
+    transaccion_id                   TEXT REFERENCES transacciones(id),
 
     monto_aplicado_minor             INTEGER NOT NULL,
 
@@ -700,7 +711,7 @@ CREATE TABLE IF NOT EXISTS gasto_compartido_pagos (
 -- PRESTAMOS
 -- =============================================================
 CREATE TABLE IF NOT EXISTS prestamos (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     entidad                         TEXT NOT NULL,
 
@@ -732,7 +743,7 @@ CREATE TABLE IF NOT EXISTS prestamos (
     plazo_meses                     INTEGER NOT NULL
                                     CHECK(plazo_meses > 0),
 
-    cuenta_debito_id                INTEGER REFERENCES cuentas(id),
+    cuenta_debito_id                TEXT REFERENCES cuentas(id),
 
     estado                          TEXT NOT NULL DEFAULT 'activo'
                                     CHECK(estado IN (
@@ -754,9 +765,9 @@ CREATE TABLE IF NOT EXISTS prestamos (
 -- responsabilidad de la capa de servicio (LoansService, fase futura) — el
 -- schema solo almacena el resultado ya calculado, nunca calcula nada.
 CREATE TABLE IF NOT EXISTS cuotas_prestamo (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
-    prestamo_id                     INTEGER NOT NULL REFERENCES prestamos(id),
+    prestamo_id                     TEXT NOT NULL REFERENCES prestamos(id),
 
     numero_cuota                    INTEGER NOT NULL,
 
@@ -784,7 +795,7 @@ CREATE TABLE IF NOT EXISTS cuotas_prestamo (
 -- INDICES DE INFLACION
 -- =============================================================
 CREATE TABLE IF NOT EXISTS indices_inflacion (
-    id                              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
     mes                             INTEGER NOT NULL
                                     CHECK(mes BETWEEN 1 AND 12),

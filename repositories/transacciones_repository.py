@@ -50,6 +50,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 from repositories.cuentas_repository import CuentasRepository
@@ -83,8 +84,8 @@ class TransaccionesRepository:
         self,
         fecha: str,
         concepto: str,
-        cuenta_id: int,
-        categoria_id: int,
+        cuenta_id: str,
+        categoria_id: str,
         monto_minor: int,
         conn: Optional[sqlite3.Connection] = None,
     ) -> bool:
@@ -103,17 +104,18 @@ class TransaccionesRepository:
         self,
         fecha: str,
         concepto: str,
-        cuenta_id: int,
-        categoria_id: int,
+        cuenta_id: str,
+        categoria_id: str,
         moneda_id: int,
         tipo_movimiento: str,
         monto_minor: int,
         tag: Optional[str] = None,
         notas: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta una transacción. Nunca toca deleted_at.
+        Inserta una transacción y devuelve su id (UUID, repositories/_ids.py).
+        Nunca toca deleted_at.
 
         Antes del INSERT, rechaza la operación con TransaccionDuplicadaError
         si ya existe una fila con la misma cuenta_id/categoria_id/
@@ -154,31 +156,34 @@ class TransaccionesRepository:
                 f"{VENTANA_DUPLICADO_SEGUNDOS} segundos."
             )
 
+        transaccion_id = nuevo_id()
         sql = """
             INSERT INTO transacciones
-                (fecha, concepto, cuenta_id, categoria_id, moneda_id,
+                (id, fecha, concepto, cuenta_id, categoria_id, moneda_id,
                  tipo_movimiento, monto_minor, tag, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            fecha, concepto, cuenta_id, categoria_id, moneda_id,
+            transaccion_id, fecha, concepto, cuenta_id, categoria_id, moneda_id,
             tipo_movimiento, monto_minor, tag, notas,
         )
         if conn is not None:
             self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_id, conn=conn)
-            return conn.execute(sql, params).lastrowid
+            conn.execute(sql, params)
+            return transaccion_id
 
         with self._db.transaction() as conn_local:
             self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_id, conn=conn_local)
-            return conn_local.execute(sql, params).lastrowid
+            conn_local.execute(sql, params)
+        return transaccion_id
 
     def crear_autotransferencia(
         self,
-        transaccion_salida_id: int,
-        transaccion_entrada_id: int,
+        transaccion_salida_id: str,
+        transaccion_entrada_id: str,
         notas: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
         Inserta el vínculo formal en `autotransferencias` entre las dos
         filas de transacciones que ya existen (egreso en origen, ingreso en
@@ -190,18 +195,21 @@ class TransaccionesRepository:
         Si se pasa `conn`, participa de esa transacción externa igual que
         crear() — no comitea acá.
         """
+        autotransferencia_id = nuevo_id()
         sql = """
             INSERT INTO autotransferencias
-                (transaccion_salida_id, transaccion_entrada_id, notas)
-            VALUES (?, ?, ?);
+                (id, transaccion_salida_id, transaccion_entrada_id, notas)
+            VALUES (?, ?, ?, ?);
         """
-        params = (transaccion_salida_id, transaccion_entrada_id, notas)
+        params = (autotransferencia_id, transaccion_salida_id, transaccion_entrada_id, notas)
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return autotransferencia_id
 
     def obtener_por_id(
-        self, transaccion_id: int, incluir_eliminadas: bool = False
+        self, transaccion_id: str, incluir_eliminadas: bool = False
     ) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("transacciones", include_deleted=incluir_eliminadas)
@@ -210,7 +218,7 @@ class TransaccionesRepository:
         )
 
     def obtener_enriquecida(
-        self, transaccion_id: int, incluir_eliminadas: bool = False
+        self, transaccion_id: str, incluir_eliminadas: bool = False
     ) -> Optional[sqlite3.Row]:
         """
         Igual que obtener_por_id(), pero con el shape enriquecido que usa
@@ -240,8 +248,8 @@ class TransaccionesRepository:
 
     def listar(
         self,
-        cuenta_id: Optional[int] = None,
-        categoria_id: Optional[int] = None,
+        cuenta_id: Optional[str] = None,
+        categoria_id: Optional[str] = None,
         moneda_id: Optional[int] = None,
         tipo_movimiento: Optional[str] = None,
         fecha_desde: Optional[str] = None,
@@ -255,7 +263,7 @@ class TransaccionesRepository:
         Filtros AND-combinados, todos opcionales. Mismo set de filtros que
         TransactionService.list_transactions() (la fuente de verdad actual),
         con nombres en español. Por default excluye eliminadas (deleted_at
-        no nulo). Ordena por fecha DESC, id DESC — igual que hoy.
+        no nulo). Ordena por fecha DESC y después por orden de alta (rowid: los ids son UUID).
         """
         return (
             QueryBuilder("transacciones", include_deleted=incluir_eliminadas)
@@ -267,15 +275,15 @@ class TransaccionesRepository:
             .where("fecha", fecha_hasta, "<=")
             .where("tag", tag)
             .order("fecha", "DESC")
-            .order("id", "DESC")
+            .order("rowid", "DESC")  # orden de alta: los ids son UUID
             .paginar(pagina, por_pagina)
             .ejecutar(self._db.conn)
         )
 
     def listar_enriquecida(
         self,
-        cuenta_id: Optional[int] = None,
-        categoria_id: Optional[int] = None,
+        cuenta_id: Optional[str] = None,
+        categoria_id: Optional[str] = None,
         moneda_id: Optional[int] = None,
         tipo_movimiento: Optional[str] = None,
         fecha_desde: Optional[str] = None,
@@ -326,14 +334,14 @@ class TransaccionesRepository:
             .where("t.fecha", fecha_hasta, "<=")
             .where("t.tag", tag)
             .order("t.fecha", "DESC")
-            .order("t.id", "DESC")
+            .order("t.rowid", "DESC")  # orden de alta: los ids son UUID
             .paginar(pagina, por_pagina)
             .ejecutar(self._db.conn)
         )
 
     def actualizar(
         self,
-        transaccion_id: int,
+        transaccion_id: str,
         fecha: Any = NO_CAMBIAR,
         concepto: Any = NO_CAMBIAR,
         cuenta_id: Any = NO_CAMBIAR,
@@ -370,7 +378,7 @@ class TransaccionesRepository:
         return True
 
     def eliminar(
-        self, transaccion_id: int, conn: Optional[sqlite3.Connection] = None,
+        self, transaccion_id: str, conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """
         Soft-delete: deleted_at = CURRENT_TIMESTAMP. Nunca un DELETE físico.
@@ -387,7 +395,7 @@ class TransaccionesRepository:
             return
         self._db.execute(sql, (transaccion_id,))
 
-    def restaurar(self, transaccion_id: int) -> None:
+    def restaurar(self, transaccion_id: str) -> None:
         """Revierte eliminar(): deja deleted_at en NULL de nuevo."""
         self._db.execute(
             "UPDATE transacciones SET deleted_at = NULL WHERE id = ?;",

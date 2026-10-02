@@ -571,7 +571,7 @@ def build(
         )
 
         def _refrescar_monedas(cuenta_id: Optional[str]) -> None:
-            cuenta = cuentas_por_id.get(int(cuenta_id)) if cuenta_id else None
+            cuenta = cuentas_por_id.get(cuenta_id) if cuenta_id else None
             codigos = [s["moneda_codigo"] for s in (cuenta["saldos"] if cuenta else [])] or [MONEDA_DEFAULT]
             dropdown_moneda.options = [ft.dropdown.Option(key=c, text=c) for c in codigos]
             dropdown_moneda.value = codigos[0]
@@ -593,7 +593,7 @@ def build(
             id_tarjeta = campo_tarjeta.id_seleccionado
             try:
                 primera["periodo"] = fees_service.suggest_first_fee(
-                    int(id_tarjeta) if id_tarjeta else None, (campo_fecha.value or "").strip(),
+                    id_tarjeta or None, (campo_fecha.value or "").strip(),
                 )
             except ValueError:
                 return  # fecha a medio tipear: queda la sugerencia anterior
@@ -766,8 +766,8 @@ def build(
             _mostrar_error("COMPLETÁ LA MONEDA.")
             return
 
-        cuenta_id = int(campo_tarjeta.id_seleccionado)
-        categoria_id = int(campo_categoria.id_seleccionado)
+        cuenta_id = campo_tarjeta.id_seleccionado
+        categoria_id = campo_categoria.id_seleccionado
         # Routing por categoría (ver docstring del módulo): el signo por sí
         # solo no decide nada.
         charge_type = mapa_categoria_a_charge_type.get(campo_categoria.id_seleccionado)
@@ -959,12 +959,12 @@ def build(
             "concepto": tabla.celda_texto(compra, "concepto", compra["concepto"], _guardar_concepto),
             "banco": tabla.celda_filtrable(
                 compra, "banco", _banco, opciones_tarjeta, str(compra["cuenta_id"]),
-                lambda id_: _guardar(cuenta_id=int(id_)),
+                lambda id_: _guardar(cuenta_id=id_),
             ),
             "categoria": tabla.celda_filtrable(
                 compra, "categoria", lambda: texto_celda(compra["category_name"] or ""),
                 opciones_categoria_edicion, str(compra["categoria_id"]),
-                lambda id_: _guardar(categoria_id=int(id_)),
+                lambda id_: _guardar(categoria_id=id_),
             ),
             "monto": celda_monto,
             "cuotas": celda_cuotas,
@@ -1057,7 +1057,7 @@ def build(
             aviso.visible = bool(repetidos)
             boton_guardar.disabled = bool(repetidos) or not _cambios()
 
-        def _mover(cuota_id: int, meses: int) -> None:
+        def _mover(cuota_id: str, meses: int) -> None:
             periodos[cuota_id] = _correr_periodo(*periodos[cuota_id], meses)
             _armar()
             page.update()
@@ -1133,7 +1133,7 @@ def build(
             partes.append(f"{len(errores)} CON ERROR: " + " | ".join(errores))
         return " · ".join(partes) or "NADA PARA ELIMINAR.", bool(errores)
 
-    def _compartir_una(compra: dict, hogar_id: int, pagador: str, coeficiente: float) -> None:
+    def _compartir_una(compra: dict, hogar_id: str, pagador: str, coeficiente: float) -> None:
         # Cada compra se comparte en su propio modo_deuda (compartir_compra.py, ídem).
         shared_expenses_service.add_shared_purchase(
             compra_id=compra["id"], hogar_id=hogar_id, pagador=pagador, coeficiente_deuda=coeficiente,

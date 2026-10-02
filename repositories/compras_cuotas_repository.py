@@ -59,6 +59,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
@@ -86,7 +87,7 @@ class ComprasCuotasRepository:
         self,
         fecha_compra: str,
         concepto: str,
-        cuenta_id: int,
+        cuenta_id: str,
         monto_total_minor: int,
         conn: Optional[sqlite3.Connection] = None,
     ) -> bool:
@@ -109,17 +110,18 @@ class ComprasCuotasRepository:
         self,
         fecha_compra: str,
         concepto: str,
-        cuenta_id: int,
-        categoria_id: int,
+        cuenta_id: str,
+        categoria_id: str,
         moneda_id: int,
         monto_total_minor: int,
         total_cuotas: int,
         monto_por_cuota_minor: int,
         notas: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta una compra en cuotas. estado arranca en 'activa' (default de
+        Inserta una compra en cuotas y devuelve su id (UUID,
+        repositories/_ids.py). estado arranca en 'activa' (default de
         columna, no se setea acá explícitamente — igual que hoy).
 
         Antes del INSERT, rechaza la operación con CompraDuplicadaError si
@@ -140,32 +142,35 @@ class ComprasCuotasRepository:
                 f"creada hace menos de {VENTANA_DUPLICADO_SEGUNDOS} segundos."
             )
 
+        compra_id = nuevo_id()
         sql = """
             INSERT INTO compras_cuotas
-                (fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
+                (id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
                  monto_total_minor, total_cuotas, monto_por_cuota_minor, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
+            compra_id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
             monto_total_minor, total_cuotas, monto_por_cuota_minor, notas,
         )
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return compra_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, compra_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, compra_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("compras_cuotas", include_deleted=True)
             .where("id", compra_id)
             .ejecutar_uno(self._db.conn)
         )
 
-    def obtener_enriquecida(self, compra_id: int) -> Optional[sqlite3.Row]:
+    def obtener_enriquecida(self, compra_id: str) -> Optional[sqlite3.Row]:
         """
         Igual que obtener_por_id(), pero con el shape enriquecido que usa
         FeesService.get_purchase(): columnas propias más account_name,
@@ -191,7 +196,7 @@ class ComprasCuotasRepository:
 
     def listar(
         self,
-        cuenta_id: Optional[int] = None,
+        cuenta_id: Optional[str] = None,
         estado: Optional[str] = None,
         moneda_id: Optional[int] = None,
         pagina: int = 1,
@@ -213,7 +218,7 @@ class ComprasCuotasRepository:
 
     def listar_enriquecida(
         self,
-        cuenta_id: Optional[int] = None,
+        cuenta_id: Optional[str] = None,
         estado: Optional[str] = None,
         moneda_id: Optional[int] = None,
         pagina: int = 1,
@@ -251,7 +256,7 @@ class ComprasCuotasRepository:
 
     def actualizar(
         self,
-        compra_id: int,
+        compra_id: str,
         fecha_compra: Any = NO_CAMBIAR,
         concepto: Any = NO_CAMBIAR,
         cuenta_id: Any = NO_CAMBIAR,
@@ -304,7 +309,7 @@ class ComprasCuotasRepository:
 
     def cancelar(
         self,
-        compra_id: int,
+        compra_id: str,
         notas: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
@@ -331,7 +336,7 @@ class ComprasCuotasRepository:
     # DELETE
     # ----------------------------------------------------------
 
-    def eliminar(self, compra_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    def eliminar(self, compra_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """
         DELETE físico de la compra (ventana de corrección temprana, CLAUDE.md
         §4). No mira sus cuotas ni si está compartida: validar que se pueda

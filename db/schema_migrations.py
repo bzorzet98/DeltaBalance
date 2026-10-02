@@ -52,6 +52,16 @@ from pathlib import Path
 
 from utils.personas import normalizar_persona
 
+# El mismo DEFAULT de los `id` de db/schema.sql: un UUID v4 en texto,
+# generado por SQLite si un INSERT no trae id (ver el comentario de cabecera
+# de schema.sql). `random() & 3` y no `abs(random()) % 4`: abs() del mínimo
+# entero de 64 bits da overflow.
+UUID_V4_SQL = (
+    "(lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || "
+    "substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || "
+    "substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6))))"
+)
+
 
 @dataclass(frozen=True)
 class MigracionColumna:
@@ -95,7 +105,7 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
     MigracionColumna(
         tabla="movimientos_activo",
         columna="transaccion_id",
-        ddl_columna="transaccion_id INTEGER REFERENCES transacciones(id)",
+        ddl_columna="transaccion_id TEXT REFERENCES transacciones(id)",
     ),
     MigracionColumna(
         tabla="presupuestos",
@@ -105,7 +115,7 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
     MigracionColumna(
         tabla="activos_financieros",
         columna="cuenta_id",
-        ddl_columna="cuenta_id INTEGER REFERENCES cuentas(id)",
+        ddl_columna="cuenta_id TEXT REFERENCES cuentas(id)",
     ),
     MigracionColumna(
         tabla="gastos_compartidos",
@@ -150,7 +160,7 @@ MIGRACIONES_TABLA: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS saldos_mensuales (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        cuenta_id    INTEGER NOT NULL REFERENCES cuentas(id),
+        cuenta_id    TEXT NOT NULL REFERENCES cuentas(id),
         moneda_id    INTEGER NOT NULL REFERENCES monedas(id),
         mes          INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
         anio         INTEGER NOT NULL,
@@ -163,7 +173,7 @@ MIGRACIONES_TABLA: list[str] = [
     """
     CREATE TABLE IF NOT EXISTS compartidos_mensuales (
         id           INTEGER PRIMARY KEY AUTOINCREMENT,
-        hogar_id     INTEGER NOT NULL REFERENCES hogares(id),
+        hogar_id     TEXT NOT NULL REFERENCES hogares(id),
         pagador      TEXT NOT NULL,
         moneda_id    INTEGER NOT NULL REFERENCES monedas(id),
         mes          INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
@@ -179,10 +189,10 @@ MIGRACIONES_TABLA: list[str] = [
     # mes de la 1ª cuota. Una fila por tarjeta (UNIQUE cuenta_id);
     # updated_en lo escribe el repositorio en cada upsert (sin trigger).
     # Ver docs/DATA_MODEL_DECISIONS.md sección 23.
-    """
+    f"""
     CREATE TABLE IF NOT EXISTS tarjetas_config (
-        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-        cuenta_id           INTEGER NOT NULL REFERENCES cuentas(id) UNIQUE,
+        id                  TEXT PRIMARY KEY NOT NULL DEFAULT {UUID_V4_SQL},
+        cuenta_id           TEXT NOT NULL REFERENCES cuentas(id) UNIQUE,
         dia_cierre          INTEGER NOT NULL CHECK(dia_cierre BETWEEN 1 AND 31),
         dia_vencimiento     INTEGER NOT NULL CHECK(dia_vencimiento BETWEEN 1 AND 31),
         creada_en           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -297,7 +307,7 @@ PREFIJO_NOTA_EXCEL = "MIGRADO DESDE EXCEL — TABLA DEUDAS"
 # renombra al final).
 DDL_DEUDAS_FINAL = f"""
 CREATE TABLE {TABLA_NUEVA} (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    id              TEXT PRIMARY KEY NOT NULL DEFAULT {UUID_V4_SQL},
     entidad_persona TEXT NOT NULL,
     concepto        TEXT,
     tab             TEXT NOT NULL CHECK(tab IN ('me_deben', 'debo')),
@@ -306,7 +316,7 @@ CREATE TABLE {TABLA_NUEVA} (
     fecha           TEXT NOT NULL CHECK(fecha GLOB '????-??-??'),
     notas           TEXT,
     origen_tipo     TEXT DEFAULT 'manual',
-    origen_id       INTEGER,
+    origen_id       TEXT,
     sincronizado_en TEXT DEFAULT NULL,
     creada_en       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -507,11 +517,39 @@ def _aplicar_columnas(conn: sqlite3.Connection, migraciones: list[MigracionColum
             conn.execute(migracion.sql_backfill)
 
 
-def aplicar_migraciones_columna(conn: sqlite3.Connection) -> None:
+def usa_ids_uuid(conn: sqlite3.Connection) -> bool:
+    """True si la base ya tiene ids UUID: transacciones.id es TEXT (una base sin la tabla, también)."""
+    for fila in conn.execute("PRAGMA table_info(transacciones);"):
+        if fila[1] == "id":
+            return (fila[2] or "").upper() == "TEXT"
+    return True
+
+
+def exigir_ids_uuid(conn: sqlite3.Connection) -> None:
+    """
+    Frena antes de tocar nada si la base todavía tiene ids enteros: con el
+    código actual (los repositorios insertan UUIDs) se rompería en el primer
+    alta ("datatype mismatch" en una INTEGER PRIMARY KEY).
+    """
+    if not usa_ids_uuid(conn):
+        raise RuntimeError(
+            "La base de datos todavía usa ids enteros. Cerrá la app y corré, parado en la raíz del proyecto: "
+            "python migration/migrar_a_uuid_pk.py (prueba) y después python migration/migrar_a_uuid_pk.py "
+            "--confirmar. Ver docs/DATA_MODEL_DECISIONS.md sección 25."
+        )
+
+
+def aplicar_migraciones_columna(conn: sqlite3.Connection, exigir_uuid: bool = True) -> None:
     """
     Recorre MIGRACIONES_COLUMNA y agrega cada columna que todavía no exista
     en su tabla. Idempotente: si la columna ya está, la salta sin error.
+
+    Antes, exigir_ids_uuid() (salvo exigir_uuid=False: solo
+    migration/migrar_a_uuid_pk.py, que pone al día una COPIA de la base
+    vieja antes de convertirla).
     """
+    if exigir_uuid:
+        exigir_ids_uuid(conn)
     _aplicar_columnas(conn, MIGRACIONES_COLUMNA)
 
 
@@ -543,8 +581,8 @@ def aplicar_migraciones_columna(conn: sqlite3.Connection) -> None:
 #    pendiente. Como la marca nunca se comitea (se borra antes del COMMIT),
 #    las escrituras de la app en otra conexión nunca la ven.
 #
-# La clave de una fila es su clave primaria como texto: el id ('12'), o
-# las columnas de CLAVES_SYNC unidas con '|' ('3|1' en cuentas_saldos).
+# La clave de una fila es su clave primaria como texto: el id (un UUID), o
+# las columnas de CLAVES_SYNC unidas con '|' ('<uuid de la cuenta>|1' en cuentas_saldos).
 
 TABLAS_SINCRONIZADAS: list[str] = [
     # En orden de dependencias (padres primero): así se aplican las filas

@@ -110,7 +110,7 @@ async def abrir_compartir_varios(
         # get_suggested_coefficient() devuelve % (50.0): se muestra en el formato del campo.
         return f"{sugerido / factor:g}" if sugerido is not None else ""
 
-    def _sugerencia(hogar_id: int) -> tuple[Optional[float], str]:
+    def _sugerencia(hogar_id: str) -> tuple[Optional[float], str]:
         otros = [m for m in shared_expenses_service.list_miembros(hogar_id) if m["usuario_local"] != usuario_local]
         if not otros:
             return None, "SIN OTRO MIEMBRO EN ESTE HOGAR TODAVÍA."
@@ -133,7 +133,7 @@ async def abrir_compartir_varios(
         page.pop_dialog()
 
     def _on_select_hogar(e: ft.ControlEvent) -> None:
-        hogar_seleccionado["id"] = int(dropdown_hogar.value)
+        hogar_seleccionado["id"] = dropdown_hogar.value
         sugerido, ayuda = _sugerencia(hogar_seleccionado["id"])
         campo_coeficiente.value = _texto_sugerido(sugerido)
         campo_coeficiente.helper_text = ayuda

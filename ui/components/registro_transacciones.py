@@ -504,7 +504,7 @@ def build(
 
         def _refrescar_monedas(cuenta_id: Optional[str], preferida: Optional[str] = None) -> None:
             cuentas_por_id = datos["cuentas_por_id"]
-            saldos = cuentas_por_id[int(cuenta_id)]["saldos"] if cuenta_id and int(cuenta_id) in cuentas_por_id else []
+            saldos = cuentas_por_id[cuenta_id]["saldos"] if cuenta_id and cuenta_id in cuentas_por_id else []
             codigos = [s["moneda_codigo"] for s in saldos] or [MONEDA_DEFAULT]
             dropdown_moneda.options = [ft.dropdown.Option(key=c, text=c) for c in codigos]
             dropdown_moneda.value = preferida if preferida in codigos else codigos[0]
@@ -641,8 +641,8 @@ def build(
             _mostrar_error("COMPLETÁ LA MONEDA.")
             return
 
-        cuenta_id = int(campo_cuenta.id_seleccionado)
-        categoria_id = int(campo_categoria.id_seleccionado)
+        cuenta_id = campo_cuenta.id_seleccionado
+        categoria_id = campo_categoria.id_seleccionado
         moneda_codigo = dropdown_moneda.value
 
         # "autotransferencia"/"ahorro_inversion" REEMPLAZAN el guardado
@@ -680,7 +680,7 @@ def build(
     # --- Mini-diálogos de routing especial (misma lógica que antes) ---
 
     def _abrir_dialogo_autotransferencia(
-        cuenta_origen_id: int, moneda_codigo: str, monto: float, fecha_str: str, concepto: str, categoria_id: int,
+        cuenta_origen_id: str, moneda_codigo: str, monto: float, fecha_str: str, concepto: str, categoria_id: str,
     ) -> None:
         opciones_destino = [(str(c["id"]), c["nombre"]) for c in cuentas_activas if c["id"] != cuenta_origen_id]
         if not opciones_destino:
@@ -699,7 +699,7 @@ def build(
                 resultado = transaction_service.create_transfer(
                     date_str=fecha_str,
                     origin_account_id=cuenta_origen_id,
-                    dest_account_id=int(campo_destino.id_seleccionado),
+                    dest_account_id=campo_destino.id_seleccionado,
                     currency_code=moneda_codigo,
                     amount=abs(monto),  # el signo no decide nada: siempre egreso + ingreso
                     category_id=categoria_id,
@@ -726,7 +726,7 @@ def build(
             actions_alignment=ft.MainAxisAlignment.END,
         ))
 
-    def _abrir_dialogo_deuda(transaction_id: int, moneda_codigo: str, monto: float, fecha_str: str, concepto: str) -> None:
+    def _abrir_dialogo_deuda(transaction_id: str, moneda_codigo: str, monto: float, fecha_str: str, concepto: str) -> None:
         # La transacción YA está guardada: este diálogo solo decide si además
         # se le vincula una deuda. Cancelarlo no la deshace.
         campo_persona = ft.TextField(label="PERSONA / ENTIDAD", width=ANCHO_DIALOGO_ROUTING, autofocus=True)
@@ -792,7 +792,7 @@ def build(
         ))
 
     def _abrir_dialogo_ahorro_inversion(
-        cuenta_id: int, moneda_codigo: str, monto: float, fecha_str: str, concepto: str,
+        cuenta_id: str, moneda_codigo: str, monto: float, fecha_str: str, concepto: str,
     ) -> None:
         # Dos modos en el MISMO AlertDialog: el link "Elegir activo
         # específico" reemplaza contenedor_dialogo.content por el formulario
@@ -831,7 +831,7 @@ def build(
                     return
                 objetivo_id = savings_service.create_objetivo(nombre=nombre_nuevo).entity_id
             else:
-                objetivo_id = int(campo_objetivo.id_seleccionado)
+                objetivo_id = campo_objetivo.id_seleccionado
             moneda = monedas_por_codigo.get(moneda_codigo)
             if moneda is None:
                 _mostrar_error(f"MONEDA '{moneda_codigo}' NO ENCONTRADA.")
@@ -941,12 +941,12 @@ def build(
                 t, "banco",
                 lambda: banco_con_dot(color_cuenta(cuenta, t["account_name"] or ""), t["account_name"] or ""),
                 opciones_cuenta_edicion, str(t["cuenta_id"]),
-                lambda id_: _guardar(t, account_id=int(id_)),
+                lambda id_: _guardar(t, account_id=id_),
             ),
             "categoria": tabla.celda_filtrable(
                 t, "categoria", lambda: texto_celda(t["category_name"] or ""),
                 opciones_categoria, str(t["categoria_id"]),
-                lambda id_: _guardar(t, category_id=int(id_)),
+                lambda id_: _guardar(t, category_id=id_),
             ),
             "monto": tabla.celda_monto(
                 t, "monto", _monto_con_signo(t), TEXT_NEGATIVO if _es_egreso(t) else TEXT_POSITIVO,
@@ -1105,7 +1105,7 @@ def build(
         # Mismo criterio que compartir_gasto.py.
         return t["tipo_movimiento"] == "ingreso"
 
-    def _compartir_una(t: dict, hogar_id: int, pagador: str, coeficiente: float) -> None:
+    def _compartir_una(t: dict, hogar_id: str, pagador: str, coeficiente: float) -> None:
         # Ingreso = pago recibido: coeficiente 100% y monto base negativo,
         # igual que el flujo de una fila (compartir_gasto.py).
         shared_expenses_service.add_shared_expense(

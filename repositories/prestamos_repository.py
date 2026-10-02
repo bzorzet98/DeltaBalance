@@ -34,6 +34,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
@@ -56,46 +57,50 @@ class PrestamosRepository:
         moneda_id: int,
         fecha_inicio: str,
         plazo_meses: int,
-        cuenta_debito_id: Optional[int] = None,
+        cuenta_debito_id: Optional[str] = None,
         notas: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un préstamo. estado arranca en 'activo' (default de
+        Inserta un préstamo y devuelve su id (UUID, repositories/_ids.py).
+        estado arranca en 'activo' (default de
         columna, no se setea acá explícitamente).
 
         Si se pasa `conn`, el INSERT se ejecuta ahí directamente sin
         comitear, para participar de la transacción externa que también
         inserta el lote de cuotas_prestamo (ver docstring del módulo).
         """
+        prestamo_id = nuevo_id()
         sql = """
             INSERT INTO prestamos
-                (entidad, tipo, capital_original_minor, tasa_anual_bp,
+                (id, entidad, tipo, capital_original_minor, tasa_anual_bp,
                  sistema_amortizacion, moneda_id, fecha_inicio, plazo_meses,
                  cuenta_debito_id, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            entidad, tipo, capital_original_minor, tasa_anual_bp,
+            prestamo_id, entidad, tipo, capital_original_minor, tasa_anual_bp,
             sistema_amortizacion, moneda_id, fecha_inicio, plazo_meses,
             cuenta_debito_id, notas,
         )
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return prestamo_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, prestamo_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, prestamo_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("prestamos", include_deleted=True)
             .where("id", prestamo_id)
             .ejecutar_uno(self._db.conn)
         )
 
-    def obtener_enriquecida(self, prestamo_id: int) -> Optional[sqlite3.Row]:
+    def obtener_enriquecida(self, prestamo_id: str) -> Optional[sqlite3.Row]:
         """
         Igual que obtener_por_id(), pero con currency_code (JOIN a
         monedas) y account_name (LEFT JOIN a cuentas — cuenta_debito_id
@@ -147,7 +152,7 @@ class PrestamosRepository:
 
     def actualizar(
         self,
-        prestamo_id: int,
+        prestamo_id: str,
         notas: Any = NO_CAMBIAR,
         cuenta_debito_id: Any = NO_CAMBIAR,
         conn: Optional[sqlite3.Connection] = None,
@@ -177,7 +182,7 @@ class PrestamosRepository:
     # ----------------------------------------------------------
 
     def cambiar_estado(
-        self, prestamo_id: int, nuevo_estado: str, conn: Optional[sqlite3.Connection] = None,
+        self, prestamo_id: str, nuevo_estado: str, conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """Transición: activo/cancelado/finalizado. Sin validar el estado previo (trabajo del futuro service)."""
         sql = "UPDATE prestamos SET estado = ? WHERE id = ?;"

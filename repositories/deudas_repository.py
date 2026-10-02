@@ -35,6 +35,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from repositories._sentinels import NO_CAMBIAR
 
 # Valores del CHECK de deudas.tab (db/schema.sql).
@@ -48,7 +49,8 @@ _SELECT = """
     FROM deudas d
     JOIN monedas m ON m.id = d.moneda_id
 """
-_ORDEN = " ORDER BY d.fecha DESC, d.id DESC;"
+# Desempate por rowid (orden de alta): con ids UUID, ordenar por id sería al azar.
+_ORDEN = " ORDER BY d.fecha DESC, d.rowid DESC;"
 
 
 class DeudaDuplicadaError(Exception):
@@ -86,12 +88,13 @@ class DeudasRepository:
         fecha: str,
         notas: Optional[str] = None,
         origen_tipo: str = "manual",
-        origen_id: Optional[int] = None,
+        origen_id: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta una fila y devuelve su id. DeudaDuplicadaError si es idéntica
-        a una creada hace menos de VENTANA_DUPLICADO_SEGUNDOS.
+        Inserta una fila y devuelve su id (UUID, repositories/_ids.py).
+        DeudaDuplicadaError si es idéntica a una creada hace menos de
+        VENTANA_DUPLICADO_SEGUNDOS.
         """
         if self._existe_duplicado_reciente(entidad_persona, tab, monto_minor, fecha):
             raise DeudaDuplicadaError(
@@ -99,21 +102,24 @@ class DeudasRepository:
                 f"monto_minor={monto_minor}, fecha={fecha}) creado hace menos de "
                 f"{VENTANA_DUPLICADO_SEGUNDOS} segundos."
             )
+        deuda_id = nuevo_id()
         sql = """
             INSERT INTO deudas
-                (entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+                (id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
-        params = (entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
+        params = (deuda_id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id)
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return deuda_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, deuda_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, deuda_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone(_SELECT + " WHERE d.id = ?;", (deuda_id,))
 
     def listar_por_tab(self, tab: str, mes: Optional[int] = None, anio: Optional[int] = None) -> list[sqlite3.Row]:
@@ -144,7 +150,7 @@ class DeudasRepository:
             params.append(tab)
         return self._db.fetchall(sql + _ORDEN, tuple(params))
 
-    def listar_por_origen(self, origen_tipo: str, origen_id: int) -> list[sqlite3.Row]:
+    def listar_por_origen(self, origen_tipo: str, origen_id: str) -> list[sqlite3.Row]:
         """Filas generadas desde un registro puntual (ej. 'compra_cuotas', <compra>) — ver docstring del módulo."""
         return self._db.fetchall(
             _SELECT + " WHERE d.origen_tipo = ? AND d.origen_id = ?" + _ORDEN, (origen_tipo, origen_id),
@@ -173,7 +179,7 @@ class DeudasRepository:
 
     def actualizar(
         self,
-        deuda_id: int,
+        deuda_id: str,
         concepto: Any = NO_CAMBIAR,
         tab: Any = NO_CAMBIAR,
         monto_minor: Any = NO_CAMBIAR,
@@ -206,7 +212,7 @@ class DeudasRepository:
     # DELETE
     # ----------------------------------------------------------
 
-    def eliminar(self, deuda_id: int) -> bool:
+    def eliminar(self, deuda_id: str) -> bool:
         """DELETE físico. Devuelve True si borró una fila."""
         cursor = self._db.conn.execute("DELETE FROM deudas WHERE id = ?;", (deuda_id,))
         self._db.conn.commit()

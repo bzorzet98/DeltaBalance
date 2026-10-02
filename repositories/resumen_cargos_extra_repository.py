@@ -21,6 +21,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 
 
 class ResumenCargosExtraRepository:
@@ -33,45 +34,50 @@ class ResumenCargosExtraRepository:
 
     def agregar(
         self,
-        resumen_id: int,
+        resumen_id: str,
         concepto: str,
         tipo: str,
         monto_minor: int,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un cargo extra de un resumen. monto_minor puede ser
+        Inserta un cargo extra de un resumen y devuelve su id (UUID,
+        repositories/_ids.py). monto_minor puede ser
         negativo (ej. un ajuste a favor del usuario).
         """
+        cargo_id = nuevo_id()
         sql = """
-            INSERT INTO resumen_cargos_extra (resumen_id, concepto, tipo, monto_minor)
-            VALUES (?, ?, ?, ?);
+            INSERT INTO resumen_cargos_extra (id, resumen_id, concepto, tipo, monto_minor)
+            VALUES (?, ?, ?, ?, ?);
         """
-        params = (resumen_id, concepto, tipo, monto_minor)
+        params = (cargo_id, resumen_id, concepto, tipo, monto_minor)
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return cargo_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM resumen_cargos_extra WHERE id = ?;", (id,))
 
     def listar_por_resumen(
         self,
-        resumen_id: int,
+        resumen_id: str,
         conn: Optional[sqlite3.Connection] = None,
     ) -> list[sqlite3.Row]:
-        sql = "SELECT * FROM resumen_cargos_extra WHERE resumen_id = ? ORDER BY id ASC;"
+        # rowid = orden de alta (los ids son UUID: ordenar por id sería al azar).
+        sql = "SELECT * FROM resumen_cargos_extra WHERE resumen_id = ? ORDER BY rowid ASC;"
         if conn is not None:
             return conn.execute(sql, (resumen_id,)).fetchall()
         return self._db.fetchall(sql, (resumen_id,))
 
     def suma_por_resumen(
         self,
-        resumen_id: int,
+        resumen_id: str,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
@@ -95,7 +101,7 @@ class ResumenCargosExtraRepository:
     # DELETE
     # ----------------------------------------------------------
 
-    def eliminar(self, id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    def eliminar(self, id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """DELETE físico — ver docstring del módulo."""
         sql = "DELETE FROM resumen_cargos_extra WHERE id = ?;"
         if conn is not None:

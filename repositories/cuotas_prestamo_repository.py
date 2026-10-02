@@ -31,6 +31,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from repositories._sentinels import NO_CAMBIAR
 
 
@@ -44,16 +45,16 @@ class CuotasPrestamoRepository:
 
     def crear_lote(
         self,
-        prestamo_id: int,
+        prestamo_id: str,
         cuotas: list[dict],
         conn: Optional[sqlite3.Connection] = None,
-    ) -> list[int]:
+    ) -> list[str]:
         """
         Inserta las N cuotas de un préstamo de una sola vez. Cada elemento
         de `cuotas` es un dict con las claves: numero_cuota,
         monto_capital_minor, monto_interes_minor, monto_total_minor, mes,
-        anio. Devuelve la lista de ids insertados, en el mismo orden que
-        `cuotas`.
+        anio. Devuelve la lista de ids (UUID, repositories/_ids.py)
+        insertados, en el mismo orden que `cuotas`.
 
         Si se pasa `conn`, participa de la transacción externa que también
         inserta el préstamo en PrestamosRepository.crear() (ver docstring
@@ -65,13 +66,15 @@ class CuotasPrestamoRepository:
         """
         sql = """
             INSERT INTO cuotas_prestamo
-                (prestamo_id, numero_cuota, mes, anio,
+                (id, prestamo_id, numero_cuota, mes, anio,
                  monto_capital_minor, monto_interes_minor, monto_total_minor)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """
         ids = []
         for cuota in cuotas:
+            cuota_id = nuevo_id()
             params = (
+                cuota_id,
                 prestamo_id,
                 cuota["numero_cuota"],
                 cuota["mes"],
@@ -81,19 +84,20 @@ class CuotasPrestamoRepository:
                 cuota["monto_total_minor"],
             )
             if conn is not None:
-                ids.append(conn.execute(sql, params).lastrowid)
+                conn.execute(sql, params)
             else:
-                ids.append(self._db.execute(sql, params))
+                self._db.execute(sql, params)
+            ids.append(cuota_id)
         return ids
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, cuota_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, cuota_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM cuotas_prestamo WHERE id = ?;", (cuota_id,))
 
-    def listar_por_prestamo(self, prestamo_id: int) -> list[sqlite3.Row]:
+    def listar_por_prestamo(self, prestamo_id: str) -> list[sqlite3.Row]:
         """Todas las cuotas de un préstamo, ordenadas por numero_cuota ASC."""
         return self._db.fetchall(
             "SELECT * FROM cuotas_prestamo WHERE prestamo_id = ? ORDER BY numero_cuota ASC;",
@@ -119,7 +123,7 @@ class CuotasPrestamoRepository:
 
     def actualizar(
         self,
-        cuota_id: int,
+        cuota_id: str,
         monto_capital_minor: Any = NO_CAMBIAR,
         monto_interes_minor: Any = NO_CAMBIAR,
         monto_total_minor: Any = NO_CAMBIAR,
@@ -151,7 +155,7 @@ class CuotasPrestamoRepository:
     # ----------------------------------------------------------
 
     def marcar_pagada(
-        self, cuota_id: int, fecha_pago: str, conn: Optional[sqlite3.Connection] = None,
+        self, cuota_id: str, fecha_pago: str, conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """Transición: 'pendiente' -> 'pagado', escribe fecha_pago. Sin validar el estado previo (trabajo del futuro service)."""
         sql = "UPDATE cuotas_prestamo SET estado = 'pagado', fecha_pago = ? WHERE id = ?;"

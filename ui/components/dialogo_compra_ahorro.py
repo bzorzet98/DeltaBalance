@@ -261,7 +261,7 @@ def construir_editor_asignaciones(page: ft.Page, objetivos_disponibles: list[dic
                 return None, "El porcentaje de una asignación no es un número válido."
             if porcentaje <= 0:
                 return None, "El porcentaje de una asignación debe ser mayor a 0."
-            objetivo_id = int(objetivo_id_str)
+            objetivo_id = objetivo_id_str
             if objetivo_id in ids_vistos:
                 return None, "No repitas el mismo objetivo en más de una fila de asignación."
             ids_vistos.add(objetivo_id)
@@ -380,7 +380,7 @@ def construir(
             if not campo_moneda_activo_nuevo.id_seleccionado:
                 return None
             return {"tipo": dropdown_tipo_activo_nuevo.value, "moneda_id": int(campo_moneda_activo_nuevo.id_seleccionado)}
-        activo = next((a for a in activos_existentes if a["id"] == int(campo_activo.id_seleccionado)), None)
+        activo = next((a for a in activos_existentes if a["id"] == campo_activo.id_seleccionado), None)
         return {"tipo": activo["tipo"], "moneda_id": activo["moneda_id"]} if activo else None
 
     # ------------------------------------------------------------
@@ -466,7 +466,7 @@ def construir(
             texto_error.value = "Seleccioná un activo (o creá uno nuevo) de la lista de sugerencias."
             return None
         if campo_activo.id_seleccionado != _ID_ACTIVO_NUEVO:
-            return int(campo_activo.id_seleccionado)
+            return campo_activo.id_seleccionado
         nombre_nuevo = (campo_nombre_activo_nuevo.value or "").strip()
         if not nombre_nuevo:
             texto_error.value = "El nombre del activo nuevo no puede estar vacío."
@@ -479,7 +479,7 @@ def construir(
                 nombre=nombre_nuevo, tipo=dropdown_tipo_activo_nuevo.value,
                 moneda_id=int(campo_moneda_activo_nuevo.id_seleccionado),
                 cuenta_id=(
-                    int(campo_cuenta_activo_nuevo.id_seleccionado)
+                    campo_cuenta_activo_nuevo.id_seleccionado
                     if campo_cuenta_activo_nuevo.id_seleccionado else None
                 ),
             )

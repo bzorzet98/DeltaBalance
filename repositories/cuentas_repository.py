@@ -15,6 +15,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager, to_minor, from_minor
+from repositories._ids import nuevo_id
 
 
 class CuentasRepository:
@@ -27,14 +28,15 @@ class CuentasRepository:
         tipo: str,
         moneda_codigo: Optional[str] = "ARS",
         saldo_inicial: float = 0.0,
-        cuenta_pago_id: Optional[int] = None,
+        cuenta_pago_id: Optional[str] = None,
         notas: Optional[str] = None,
         color_hex: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
         Crea una cuenta y, si se pasa moneda_codigo, su fila en
-        cuentas_saldos para esa moneda. Devuelve el id de la cuenta creada.
+        cuentas_saldos para esa moneda. Devuelve el id de la cuenta creada
+        (UUID, repositories/_ids.py).
 
         moneda_codigo=None crea la cuenta sin ninguna fila en
         cuentas_saldos (Tarea 6f, docs/PROXIMOS_PASOS.md: declarar moneda
@@ -54,8 +56,9 @@ class CuentasRepository:
         mismo `with self._db.transaction():` — mismo patrón que
         ComprasCuotasRepository.crear()/CuotasCreditoRepository.crear_lote()).
         """
-        columnas_cuenta = ["nombre", "tipo", "cuenta_pago_id", "notas"]
-        valores_cuenta = [nombre, tipo, cuenta_pago_id, notas]
+        cuenta_id = nuevo_id()
+        columnas_cuenta = ["id", "nombre", "tipo", "cuenta_pago_id", "notas"]
+        valores_cuenta = [cuenta_id, nombre, tipo, cuenta_pago_id, notas]
         if color_hex is not None:
             columnas_cuenta.append("color_hex")
             valores_cuenta.append(color_hex)
@@ -66,9 +69,9 @@ class CuentasRepository:
         )
         params_cuenta = tuple(valores_cuenta)
         if conn is not None:
-            cuenta_id = conn.execute(sql_cuenta, params_cuenta).lastrowid
+            conn.execute(sql_cuenta, params_cuenta)
         else:
-            cuenta_id = self._db.execute(sql_cuenta, params_cuenta)
+            self._db.execute(sql_cuenta, params_cuenta)
 
         if moneda_codigo is None:
             return cuenta_id
@@ -91,7 +94,7 @@ class CuentasRepository:
 
     def crear_saldo_inicial(
         self,
-        cuenta_id: int,
+        cuenta_id: str,
         moneda_id: int,
         monto_minor: int = 0,
         conn: Optional[sqlite3.Connection] = None,
@@ -119,7 +122,7 @@ class CuentasRepository:
 
     def get_or_create_saldo_inicial(
         self,
-        cuenta_id: int,
+        cuenta_id: str,
         moneda_id: int,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
@@ -142,7 +145,7 @@ class CuentasRepository:
         """
         self.crear_saldo_inicial(cuenta_id, moneda_id, monto_minor=0, conn=conn)
 
-    def obtener_por_id(self, cuenta_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, cuenta_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM cuentas WHERE id = ?;", (cuenta_id,))
 
     def listar(self, solo_activas: bool = True) -> list[sqlite3.Row]:
@@ -151,7 +154,7 @@ class CuentasRepository:
         sql += " ORDER BY nombre;"
         return self._db.fetchall(sql)
 
-    def listar_saldos(self, cuenta_id: int) -> list[sqlite3.Row]:
+    def listar_saldos(self, cuenta_id: str) -> list[sqlite3.Row]:
         """
         Todas las filas de cuentas_saldos de una cuenta, enriquecidas con la
         moneda (codigo/simbolo/decimales) — una cuenta puede operar en más
@@ -169,7 +172,7 @@ class CuentasRepository:
             (cuenta_id,),
         )
 
-    def contar_dependientes(self, cuenta_id: int) -> int:
+    def contar_dependientes(self, cuenta_id: str) -> int:
         """Cuántas cuentas tienen a esta como cuenta_pago_id (ej. tarjetas que pagan desde acá)."""
         fila = self._db.fetchone(
             "SELECT COUNT(*) AS n FROM cuentas WHERE cuenta_pago_id = ?;", (cuenta_id,)
@@ -178,10 +181,10 @@ class CuentasRepository:
 
     def actualizar(
         self,
-        cuenta_id: int,
+        cuenta_id: str,
         nombre: Optional[str] = None,
         tipo: Optional[str] = None,
-        cuenta_pago_id: Optional[int] = None,
+        cuenta_pago_id: Optional[str] = None,
         notas: Optional[str] = None,
         activa: Optional[int] = None,
         color_hex: Optional[str] = None,
@@ -199,11 +202,11 @@ class CuentasRepository:
         self._db.execute(f"UPDATE cuentas SET {', '.join(campos)} WHERE id = ?;", tuple(valores))
         return True
 
-    def archivar(self, cuenta_id: int) -> None:
+    def archivar(self, cuenta_id: str) -> None:
         """Desactiva una cuenta (soft delete vía activa = 0)."""
         self._db.execute("UPDATE cuentas SET activa = 0 WHERE id = ?;", (cuenta_id,))
 
-    def obtener_saldo(self, cuenta_id: int, moneda_codigo: str = "ARS") -> float:
+    def obtener_saldo(self, cuenta_id: str, moneda_codigo: str = "ARS") -> float:
         """Calcula el saldo actual vía vw_balance_cuentas (saldo_inicial + transacciones)."""
         row = self._db.fetchone(
             """
@@ -228,7 +231,7 @@ class CuentasRepository:
     # criterio que AsignacionesRepository.eliminar()/ResumenCargosExtraRepository.eliminar()
     # (repositorios no conocen reglas de negocio, ver CLAUDE.md §1).
 
-    def eliminar(self, cuenta_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    def eliminar(self, cuenta_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """DELETE físico de la cuenta."""
         sql = "DELETE FROM cuentas WHERE id = ?;"
         if conn is not None:
@@ -236,7 +239,7 @@ class CuentasRepository:
         else:
             self._db.execute(sql, (cuenta_id,))
 
-    def eliminar_saldos(self, cuenta_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    def eliminar_saldos(self, cuenta_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """DELETE físico de todas las filas de cuentas_saldos de una cuenta (en este punto, todas en 0)."""
         sql = "DELETE FROM cuentas_saldos WHERE cuenta_id = ?;"
         if conn is not None:

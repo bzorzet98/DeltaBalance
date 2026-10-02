@@ -39,7 +39,7 @@ class HogarMiembrosRepository:
 
     def agregar(
         self,
-        hogar_id: int,
+        hogar_id: str,
         usuario_local: str,
         porcentaje_default: Optional[float] = None,
         conn: Optional[sqlite3.Connection] = None,
@@ -64,7 +64,7 @@ class HogarMiembrosRepository:
     # READ
     # ----------------------------------------------------------
 
-    def listar_miembros(self, hogar_id: int) -> list[sqlite3.Row]:
+    def listar_miembros(self, hogar_id: str) -> list[sqlite3.Row]:
         return (
             QueryBuilder("hogar_miembros", include_deleted=True)
             .where("hogar_id", hogar_id)
@@ -87,7 +87,7 @@ class HogarMiembrosRepository:
             .ejecutar(self._db.conn)
         )
 
-    def obtener_miembro(self, hogar_id: int, usuario_local: str) -> Optional[sqlite3.Row]:
+    def obtener_miembro(self, hogar_id: str, usuario_local: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("hogar_miembros", include_deleted=True)
             .where("hogar_id", hogar_id)
@@ -101,7 +101,7 @@ class HogarMiembrosRepository:
 
     def actualizar_porcentaje_default(
         self,
-        hogar_id: int,
+        hogar_id: str,
         usuario_local: str,
         porcentaje_default: Optional[float],
         conn: Optional[sqlite3.Connection] = None,

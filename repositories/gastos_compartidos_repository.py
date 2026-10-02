@@ -41,6 +41,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
@@ -74,7 +75,7 @@ class GastosCompartidosRepository:
 
     def _existe_duplicado_reciente(
         self,
-        hogar_id: int,
+        hogar_id: str,
         pagador: str,
         monto_base_minor: int,
         fecha: str,
@@ -98,20 +99,21 @@ class GastosCompartidosRepository:
 
     def crear(
         self,
-        hogar_id: int,
+        hogar_id: str,
         pagador: str,
         origen_tipo: str,
-        origen_id: int,
-        categoria_id: int,
+        origen_id: str,
+        categoria_id: str,
         monto_base_minor: int,
         coeficiente_deuda: float,
         monto_adeudado_minor: int,
         fecha: str,
         descripcion: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un gasto compartido. estado arranca en 'pendiente'
+        Inserta un gasto compartido y devuelve su id (UUID,
+        repositories/_ids.py). estado arranca en 'pendiente'
         (default de columna). monto_pendiente_minor arranca igual a
         monto_adeudado_minor (mismo signo) — nada se pagó todavía (Tarea 9,
         Parte A: mecanismo de pago parcial, espejo de
@@ -147,34 +149,37 @@ class GastosCompartidosRepository:
                 f"{VENTANA_DUPLICADO_SEGUNDOS} segundos."
             )
 
+        gasto_id = nuevo_id()
         sql = """
             INSERT INTO gastos_compartidos
-                (hogar_id, pagador, origen_tipo, origen_id, categoria_id,
+                (id, hogar_id, pagador, origen_tipo, origen_id, categoria_id,
                  monto_base_minor, coeficiente_deuda, monto_adeudado_minor,
                  monto_pendiente_minor, fecha, descripcion)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            hogar_id, pagador, origen_tipo, origen_id, categoria_id,
+            gasto_id, hogar_id, pagador, origen_tipo, origen_id, categoria_id,
             monto_base_minor, coeficiente_deuda, monto_adeudado_minor,
             monto_adeudado_minor, fecha, descripcion,
         )
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return gasto_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, gasto_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, gasto_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("gastos_compartidos", include_deleted=True)
             .where("id", gasto_id)
             .ejecutar_uno(self._db.conn)
         )
 
-    def obtener_enriquecida(self, gasto_id: int) -> Optional[sqlite3.Row]:
+    def obtener_enriquecida(self, gasto_id: str) -> Optional[sqlite3.Row]:
         """
         Igual que obtener_por_id(), pero con el shape enriquecido:
         columnas propias más category_name/categoria_principal vía JOIN a
@@ -196,7 +201,7 @@ class GastosCompartidosRepository:
 
     def listar(
         self,
-        hogar_id: int,
+        hogar_id: str,
         estado: Optional[str] = None,
         origen_tipo: Optional[str] = None,
         pagador: Optional[str] = None,
@@ -217,7 +222,7 @@ class GastosCompartidosRepository:
 
     def listar_enriquecida(
         self,
-        hogar_id: int,
+        hogar_id: str,
         estado: Optional[str] = None,
         origen_tipo: Optional[str] = None,
         pagador: Optional[str] = None,
@@ -242,7 +247,7 @@ class GastosCompartidosRepository:
             .ejecutar(self._db.conn)
         )
 
-    def listar_por_origen(self, origen_tipo: str, origen_id: int) -> list[sqlite3.Row]:
+    def listar_por_origen(self, origen_tipo: str, origen_id: str) -> list[sqlite3.Row]:
         """
         Para que el futuro service pueda chequear si una transacción/cuota
         específica ya tiene un gasto compartido asociado, antes de crear
@@ -261,7 +266,7 @@ class GastosCompartidosRepository:
 
     def actualizar(
         self,
-        gasto_id: int,
+        gasto_id: str,
         descripcion: Any = NO_CAMBIAR,
         fecha: Any = NO_CAMBIAR,
         monto_base_minor: Any = NO_CAMBIAR,
@@ -297,7 +302,7 @@ class GastosCompartidosRepository:
             self._db.execute(sql, tuple(valores))
         return True
 
-    def marcar_saldado(self, gasto_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    def marcar_saldado(self, gasto_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """Transición estado: 'pendiente' -> 'saldado'. Sin validar el estado previo (trabajo del futuro service)."""
         sql = "UPDATE gastos_compartidos SET estado = 'saldado' WHERE id = ?;"
         params = (gasto_id,)
@@ -308,7 +313,7 @@ class GastosCompartidosRepository:
 
     def actualizar_monto_pendiente(
         self,
-        gasto_id: int,
+        gasto_id: str,
         nuevo_monto_pendiente_minor: int,
         nuevo_estado: str,
         conn: Optional[sqlite3.Connection] = None,
@@ -337,7 +342,7 @@ class GastosCompartidosRepository:
     # ELIMINAR
     # ----------------------------------------------------------
 
-    def eliminar(self, gasto_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    def eliminar(self, gasto_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """
         DELETE físico del gasto compartido (Tarea 9, Parte B — ventana de
         corrección temprana, CLAUDE.md §4). No valida si tiene pagos
@@ -355,7 +360,7 @@ class GastosCompartidosRepository:
     # SALDO NETO (vista)
     # ----------------------------------------------------------
 
-    def obtener_saldo_neto(self, hogar_id: int) -> int:
+    def obtener_saldo_neto(self, hogar_id: str) -> int:
         """
         Consulta vw_saldo_neto_hogar (SUM(monto_pendiente_minor) — no
         monto_adeudado_minor, cambiado en Tarea 9 Parte A corrección

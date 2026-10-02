@@ -51,6 +51,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 
 
@@ -64,7 +65,7 @@ class PresupuestosRepository:
 
     def upsert(
         self,
-        categoria_id: int,
+        categoria_id: str,
         mes: int,
         anio: int,
         moneda_id: int,
@@ -100,10 +101,11 @@ class PresupuestosRepository:
         el camino de UPDATE) que este método evita ejecutando directo
         contra la conexión y leyendo cur.rowcount.
         """
+        # id nuevo (UUID) solo para el camino INSERT: el UPDATE no lo toca.
         sql = """
             INSERT INTO presupuestos
-                (categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas, formula_estimado)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas, formula_estimado)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(categoria_id, mes, anio)
             DO UPDATE SET monto_estimado_minor = excluded.monto_estimado_minor,
                           es_recurrente = excluded.es_recurrente,
@@ -111,7 +113,7 @@ class PresupuestosRepository:
                           formula_estimado = excluded.formula_estimado;
         """
         params = (
-            categoria_id, moneda_id, mes, anio,
+            nuevo_id(), categoria_id, moneda_id, mes, anio,
             monto_estimado_minor, int(es_recurrente), notas, formula_estimado,
         )
         if conn is not None:
@@ -124,7 +126,7 @@ class PresupuestosRepository:
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_periodo(self, categoria_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def obtener_por_periodo(self, categoria_id: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
         """Busca por el UNIQUE(categoria_id, mes, anio) de la tabla."""
         return (
             QueryBuilder("presupuestos", include_deleted=True)
@@ -175,7 +177,7 @@ class PresupuestosRepository:
 
     def actualizar_ejecutado(
         self,
-        categoria_id: int,
+        categoria_id: str,
         mes: int,
         anio: int,
         monto_ejecutado_minor: int,
@@ -235,13 +237,13 @@ class PresupuestosRepository:
         ).fetchall()
         sql = """
             INSERT OR IGNORE INTO presupuestos
-                (categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+                (id, categoria_id, moneda_id, mes, anio, monto_estimado_minor, es_recurrente, notas)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """
         copiados = 0
         for fila in filas_origen:
             params = (
-                fila["categoria_id"], fila["moneda_id"], mes_destino, anio_destino,
+                nuevo_id(), fila["categoria_id"], fila["moneda_id"], mes_destino, anio_destino,
                 fila["monto_estimado_minor"], fila["es_recurrente"], fila["notas"],
             )
             if conn is not None:

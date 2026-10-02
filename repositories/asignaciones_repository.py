@@ -33,6 +33,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 
 
@@ -46,14 +47,15 @@ class AsignacionesRepository:
 
     def crear(
         self,
-        movimiento_id: int,
-        objetivo_id: int,
+        movimiento_id: str,
+        objetivo_id: str,
         porcentaje: float,
         monto_asignado_minor: int,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta una asignación. UNIQUE(movimiento_id, objetivo_id) en el
+        Inserta una asignación y devuelve su id (UUID, repositories/_ids.py).
+        UNIQUE(movimiento_id, objetivo_id) en el
         schema — no se puede asignar el mismo movimiento al mismo objetivo
         dos veces (habría que actualizar la fila existente, no insertar
         otra).
@@ -62,34 +64,37 @@ class AsignacionesRepository:
         también inserta el movimiento_activo al que pertenece esta
         asignación (ver MovimientosActivoRepository.crear(conn=...)).
         """
+        asignacion_id = nuevo_id()
         sql = """
-            INSERT INTO asignaciones (movimiento_id, objetivo_id, porcentaje, monto_asignado_minor)
-            VALUES (?, ?, ?, ?);
+            INSERT INTO asignaciones (id, movimiento_id, objetivo_id, porcentaje, monto_asignado_minor)
+            VALUES (?, ?, ?, ?, ?);
         """
-        params = (movimiento_id, objetivo_id, porcentaje, monto_asignado_minor)
+        params = (asignacion_id, movimiento_id, objetivo_id, porcentaje, monto_asignado_minor)
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return asignacion_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def listar_por_movimiento(self, movimiento_id: int) -> list[sqlite3.Row]:
+    def listar_por_movimiento(self, movimiento_id: str) -> list[sqlite3.Row]:
         return (
             QueryBuilder("asignaciones", include_deleted=True)
             .where("movimiento_id", movimiento_id)
             .ejecutar(self._db.conn)
         )
 
-    def listar_por_objetivo(self, objetivo_id: int) -> list[sqlite3.Row]:
+    def listar_por_objetivo(self, objetivo_id: str) -> list[sqlite3.Row]:
         return (
             QueryBuilder("asignaciones", include_deleted=True)
             .where("objetivo_id", objetivo_id)
             .ejecutar(self._db.conn)
         )
 
-    def suma_porcentaje_por_movimiento(self, movimiento_id: int) -> float:
+    def suma_porcentaje_por_movimiento(self, movimiento_id: str) -> float:
         """
         Suma de `porcentaje` de todas las asignaciones de un movimiento.
         Devuelve 0.0 si no hay ninguna — COALESCE evita que SUM() sobre un
@@ -107,12 +112,12 @@ class AsignacionesRepository:
     # DELETE
     # ----------------------------------------------------------
 
-    def eliminar(self, id: int) -> None:
+    def eliminar(self, id: str) -> None:
         """DELETE físico — una asignación es un dato de apoyo al reparto, sin historial propio."""
         self._db.execute("DELETE FROM asignaciones WHERE id = ?;", (id,))
 
     def eliminar_por_movimiento(
-        self, movimiento_id: int, conn: Optional[sqlite3.Connection] = None,
+        self, movimiento_id: str, conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """
         DELETE físico de TODAS las asignaciones de un movimiento_id de una

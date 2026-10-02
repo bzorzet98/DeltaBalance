@@ -63,7 +63,7 @@ class TransactionResult:
     """
 
     success: bool
-    transaction_id: Optional[int] = None
+    transaction_id: Optional[str] = None
     data: dict[str, Any] = field(default_factory=dict)
     message: str = ""
 
@@ -138,7 +138,7 @@ class TransactionService:
             )
         return row
 
-    def _get_account(self, account_id: int) -> sqlite3.Row:
+    def _get_account(self, account_id: str) -> sqlite3.Row:
         """
         Fetches an active account by ID.
         Raises AccountNotFoundError if it does not exist or is archived.
@@ -158,7 +158,7 @@ class TransactionService:
             )
         return row
 
-    def _get_category(self, category_id: int) -> sqlite3.Row:
+    def _get_category(self, category_id: str) -> sqlite3.Row:
         """
         Fetches a category by ID.
         Raises CategoryNotFoundError if it does not exist.
@@ -261,8 +261,8 @@ class TransactionService:
         self,
         date_str:      str,
         concept:       str,
-        account_id:    int,
-        category_id:   int,
+        account_id:    str,
+        category_id:   str,
         currency_code: str,
         amount:        float,
         movement_type: str,
@@ -343,11 +343,11 @@ class TransactionService:
     def create_transfer(
         self,
         date_str:          str,
-        origin_account_id: int,
-        dest_account_id:   int,
+        origin_account_id: str,
+        dest_account_id:   str,
         currency_code:     str,
         amount:            float,
-        category_id:       int,
+        category_id:       str,
         notes:             Optional[str] = None,
     ) -> TransactionResult:
         """
@@ -449,7 +449,7 @@ class TransactionService:
     # JOINs. incluir_eliminadas=True replica el include_deleted=True que
     # esta query tenía hardcodeado (get() siempre encuentra transacciones
     # eliminadas, a diferencia de list_transactions()).
-    def get(self, transaction_id: int) -> Optional[sqlite3.Row]:
+    def get(self, transaction_id: str) -> Optional[sqlite3.Row]:
         """
         Fetches a single transaction by its primary key, enriched with
         account name, category name, and currency code via JOINs.
@@ -470,8 +470,8 @@ class TransactionService:
     # contrario.
     def list_transactions(
         self,
-        account_id:    Optional[int] = None,
-        category_id:   Optional[int] = None,
+        account_id:    Optional[str] = None,
+        category_id:   Optional[str] = None,
         currency_code: Optional[str] = None,
         movement_type: Optional[str] = None,
         date_from:     Optional[str] = None,
@@ -497,7 +497,7 @@ class TransactionService:
             per_page:      Rows per page. Default 50.
 
         Returns:
-            List of sqlite3.Row, ordered by date DESC then id DESC.
+            List of sqlite3.Row, ordered by date DESC then creation order (rowid) DESC.
         """
         currency_id = None
         if currency_code:
@@ -517,8 +517,8 @@ class TransactionService:
 
     def count_transactions(
         self,
-        account_id:    Optional[int] = None,
-        category_id:   Optional[int] = None,
+        account_id:    Optional[str] = None,
+        category_id:   Optional[str] = None,
         currency_code: Optional[str] = None,
         movement_type: Optional[str] = None,
         date_from:     Optional[str] = None,
@@ -617,13 +617,13 @@ class TransactionService:
     # como "escribir NULL a propósito" en vez de "no tocar".
     def update(
         self,
-        transaction_id: int,
+        transaction_id: str,
         date_str:       Optional[str]   = None,
         concept:        Optional[str]   = None,
         amount:         Optional[float] = None,
         currency_code:  Optional[str]   = None,
-        category_id:    Optional[int]   = None,
-        account_id:     Optional[int]   = None,
+        category_id:    Optional[str]   = None,
+        account_id:     Optional[str]   = None,
         tag:            Optional[str]   = None,
         notes:          Optional[str]   = None,
     ) -> TransactionResult:
@@ -716,7 +716,7 @@ class TransactionService:
     # DELETE
     # ----------------------------------------------------------
 
-    def get_delete_warnings(self, transaction_id: int) -> dict:
+    def get_delete_warnings(self, transaction_id: str) -> dict:
         """
         Comprueba si transaction_id está vinculada a una autotransferencia
         (autotransferencias.transaccion_salida_id/transaccion_entrada_id) o
@@ -770,7 +770,7 @@ class TransactionService:
             "es_origen_ahorro": fila_ahorro is not None,
         }
 
-    def delete(self, transaction_id: int) -> TransactionResult:
+    def delete(self, transaction_id: str) -> TransactionResult:
         """
         Soft-deletes a transaction by setting deleted_at to the current timestamp.
 

@@ -138,7 +138,7 @@ class FeesResult:
     Structured result returned by FeesService operations.
     """
     success:      bool
-    entity_id:    Optional[int]   = None
+    entity_id:    Optional[str]   = None
     data:         dict            = field(default_factory=dict)
     message:      str             = ""
 
@@ -212,7 +212,7 @@ class FeesService:
             raise ValueError(f"Currency '{code}' not found.")
         return row
 
-    def _get_account(self, account_id: int) -> sqlite3.Row:
+    def _get_account(self, account_id: str) -> sqlite3.Row:
         """
         Fetches an active account by ID. Raises FeesError if not found or inactive.
 
@@ -229,7 +229,7 @@ class FeesService:
             raise FeesError(f"Account id={account_id} not found or is inactive.")
         return row
 
-    def _get_category(self, category_id: int) -> sqlite3.Row:
+    def _get_category(self, category_id: str) -> sqlite3.Row:
         """
         Fetches a category by ID. Raises FeesError if not found.
 
@@ -244,7 +244,7 @@ class FeesService:
             raise FeesError(f"Category id={category_id} not found.")
         return row
 
-    def _get_purchase(self, purchase_id: int) -> sqlite3.Row:
+    def _get_purchase(self, purchase_id: str) -> sqlite3.Row:
         """
         Fetches a purchase row by ID. Raises PurchaseNotFoundError if not found.
 
@@ -259,7 +259,7 @@ class FeesService:
             raise PurchaseNotFoundError(f"Purchase id={purchase_id} not found.")
         return row
 
-    def _get_statement(self, statement_id: int) -> sqlite3.Row:
+    def _get_statement(self, statement_id: str) -> sqlite3.Row:
         """
         Fetches a credit card statement by ID.
         Raises StatementNotFoundError if not found.
@@ -369,8 +369,8 @@ class FeesService:
         self,
         date_str:         str,
         concept:          str,
-        account_id:       int,
-        category_id:      int,
+        account_id:       str,
+        category_id:      str,
         currency_code:    str,
         total_amount:     float,
         total_fees:       int,
@@ -485,7 +485,7 @@ class FeesService:
     # READ PURCHASES
     # ----------------------------------------------------------
 
-    def get_purchase(self, purchase_id: int) -> Optional[sqlite3.Row]:
+    def get_purchase(self, purchase_id: str) -> Optional[sqlite3.Row]:
         """
         Fetches a single purchase enriched with account, category, and currency info.
 
@@ -499,7 +499,7 @@ class FeesService:
 
     def list_purchases(
         self,
-        account_id:    Optional[int] = None,
+        account_id:    Optional[str] = None,
         estado:        Optional[str] = None,
         currency_code: Optional[str] = None,
         page:          int = 1,
@@ -579,7 +579,7 @@ class FeesService:
         compras.sort(key=lambda f: (f["fecha_compra"], f["id"]), reverse=True)
         return compras
 
-    def get_fees_for_purchase(self, purchase_id: int) -> list[sqlite3.Row]:
+    def get_fees_for_purchase(self, purchase_id: str) -> list[sqlite3.Row]:
         """
         Returns all fee rows for a given purchase, ordered by fee number.
 
@@ -607,7 +607,7 @@ class FeesService:
         self,
         month:         int,
         year:          int,
-        account_id:    Optional[int] = None,
+        account_id:    Optional[str] = None,
         currency_code: Optional[str] = None,
         estado:        str = "pendiente",
     ) -> list[sqlite3.Row]:
@@ -808,7 +808,7 @@ class FeesService:
 
     def open_statement(
         self,
-        account_id:     int,
+        account_id:     str,
         month:          int,
         year:           int,
         tax_percentage_bp: int = 0,
@@ -868,8 +868,8 @@ class FeesService:
 
     def confirm_fee(
         self,
-        fee_id:       int,
-        statement_id: int,
+        fee_id:       str,
+        statement_id: str,
         real_month:   Optional[int] = None,
         real_year:    Optional[int] = None,
         notes:        Optional[str] = None,
@@ -970,7 +970,7 @@ class FeesService:
 
     def add_extra_charge(
         self,
-        statement_id: int,
+        statement_id: str,
         concept:      str,
         charge_type:  str,
         amount_minor: int,
@@ -1038,7 +1038,7 @@ class FeesService:
             message=f"Extra charge '{concept.strip()}' ({charge_type}) added to statement #{statement_id}.",
         )
 
-    def list_extra_charges(self, statement_id: int) -> list[sqlite3.Row]:
+    def list_extra_charges(self, statement_id: str) -> list[sqlite3.Row]:
         """
         Returns all extra charges of a statement.
 
@@ -1054,7 +1054,7 @@ class FeesService:
         self._get_statement(statement_id)  # validate existence
         return self._cargos_repo.listar_por_resumen(statement_id)
 
-    def remove_extra_charge(self, charge_id: int, statement_id: int) -> FeesResult:
+    def remove_extra_charge(self, charge_id: str, statement_id: str) -> FeesResult:
         """
         Removes an extra charge from an OPEN statement. Requires both ids
         so the charge's ownership can be validated — a charge_id that
@@ -1104,7 +1104,7 @@ class FeesService:
             message=f"Extra charge #{charge_id} removed from statement #{statement_id}.",
         )
 
-    def close_statement(self, statement_id: int) -> FeesResult:
+    def close_statement(self, statement_id: str) -> FeesResult:
         """
         Marks a statement as 'cerrado' (reviewed, ready to pay) and
         CONSOLIDATES its totals for real: monto_consumos_minor is
@@ -1157,10 +1157,10 @@ class FeesService:
 
     def pay_statement(
         self,
-        statement_id:       int,
+        statement_id:       str,
         payment_date:       str,
         monto_pagado_minor: int,
-        transaction_id:     Optional[int] = None,
+        transaction_id:     Optional[str] = None,
     ) -> FeesResult:
         """
         Marks a statement as 'pagado' and all its linked fees as 'pagado'.
@@ -1232,7 +1232,7 @@ class FeesService:
     # READ STATEMENTS
     # ----------------------------------------------------------
 
-    def get_statement(self, statement_id: int) -> Optional[sqlite3.Row]:
+    def get_statement(self, statement_id: str) -> Optional[sqlite3.Row]:
         """
         Fetches a single statement enriched with account name.
 
@@ -1246,7 +1246,7 @@ class FeesService:
 
     def list_statements(
         self,
-        account_id: Optional[int] = None,
+        account_id: Optional[str] = None,
         estado:     Optional[str] = None,
         year:       Optional[int] = None,
         page:       int = 1,
@@ -1302,11 +1302,11 @@ class FeesService:
     # The number of fees has its own method: update_purchase_cuotas().
     def update_purchase(
         self,
-        purchase_id:       int,
+        purchase_id:       str,
         concepto:          Optional[str] = None,
-        categoria_id:      Optional[int] = None,
+        categoria_id:      Optional[str] = None,
         monto_total_minor: Optional[int] = None,
-        cuenta_id:         Optional[int] = None,
+        cuenta_id:         Optional[str] = None,
         fecha:             Optional[str] = None,
         moneda_codigo:     Optional[str] = None,
     ) -> FeesResult:
@@ -1478,7 +1478,7 @@ class FeesService:
     # another month, plus the default-split rule of the total. A purchase
     # shared as 'total_unico' is NOT blocked: that shared expense was
     # computed from the total, which does not change here.
-    def update_purchase_cuotas(self, compra_id: int, nueva_cantidad: int) -> FeesResult:
+    def update_purchase_cuotas(self, compra_id: str, nueva_cantidad: int) -> FeesResult:
         """
         Changes the number of fees of a purchase, keeping its total:
         deletes every fee and recreates nueva_cantidad of them, projected
@@ -1528,7 +1528,7 @@ class FeesService:
 
     # --- Early-correction checks (CLAUDE.md §4) shared by the edits above ---
 
-    def _require_fees_pending(self, purchase_id: int, cuotas: list[sqlite3.Row], accion: str) -> None:
+    def _require_fees_pending(self, purchase_id: str, cuotas: list[sqlite3.Row], accion: str) -> None:
         no_pendientes = [c for c in cuotas if c["estado"] != "pendiente"]
         if no_pendientes:
             raise FeesError(
@@ -1536,14 +1536,14 @@ class FeesService:
                 f"statement, paid or omitted — {accion}."
             )
 
-    def _require_fees_not_shared(self, purchase_id: int, cuotas: list[sqlite3.Row], accion: str) -> None:
+    def _require_fees_not_shared(self, purchase_id: str, cuotas: list[sqlite3.Row], accion: str) -> None:
         if any(self._gastos_repo.listar_por_origen("cuota_credito", c["id"]) for c in cuotas):
             raise FeesError(
                 f"Purchase id={purchase_id} is shared per fee — {accion}; "
                 f"delete the shared expense(s) first."
             )
 
-    def _require_purchase_not_shared(self, purchase_id: int, accion: str) -> None:
+    def _require_purchase_not_shared(self, purchase_id: str, accion: str) -> None:
         # Shared as a whole ('total_unico' → origen_tipo 'compra_cuotas').
         if self._gastos_repo.listar_por_origen("compra_cuotas", purchase_id):
             raise FeesError(
@@ -1580,7 +1580,7 @@ class FeesService:
 
     def _regenerate_fees(
         self,
-        purchase_id:       int,
+        purchase_id:       str,
         fecha_compra:      str,
         cuotas_actuales:   list[sqlite3.Row],
         total_cuotas:      int,
@@ -1609,7 +1609,7 @@ class FeesService:
     # DELETE PURCHASE (early-correction window, CLAUDE.md §4)
     # ----------------------------------------------------------
 
-    def delete_purchase(self, purchase_id: int) -> FeesResult:
+    def delete_purchase(self, purchase_id: str) -> FeesResult:
         """
         Physically deletes a purchase and every one of its fees — only while
         nothing generated from it has state of its own (CLAUDE.md §4): the
@@ -1665,7 +1665,7 @@ class FeesService:
     # CANCEL PURCHASE
     # ----------------------------------------------------------
 
-    def cancel_purchase(self, purchase_id: int, notes: Optional[str] = None) -> FeesResult:
+    def cancel_purchase(self, purchase_id: str, notes: Optional[str] = None) -> FeesResult:
         """
         Cancels a purchase and marks all its pending fees as 'omitido'.
         Only fees still in 'pendiente' state are affected — fees already
@@ -1709,7 +1709,7 @@ class FeesService:
     # RESCHEDULE FEES ("Editar cronograma")
     # ----------------------------------------------------------
 
-    def reschedule_fees(self, purchase_id: int, new_periods: dict[int, tuple[int, int]]) -> FeesResult:
+    def reschedule_fees(self, purchase_id: str, new_periods: dict[int, tuple[int, int]]) -> FeesResult:
         """
         Moves fees of a purchase to other months by hand:
         new_periods = {fee_id: (month, year)}. A fee passed with the month it
@@ -1801,12 +1801,12 @@ class FeesService:
             month, year = self._add_months(month, year, 1)
         return self._day_in_month(due_day, month, year)
 
-    def get_card_config(self, account_id: int) -> Optional[dict]:
+    def get_card_config(self, account_id: str) -> Optional[dict]:
         """{"cuenta_id", "dia_cierre", "dia_vencimiento", ...} of a card, or None if it has no config yet."""
         fila = self._tarjetas_repo.obtener(account_id)
         return dict(fila) if fila is not None else None
 
-    def set_card_config(self, account_id: int, closing_day: int, due_day: int) -> FeesResult:
+    def set_card_config(self, account_id: str, closing_day: int, due_day: int) -> FeesResult:
         """
         Creates or updates the closing / due day of a credit card.
 
@@ -1828,7 +1828,7 @@ class FeesService:
             message=f"Card #{account_id}: closes on day {closing_day}, due on day {due_day}.",
         )
 
-    def card_cycle_dates(self, account_id: int, today: Optional[Any] = None) -> Optional[dict]:
+    def card_cycle_dates(self, account_id: str, today: Optional[Any] = None) -> Optional[dict]:
         """
         Previous / current / next statement of a card, from its config:
             {"dia_cierre": 15, "dia_vencimiento": 5,
@@ -1872,7 +1872,7 @@ class FeesService:
             "proximo": _resumen(1),
         }
 
-    def suggest_first_fee(self, account_id: Optional[int], date_str: Any) -> tuple[int, int]:
+    def suggest_first_fee(self, account_id: Optional[str], date_str: Any) -> tuple[int, int]:
         """
         Suggested (month, year) of fee #1 for a purchase made on date_str:
         the month after the purchase; two months after when the card has a

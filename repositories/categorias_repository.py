@@ -15,24 +15,28 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 
 
 class CategoriasRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
 
-    def crear(self, categoria_principal: str, subcategoria: str, tipo: str) -> int:
-        return self._db.execute(
-            "INSERT INTO categorias (categoria_principal, subcategoria, tipo) VALUES (?, ?, ?);",
-            (categoria_principal, subcategoria, tipo),
+    def crear(self, categoria_principal: str, subcategoria: str, tipo: str) -> str:
+        """Inserta una categoría y devuelve su id (UUID, repositories/_ids.py)."""
+        categoria_id = nuevo_id()
+        self._db.execute(
+            "INSERT INTO categorias (id, categoria_principal, subcategoria, tipo) VALUES (?, ?, ?, ?);",
+            (categoria_id, categoria_principal, subcategoria, tipo),
         )
+        return categoria_id
 
-    def obtener_por_id(self, categoria_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, categoria_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM categorias WHERE id = ?;", (categoria_id,))
 
     def actualizar(
         self,
-        categoria_id: int,
+        categoria_id: str,
         categoria_principal: Optional[str] = None,
         subcategoria: Optional[str] = None,
         tipo: Optional[str] = None,
@@ -73,12 +77,12 @@ class CategoriasRepository:
         sql += " ORDER BY categoria_principal, subcategoria;"
         return self._db.fetchall(sql, tuple(params))
 
-    def desactivar(self, categoria_id: int) -> None:
+    def desactivar(self, categoria_id: str) -> None:
         """
         Soft-delete: activa = 0. NO valida si la categoría tiene
         transacciones asociadas — esa regla de negocio vive en el service.
         """
         self._db.execute("UPDATE categorias SET activa = 0 WHERE id = ?;", (categoria_id,))
 
-    def activar(self, categoria_id: int) -> None:
+    def activar(self, categoria_id: str) -> None:
         self._db.execute("UPDATE categorias SET activa = 1 WHERE id = ?;", (categoria_id,))

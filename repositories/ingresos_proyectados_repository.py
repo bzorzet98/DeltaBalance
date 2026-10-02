@@ -34,6 +34,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
@@ -54,26 +55,30 @@ class IngresosProyectadosRepository:
         monto_estimado_minor: int,
         moneda_id: int,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un ingreso proyectado. estado arranca en 'pendiente' y
+        Inserta un ingreso proyectado y devuelve su id (UUID,
+        repositories/_ids.py). estado arranca en 'pendiente' y
         monto_percibido_minor en 0 (defaults de columna, no se setean
         explícito acá).
         """
+        ingreso_id = nuevo_id()
         sql = """
-            INSERT INTO ingresos_proyectados (concepto, mes, anio, monto_estimado_minor, moneda_id)
-            VALUES (?, ?, ?, ?, ?);
+            INSERT INTO ingresos_proyectados (id, concepto, mes, anio, monto_estimado_minor, moneda_id)
+            VALUES (?, ?, ?, ?, ?, ?);
         """
-        params = (concepto, mes, anio, monto_estimado_minor, moneda_id)
+        params = (ingreso_id, concepto, mes, anio, monto_estimado_minor, moneda_id)
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return ingreso_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, ingreso_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, ingreso_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("ingresos_proyectados", include_deleted=True)
             .where("id", ingreso_id)
@@ -95,7 +100,7 @@ class IngresosProyectadosRepository:
 
     def actualizar(
         self,
-        ingreso_id: int,
+        ingreso_id: str,
         concepto: Any = NO_CAMBIAR,
         mes: Any = NO_CAMBIAR,
         anio: Any = NO_CAMBIAR,
@@ -134,7 +139,7 @@ class IngresosProyectadosRepository:
 
     def marcar_estado(
         self,
-        ingreso_id: int,
+        ingreso_id: str,
         nuevo_estado: str,
         monto_percibido_minor: Optional[int] = None,
         conn: Optional[sqlite3.Connection] = None,

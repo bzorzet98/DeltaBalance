@@ -67,6 +67,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 
 
 class CuotasCreditoRepository:
@@ -79,15 +80,15 @@ class CuotasCreditoRepository:
 
     def crear_lote(
         self,
-        compra_id: int,
+        compra_id: str,
         cuotas: list[dict],
         conn: Optional[sqlite3.Connection] = None,
-    ) -> list[int]:
+    ) -> list[str]:
         """
         Inserta las N cuotas de una compra de una sola vez. Cada elemento de
         `cuotas` es un dict con las claves: numero_cuota, mes_proyectado,
-        anio_proyectado, monto_cuota_minor. Devuelve la lista de ids
-        insertados, en el mismo orden que `cuotas`.
+        anio_proyectado, monto_cuota_minor. Devuelve la lista de ids (UUID,
+        repositories/_ids.py) insertados, en el mismo orden que `cuotas`.
 
         Si se pasa `conn`, participa de la transacción externa que también
         inserta la compra en ComprasCuotasRepository.crear() (ver docstring
@@ -99,12 +100,14 @@ class CuotasCreditoRepository:
         """
         sql = """
             INSERT INTO cuotas_credito
-                (compra_id, numero_cuota, mes_proyectado, anio_proyectado, monto_cuota_minor)
-            VALUES (?, ?, ?, ?, ?);
+                (id, compra_id, numero_cuota, mes_proyectado, anio_proyectado, monto_cuota_minor)
+            VALUES (?, ?, ?, ?, ?, ?);
         """
         ids = []
         for cuota in cuotas:
+            cuota_id = nuevo_id()
             params = (
+                cuota_id,
                 compra_id,
                 cuota["numero_cuota"],
                 cuota["mes_proyectado"],
@@ -112,19 +115,20 @@ class CuotasCreditoRepository:
                 cuota["monto_cuota_minor"],
             )
             if conn is not None:
-                ids.append(conn.execute(sql, params).lastrowid)
+                conn.execute(sql, params)
             else:
-                ids.append(self._db.execute(sql, params))
+                self._db.execute(sql, params)
+            ids.append(cuota_id)
         return ids
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, cuota_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, cuota_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM cuotas_credito WHERE id = ?;", (cuota_id,))
 
-    def listar_por_compra(self, compra_id: int) -> list[sqlite3.Row]:
+    def listar_por_compra(self, compra_id: str) -> list[sqlite3.Row]:
         """
         Réplica exacta de FeesService.get_fees_for_purchase(): todas las
         cuotas de una compra, ordenadas por numero_cuota ASC. Sin JOINs.
@@ -167,9 +171,9 @@ class CuotasCreditoRepository:
 
     def marcar_estado(
         self,
-        cuota_id: int,
+        cuota_id: str,
         nuevo_estado: str,
-        resumen_id: Optional[int] = None,
+        resumen_id: Optional[str] = None,
         mes_real_pago: Optional[int] = None,
         anio_real_pago: Optional[int] = None,
         notas: Optional[str] = None,
@@ -211,7 +215,7 @@ class CuotasCreditoRepository:
 
     def marcar_estado_por_resumen(
         self,
-        resumen_id: int,
+        resumen_id: str,
         estado_actual: str,
         nuevo_estado: str,
         conn: Optional[sqlite3.Connection] = None,
@@ -240,7 +244,7 @@ class CuotasCreditoRepository:
 
     def marcar_estado_por_compra(
         self,
-        compra_id: int,
+        compra_id: str,
         estado_actual: str,
         nuevo_estado: str,
         notas: Optional[str] = None,
@@ -276,7 +280,7 @@ class CuotasCreditoRepository:
 
     def actualizar_monto_por_compra(
         self,
-        compra_id: int,
+        compra_id: str,
         estado_actual: str,
         monto_cuota_minor: int,
         conn: Optional[sqlite3.Connection] = None,
@@ -313,7 +317,7 @@ class CuotasCreditoRepository:
 
     def actualizar_periodo(
         self,
-        cuota_id: int,
+        cuota_id: str,
         mes_proyectado: int,
         anio_proyectado: int,
         conn: Optional[sqlite3.Connection] = None,
@@ -343,7 +347,7 @@ class CuotasCreditoRepository:
 
     def eliminar_por_compra(
         self,
-        compra_id: int,
+        compra_id: str,
         conn: Optional[sqlite3.Connection] = None,
     ) -> int:
         """
