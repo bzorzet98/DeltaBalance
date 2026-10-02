@@ -26,6 +26,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 
 
@@ -42,24 +43,28 @@ class HogaresRepository:
         codigo_invitacion: str,
         nombre: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un hogar. codigo_invitacion ya viene generado por el
+        Inserta un hogar y devuelve su id (UUID, repositories/_ids.py).
+        codigo_invitacion ya viene generado por el
         caller (ver docstring del módulo) — UNIQUE en el schema, una
         colisión sube como sqlite3.IntegrityError tal cual, sin envolver
         (decidir cómo reaccionar es trabajo del futuro service).
         """
-        sql = "INSERT INTO hogares (codigo_invitacion, nombre) VALUES (?, ?);"
-        params = (codigo_invitacion, nombre)
+        hogar_id = nuevo_id()
+        sql = "INSERT INTO hogares (id, codigo_invitacion, nombre) VALUES (?, ?, ?);"
+        params = (hogar_id, codigo_invitacion, nombre)
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return hogar_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, hogar_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, hogar_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("hogares", include_deleted=True)
             .where("id", hogar_id)

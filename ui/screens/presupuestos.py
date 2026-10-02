@@ -450,7 +450,7 @@ def build(
             # vacío) — no se escribe ningún presupuesto acá, eso pasa
             # recién si el usuario carga un Estimado real (ver
             # _confirmar_estimado()).
-            estado["categorias_extra"].add(int(campo_nueva_categoria.id_seleccionado))
+            estado["categorias_extra"].add(campo_nueva_categoria.id_seleccionado)
             _cerrar_dialogo()
             _refrescar()
 

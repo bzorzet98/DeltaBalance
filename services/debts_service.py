@@ -63,7 +63,7 @@ class DebtNotFoundError(DebtError):
 @dataclass
 class DebtResult:
     success: bool
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     message: str = ""
 
 
@@ -128,7 +128,7 @@ class DebtsService:
         """concepto/notas: sin espacios de más; vacío = NULL."""
         return (valor or "").strip() or None
 
-    def _obtener(self, deuda_id: int) -> sqlite3.Row:
+    def _obtener(self, deuda_id: str) -> sqlite3.Row:
         fila = self._repo.obtener_por_id(deuda_id)
         if fila is None:
             raise DebtNotFoundError(f"Debt id={deuda_id} not found.")
@@ -153,7 +153,7 @@ class DebtsService:
         fecha: str,
         notas: Optional[str] = None,
         origen_tipo: str = "manual",
-        origen_id: Optional[int] = None,
+        origen_id: Optional[str] = None,
     ) -> DebtResult:
         """
         Crea una fila del libro en ese tab. monto_minor positivo = la deuda
@@ -188,7 +188,7 @@ class DebtsService:
     # READ
     # ----------------------------------------------------------
 
-    def get(self, id: int) -> Optional[sqlite3.Row]:
+    def get(self, id: str) -> Optional[sqlite3.Row]:
         """La fila enriquecida con la moneda (currency_code, currency_symbol, decimales), o None."""
         return self._repo.obtener_por_id(id)
 
@@ -223,7 +223,7 @@ class DebtsService:
     # UPDATE / DELETE
     # ----------------------------------------------------------
 
-    def update(self, id: int, **kwargs: Any) -> DebtResult:
+    def update(self, id: str, **kwargs: Any) -> DebtResult:
         """
         Update parcial: solo los campos pasados (CAMPOS_EDITABLES). Mismas
         validaciones que create(); el signo de monto_minor se guarda tal cual.
@@ -258,7 +258,7 @@ class DebtsService:
             message=f"Debt #{id} updated ({len(campos)} field(s))." if actualizado else f"Debt #{id}: nothing changed.",
         )
 
-    def delete(self, id: int) -> DebtResult:
+    def delete(self, id: str) -> DebtResult:
         """
         DELETE físico (sin dependencias con estado propio, CLAUDE.md §4).
 

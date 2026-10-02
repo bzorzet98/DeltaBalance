@@ -33,7 +33,7 @@ class CompartidosMensualesRepository:
 
     def upsert(
         self,
-        hogar_id: int,
+        hogar_id: str,
         pagador: str,
         moneda_id: int,
         mes: int,
@@ -56,7 +56,7 @@ class CompartidosMensualesRepository:
     # ----------------------------------------------------------
 
     def obtener(
-        self, hogar_id: int, pagador: str, moneda_id: int, mes: int, anio: int,
+        self, hogar_id: str, pagador: str, moneda_id: int, mes: int, anio: int,
     ) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("compartidos_mensuales", include_deleted=True)
@@ -68,7 +68,7 @@ class CompartidosMensualesRepository:
             .ejecutar_uno(self._db.conn)
         )
 
-    def listar_por_hogar_periodo(self, hogar_id: int, mes: int, anio: int) -> list[sqlite3.Row]:
+    def listar_por_hogar_periodo(self, hogar_id: str, mes: int, anio: int) -> list[sqlite3.Row]:
         """Todos los snapshots de un hogar en un mes (una fila por (pagador, moneda))."""
         return (
             QueryBuilder("compartidos_mensuales", include_deleted=True)
@@ -85,7 +85,7 @@ class CompartidosMensualesRepository:
     # ----------------------------------------------------------
 
     def eliminar_desde(
-        self, hogar_id: Optional[int], mes: int, anio: int, conn: Optional[sqlite3.Connection] = None,
+        self, hogar_id: Optional[str], mes: int, anio: int, conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """DELETE físico de los snapshots de mes/anio en adelante — de un hogar, o de todos con hogar_id=None."""
         sql = "DELETE FROM compartidos_mensuales WHERE (anio > ? OR (anio = ? AND mes >= ?))"

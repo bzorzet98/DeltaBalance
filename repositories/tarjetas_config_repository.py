@@ -31,7 +31,7 @@ class TarjetasConfigRepository:
 
     def upsert(
         self,
-        cuenta_id: int,
+        cuenta_id: str,
         dia_cierre: int,
         dia_vencimiento: int,
         conn: Optional[sqlite3.Connection] = None,
@@ -54,7 +54,7 @@ class TarjetasConfigRepository:
     # READ
     # ----------------------------------------------------------
 
-    def obtener(self, cuenta_id: int) -> Optional[sqlite3.Row]:
+    def obtener(self, cuenta_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM tarjetas_config WHERE cuenta_id = ?;", (cuenta_id,))
 
     def listar(self) -> list[sqlite3.Row]:

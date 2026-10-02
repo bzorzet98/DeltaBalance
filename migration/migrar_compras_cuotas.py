@@ -637,7 +637,8 @@ def _procesar_filas(
                     NOTA_MIGRACION.format(hoja=HOJA, fila=fila_excel),
                 ),
             )
-            compra_id = cur.lastrowid
+            # El id es un UUID (DEFAULT de la columna): lastrowid es el rowid interno, no el id.
+            compra_id = conn.execute("SELECT id FROM compras_cuotas WHERE rowid = ?;", (cur.lastrowid,)).fetchone()[0]
             for numero in range(1, cuotas_totales + 1):
                 anio, mes = _sumar_meses(anio_base, mes_base, numero - 1)
                 estado = "pagado" if (MARCAR_CUOTAS_YA_PAGADAS and numero <= cuotas_pagadas) else "pendiente"

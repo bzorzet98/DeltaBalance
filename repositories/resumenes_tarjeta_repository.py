@@ -72,6 +72,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 
@@ -87,45 +88,48 @@ class ResumenesTarjetaRepository:
 
     def crear(
         self,
-        cuenta_id: int,
+        cuenta_id: str,
         mes: int,
         anio: int,
         porcentaje_impuesto_bp: int = 0,
         monto_consumos_minor: int = 0,
         monto_impuestos_minor: int = 0,
         monto_total_pagado_minor: int = 0,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un resumen de tarjeta nuevo. estado arranca en 'abierto'
+        Inserta un resumen de tarjeta nuevo y devuelve su id (UUID,
+        repositories/_ids.py). estado arranca en 'abierto'
         (default de columna). Réplica exacta del INSERT de
         open_statement(), que siempre arranca los tres montos en 0 y solo
         recibe cuenta_id/mes/anio/porcentaje_impuesto_bp como variables.
         """
-        return self._db.execute(
+        resumen_id = nuevo_id()
+        self._db.execute(
             """
             INSERT INTO resumenes_tarjeta
-                (cuenta_id, mes, anio, monto_consumos_minor,
+                (id, cuenta_id, mes, anio, monto_consumos_minor,
                  monto_impuestos_minor, porcentaje_impuesto_bp, monto_total_pagado_minor)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
-                cuenta_id, mes, anio, monto_consumos_minor,
+                resumen_id, cuenta_id, mes, anio, monto_consumos_minor,
                 monto_impuestos_minor, porcentaje_impuesto_bp, monto_total_pagado_minor,
             ),
         )
+        return resumen_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, resumen_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, resumen_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("resumenes_tarjeta", include_deleted=True)
             .where("id", resumen_id)
             .ejecutar_uno(self._db.conn)
         )
 
-    def obtener_por_periodo(self, cuenta_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def obtener_por_periodo(self, cuenta_id: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
         """
         Réplica exacta del chequeo de idempotencia de open_statement():
         busca un resumen existente para esa cuenta/mes/año (coincide con el
@@ -139,7 +143,7 @@ class ResumenesTarjetaRepository:
             .ejecutar_uno(self._db.conn)
         )
 
-    def obtener_enriquecida(self, resumen_id: int) -> Optional[sqlite3.Row]:
+    def obtener_enriquecida(self, resumen_id: str) -> Optional[sqlite3.Row]:
         """
         Igual que obtener_por_id(), pero con el shape enriquecido que usa
         FeesService.get_statement(): columnas propias más account_name vía
@@ -155,7 +159,7 @@ class ResumenesTarjetaRepository:
 
     def listar(
         self,
-        cuenta_id: Optional[int] = None,
+        cuenta_id: Optional[str] = None,
         estado: Optional[str] = None,
         anio: Optional[int] = None,
         pagina: int = 1,
@@ -178,7 +182,7 @@ class ResumenesTarjetaRepository:
 
     def listar_enriquecida(
         self,
-        cuenta_id: Optional[int] = None,
+        cuenta_id: Optional[str] = None,
         estado: Optional[str] = None,
         anio: Optional[int] = None,
         pagina: int = 1,
@@ -208,7 +212,7 @@ class ResumenesTarjetaRepository:
 
     def actualizar_totales(
         self,
-        resumen_id: int,
+        resumen_id: str,
         monto_consumos_minor: int,
         monto_total_pagado_minor: int,
         monto_impuestos_minor: Optional[int] = None,
@@ -247,7 +251,7 @@ class ResumenesTarjetaRepository:
 
     def marcar_cerrado(
         self,
-        resumen_id: int,
+        resumen_id: str,
         conn: Optional[sqlite3.Connection] = None,
     ) -> dict:
         """
@@ -305,7 +309,7 @@ class ResumenesTarjetaRepository:
 
     def marcar_pagado(
         self,
-        resumen_id: int,
+        resumen_id: str,
         fecha_pago: str,
         monto_pagado_minor: int,
         conn: Optional[sqlite3.Connection] = None,

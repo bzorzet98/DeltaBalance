@@ -79,6 +79,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 
 
@@ -99,28 +100,31 @@ class EmpleosRepository:
         porcentaje_obra_social: int = 300,
         porcentaje_gremio: int = 0,
         tope_copago_os_minor: int = 0,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un empleo. Los porcentajes (en basis points) tienen los
+        Inserta un empleo y devuelve su id (UUID, repositories/_ids.py). Los
+        porcentajes (en basis points) tienen los
         mismos defaults que el schema (1100 = 11% jubilación, 300 = 3% obra
         social, 0% gremio) — se pasan explícitos en el INSERT en vez de
         confiar en el default de columna, para que quede claro en el propio
         INSERT qué valores tiene cada fila.
         """
-        return self._db.execute(
+        empleo_id = nuevo_id()
+        self._db.execute(
             """
             INSERT INTO empleos
-                (nombre_empresa, puesto, moneda_id, porcentaje_jubilacion,
+                (id, nombre_empresa, puesto, moneda_id, porcentaje_jubilacion,
                  porcentaje_obra_social, porcentaje_gremio, tope_copago_os_minor)
-            VALUES (?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
-                nombre_empresa, puesto, moneda_id, porcentaje_jubilacion,
+                empleo_id, nombre_empresa, puesto, moneda_id, porcentaje_jubilacion,
                 porcentaje_obra_social, porcentaje_gremio, tope_copago_os_minor,
             ),
         )
+        return empleo_id
 
-    def obtener_empleo_por_id(self, empleo_id: int) -> Optional[sqlite3.Row]:
+    def obtener_empleo_por_id(self, empleo_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("empleos", include_deleted=True)
             .where("id", empleo_id)
@@ -139,7 +143,7 @@ class EmpleosRepository:
 
     def crear_recibo(
         self,
-        empleo_id: int,
+        empleo_id: str,
         mes: int,
         anio: int,
         sueldo_bruto_minor: int,
@@ -148,11 +152,12 @@ class EmpleosRepository:
         monto_neto_final_minor: int,
         desc_copagos_os_minor: int = 0,
         desc_otros_minor: int = 0,
-        transaccion_id: Optional[int] = None,
+        transaccion_id: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un recibo de sueldo. SOLO toca recibos_sueldo — ver
+        Inserta un recibo de sueldo y devuelve su id (UUID,
+        repositories/_ids.py). SOLO toca recibos_sueldo — ver
         docstring del módulo (hallazgo 2) sobre por qué no crea ninguna
         transacción acá: `transaccion_id` se recibe ya resuelto.
         monto_neto_final_minor también se recibe ya calculado — la resta
@@ -163,25 +168,28 @@ class EmpleosRepository:
         transacción de ingreso (vía TransaccionesRepository.crear(conn=...))
         y este recibo en la misma transacción externa.
         """
+        recibo_id = nuevo_id()
         sql = """
             INSERT INTO recibos_sueldo
-                (empleo_id, mes, anio, sueldo_bruto_minor,
+                (id, empleo_id, mes, anio, sueldo_bruto_minor,
                  desc_jubilacion_minor, desc_obra_social_minor,
                  desc_copagos_os_minor, desc_otros_minor,
                  monto_neto_final_minor, transaccion_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            empleo_id, mes, anio, sueldo_bruto_minor,
+            recibo_id, empleo_id, mes, anio, sueldo_bruto_minor,
             desc_jubilacion_minor, desc_obra_social_minor,
             desc_copagos_os_minor, desc_otros_minor,
             monto_neto_final_minor, transaccion_id,
         )
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return recibo_id
 
-    def obtener_recibo_por_periodo(self, empleo_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def obtener_recibo_por_periodo(self, empleo_id: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
         """Busca por el UNIQUE(empleo_id, mes, anio) de la tabla."""
         return (
             QueryBuilder("recibos_sueldo", include_deleted=True)
@@ -191,7 +199,7 @@ class EmpleosRepository:
             .ejecutar_uno(self._db.conn)
         )
 
-    def obtener_recibo_por_id(self, recibo_id: int) -> Optional[sqlite3.Row]:
+    def obtener_recibo_por_id(self, recibo_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("recibos_sueldo", include_deleted=True)
             .where("id", recibo_id)
@@ -210,19 +218,22 @@ class EmpleosRepository:
         anio_aplicacion: int,
         notas: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
-        """Inserta un descuento programado. estado arranca en 'pendiente' (default de columna)."""
+    ) -> str:
+        """Inserta un descuento programado y devuelve su id (UUID). estado arranca en 'pendiente' (default de columna)."""
+        descuento_id = nuevo_id()
         sql = """
             INSERT INTO descuentos_programados
-                (concepto, monto_minor, mes_aplicacion, anio_aplicacion, notas)
-            VALUES (?, ?, ?, ?, ?);
+                (id, concepto, monto_minor, mes_aplicacion, anio_aplicacion, notas)
+            VALUES (?, ?, ?, ?, ?, ?);
         """
-        params = (concepto, monto_minor, mes_aplicacion, anio_aplicacion, notas)
+        params = (descuento_id, concepto, monto_minor, mes_aplicacion, anio_aplicacion, notas)
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return descuento_id
 
-    def obtener_descuento_por_id(self, descuento_id: int) -> Optional[sqlite3.Row]:
+    def obtener_descuento_por_id(self, descuento_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("descuentos_programados", include_deleted=True)
             .where("id", descuento_id)
@@ -242,8 +253,8 @@ class EmpleosRepository:
 
     def marcar_descuento_aplicado(
         self,
-        descuento_id: int,
-        recibo_id: int,
+        descuento_id: str,
+        recibo_id: str,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """

@@ -124,7 +124,7 @@ class GastoCompartidoYaSaldadoError(SharedExpensesError):
 class SharedExpensesResult:
     """Structured result returned by SharedExpensesService operations."""
     success:   bool
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     data:      dict          = field(default_factory=dict)
     message:   str           = ""
 
@@ -167,13 +167,13 @@ class SharedExpensesService:
     # INTERNAL HELPERS
     # ----------------------------------------------------------
 
-    def _get_hogar(self, hogar_id: int) -> sqlite3.Row:
+    def _get_hogar(self, hogar_id: str) -> sqlite3.Row:
         row = self._hogares_repo.obtener_por_id(hogar_id)
         if row is None:
             raise HogarNotFoundError(f"Hogar id={hogar_id} not found.")
         return row
 
-    def _get_categoria(self, categoria_id: int) -> sqlite3.Row:
+    def _get_categoria(self, categoria_id: str) -> sqlite3.Row:
         """
         No hay CategoryNotFoundError propia en este service (ver docstring
         del módulo) — levanta la base SharedExpensesError directamente.
@@ -301,7 +301,7 @@ class SharedExpensesService:
     # MIEMBROS
     # ----------------------------------------------------------
 
-    def list_miembros(self, hogar_id: int) -> list[sqlite3.Row]:
+    def list_miembros(self, hogar_id: str) -> list[sqlite3.Row]:
         return self._miembros_repo.listar_miembros(hogar_id)
 
     def list_my_hogares(self, usuario_local: str) -> list[dict]:
@@ -337,7 +337,7 @@ class SharedExpensesService:
         return hogares
 
     def get_suggested_coefficient(
-        self, hogar_id: int, usuario_local_otro_miembro: str,
+        self, hogar_id: str, usuario_local_otro_miembro: str,
     ) -> Optional[float]:
         """
         Devuelve el porcentaje_default del OTRO miembro (no del que paga)
@@ -363,11 +363,11 @@ class SharedExpensesService:
 
     def add_shared_expense(
         self,
-        hogar_id: int,
+        hogar_id: str,
         pagador: str,
         origen_tipo: str,
-        origen_id: int,
-        categoria_id: int,
+        origen_id: str,
+        categoria_id: str,
         monto_base_minor: int,
         coeficiente_deuda: float,
         fecha: str,
@@ -452,8 +452,8 @@ class SharedExpensesService:
 
     def add_shared_purchase(
         self,
-        compra_id: int,
-        hogar_id: int,
+        compra_id: str,
+        hogar_id: str,
         pagador: str,
         coeficiente_deuda: float,
     ) -> SharedExpensesResult:
@@ -613,13 +613,13 @@ class SharedExpensesService:
 
     def list_shared_expenses(
         self,
-        hogar_id: int,
+        hogar_id: str,
         estado: Optional[str] = None,
         pagador: Optional[str] = None,
     ) -> list[sqlite3.Row]:
         return self._gastos_repo.listar_enriquecida(hogar_id, estado=estado, pagador=pagador)
 
-    def get_shared_expense_by_origin(self, origen_tipo: str, origen_id: int) -> Optional[sqlite3.Row]:
+    def get_shared_expense_by_origin(self, origen_tipo: str, origen_id: str) -> Optional[sqlite3.Row]:
         """
         Devuelve el gasto compartido asociado a un origen
         (transacción/compra en cuotas/cuota de crédito) si ya existe, o
@@ -635,12 +635,12 @@ class SharedExpensesService:
 
     def aplicar_pago(
         self,
-        gasto_id: int,
-        hogar_id: int,
+        gasto_id: str,
+        hogar_id: str,
         monto_aplicado_minor: int,
         fecha: str,
         tipo_pago: str = "transaccion",
-        transaccion_id: Optional[int] = None,
+        transaccion_id: Optional[str] = None,
         notas: Optional[str] = None,
     ) -> SharedExpensesResult:
         """
@@ -770,7 +770,7 @@ class SharedExpensesService:
             message=mensaje,
         )
 
-    def settle_expense(self, gasto_id: int, hogar_id: int) -> SharedExpensesResult:
+    def settle_expense(self, gasto_id: str, hogar_id: str) -> SharedExpensesResult:
         """
         Requiere ambos ids para validar pertenencia — mismo criterio que
         FeesService.remove_extra_charge(): un gasto_id que existe pero
@@ -843,8 +843,8 @@ class SharedExpensesService:
 
     def update_shared_expense(
         self,
-        gasto_id: int,
-        hogar_id: int,
+        gasto_id: str,
+        hogar_id: str,
         descripcion: Optional[str] = NO_CAMBIAR,
         monto_base_minor: Optional[int] = NO_CAMBIAR,
         coeficiente_deuda: Optional[float] = NO_CAMBIAR,
@@ -977,7 +977,7 @@ class SharedExpensesService:
     # DELETE
     # ----------------------------------------------------------
 
-    def delete_shared_expense(self, gasto_id: int, hogar_id: int) -> SharedExpensesResult:
+    def delete_shared_expense(self, gasto_id: str, hogar_id: str) -> SharedExpensesResult:
         """
         Physically deletes a shared expense (Tarea 9, Parte B — ventana de
         corrección temprana, CLAUDE.md §4, mismo criterio ya usado en
@@ -1044,7 +1044,7 @@ class SharedExpensesService:
     # NET BALANCE (read-only, con mensaje de presentación)
     # ----------------------------------------------------------
 
-    def get_net_balance(self, hogar_id: int) -> dict:
+    def get_net_balance(self, hogar_id: str) -> dict:
         """
         Agregación de solo lectura + mensaje de presentación (armado acá,
         no en el repositorio). saldo_neto_minor > 0: te deben. < 0: debés.

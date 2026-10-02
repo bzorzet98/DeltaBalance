@@ -30,6 +30,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 
 
 class GastoCompartidoPagosRepository:
@@ -42,16 +43,17 @@ class GastoCompartidoPagosRepository:
 
     def crear(
         self,
-        gasto_compartido_id: int,
+        gasto_compartido_id: str,
         monto_aplicado_minor: int,
         tipo_pago: str,
         fecha: str,
-        transaccion_id: Optional[int] = None,
+        transaccion_id: Optional[str] = None,
         notas: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un pago. No actualiza gastos_compartidos.monto_pendiente_minor
+        Inserta un pago y devuelve su id (UUID, repositories/_ids.py). No
+        actualiza gastos_compartidos.monto_pendiente_minor
         ni estado — eso es GastosCompartidosRepository.actualizar_monto_pendiente(),
         llamado aparte por el service dentro de la misma transacción.
 
@@ -60,25 +62,28 @@ class GastoCompartidoPagosRepository:
         DeudasRepository.registrar_pago()). Si no se pasa, comitea solo vía
         self._db.execute().
         """
+        pago_id = nuevo_id()
         sql = """
             INSERT INTO gasto_compartido_pagos
-                (gasto_compartido_id, transaccion_id, monto_aplicado_minor,
+                (id, gasto_compartido_id, transaccion_id, monto_aplicado_minor,
                  tipo_pago, notas, fecha)
-            VALUES (?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            gasto_compartido_id, transaccion_id, monto_aplicado_minor,
+            pago_id, gasto_compartido_id, transaccion_id, monto_aplicado_minor,
             tipo_pago, notas, fecha,
         )
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return pago_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def listar_por_gasto(self, gasto_compartido_id: int) -> list[sqlite3.Row]:
+    def listar_por_gasto(self, gasto_compartido_id: str) -> list[sqlite3.Row]:
         """Historial de pagos de un gasto compartido, ordenado por fecha ASC."""
         return self._db.fetchall(
             """

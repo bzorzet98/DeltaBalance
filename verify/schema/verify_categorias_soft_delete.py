@@ -58,7 +58,8 @@ def main() -> None:
         ("VERIFY", "Categoria de prueba", "egreso"),
     )
     conn.commit()
-    test_id = cur.lastrowid
+    # El id es un UUID (DEFAULT de la columna): lastrowid es el rowid interno, no el id.
+    test_id = conn.execute("SELECT id FROM categorias WHERE rowid = ?;", (cur.lastrowid,)).fetchone()[0]
 
     activa_al_nacer = conn.execute(
         "SELECT activa FROM categorias WHERE id = ?;", (test_id,)

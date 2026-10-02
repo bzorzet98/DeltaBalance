@@ -59,7 +59,7 @@ class CurrencyNotFoundError(PresupuestoError):
 class PresupuestoResult:
     """Structured result returned by PresupuestosService operations."""
     success:   bool
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     data:      dict          = field(default_factory=dict)
     message:   str           = ""
 
@@ -91,7 +91,7 @@ class PresupuestosService:
     # INTERNAL HELPERS
     # ----------------------------------------------------------
 
-    def _get_category(self, category_id: int) -> sqlite3.Row:
+    def _get_category(self, category_id: str) -> sqlite3.Row:
         """
         Fetches a category by id. Raises CategoryNotFoundError if not
         found. No MonedasRepository exists yet in this codebase (mismo
@@ -117,7 +117,7 @@ class PresupuestosService:
 
     def set_budget(
         self,
-        categoria_id: int,
+        categoria_id: str,
         mes: int,
         anio: int,
         moneda_id: int,
@@ -206,7 +206,7 @@ class PresupuestosService:
     # READ
     # ----------------------------------------------------------
 
-    def get_budget(self, categoria_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def get_budget(self, categoria_id: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
         """Fetches a single budget by its natural key (categoria_id, mes, anio)."""
         return self._repo.obtener_por_periodo(categoria_id, mes, anio)
 
@@ -235,7 +235,7 @@ class PresupuestosService:
 
     def update_executed(
         self,
-        categoria_id: int,
+        categoria_id: str,
         mes: int,
         anio: int,
         monto_ejecutado_minor: int,

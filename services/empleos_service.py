@@ -92,7 +92,7 @@ class CategoryNotFoundError(EmpleoError):
 class EmpleoResult:
     """Structured result returned by EmpleosService operations."""
     success:   bool
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     data:      dict          = field(default_factory=dict)
     message:   str           = ""
 
@@ -123,7 +123,7 @@ class EmpleosService:
     # INTERNAL HELPERS
     # ----------------------------------------------------------
 
-    def _get_employment(self, empleo_id: int) -> sqlite3.Row:
+    def _get_employment(self, empleo_id: str) -> sqlite3.Row:
         row = self._empleos_repo.obtener_empleo_por_id(empleo_id)
         if row is None:
             raise EmpleoNotFoundError(f"Empleo id={empleo_id} not found.")
@@ -137,13 +137,13 @@ class EmpleosService:
             raise CurrencyNotFoundError(f"Currency id={currency_id} not found.")
         return row
 
-    def _get_account(self, account_id: int) -> sqlite3.Row:
+    def _get_account(self, account_id: str) -> sqlite3.Row:
         row = self._cuentas_repo.obtener_por_id(account_id)
         if row is None:
             raise AccountNotFoundError(f"Account id={account_id} not found.")
         return row
 
-    def _get_category(self, category_id: int) -> sqlite3.Row:
+    def _get_category(self, category_id: str) -> sqlite3.Row:
         row = self._categorias_repo.obtener_por_id(category_id)
         if row is None:
             raise CategoryNotFoundError(f"Category id={category_id} not found.")
@@ -202,7 +202,7 @@ class EmpleosService:
             message=f"Employment '{nombre_empresa.strip()}' created.",
         )
 
-    def get_employment(self, empleo_id: int) -> Optional[sqlite3.Row]:
+    def get_employment(self, empleo_id: str) -> Optional[sqlite3.Row]:
         return self._empleos_repo.obtener_empleo_por_id(empleo_id)
 
     def list_employments(self, solo_activos: bool = True) -> list[sqlite3.Row]:
@@ -214,7 +214,7 @@ class EmpleosService:
 
     def create_receipt(
         self,
-        empleo_id: int,
+        empleo_id: str,
         mes: int,
         anio: int,
         sueldo_bruto_minor: int,
@@ -222,8 +222,8 @@ class EmpleosService:
         desc_obra_social_minor: int,
         desc_copagos_os_minor: int = 0,
         desc_otros_minor: int = 0,
-        cuenta_id: Optional[int] = None,
-        categoria_id: Optional[int] = None,
+        cuenta_id: Optional[str] = None,
+        categoria_id: Optional[str] = None,
     ) -> EmpleoResult:
         """
         Creates a salary receipt for empleo_id/mes/anio.
@@ -349,7 +349,7 @@ class EmpleosService:
             ),
         )
 
-    def get_receipt(self, empleo_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def get_receipt(self, empleo_id: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
         return self._empleos_repo.obtener_recibo_por_periodo(empleo_id, mes, anio)
 
     # ----------------------------------------------------------
@@ -358,7 +358,7 @@ class EmpleosService:
 
     def schedule_discount(
         self,
-        empleo_id: int,
+        empleo_id: str,
         concepto: str,
         monto_minor: int,
         mes_aplicacion: int,
@@ -397,7 +397,7 @@ class EmpleosService:
     def list_pending_discounts(self, mes: int, anio: int) -> list[sqlite3.Row]:
         return self._empleos_repo.listar_descuentos_pendientes(mes, anio)
 
-    def apply_discount(self, descuento_id: int, recibo_id: int) -> EmpleoResult:
+    def apply_discount(self, descuento_id: str, recibo_id: str) -> EmpleoResult:
         """
         Marks a scheduled discount as 'aplicado', linked to recibo_id.
 

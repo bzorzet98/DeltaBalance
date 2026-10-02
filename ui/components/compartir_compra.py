@@ -122,7 +122,7 @@ def build_icon(
     def _abrir_cargar_compra(usuario_local: str, mis_hogares: list[dict]) -> None:
         hogar_seleccionado = {"id": mis_hogares[0]["hogar_id"]}
 
-        def _sugerencia(hogar_id: int) -> tuple[Optional[float], str]:
+        def _sugerencia(hogar_id: str) -> tuple[Optional[float], str]:
             otros = [
                 m for m in shared_expenses_service.list_miembros(hogar_id)
                 if m["usuario_local"] != usuario_local
@@ -144,7 +144,7 @@ def build_icon(
         )
 
         def _on_select_hogar(e: ft.ControlEvent) -> None:
-            hogar_seleccionado["id"] = int(dropdown_hogar.value)
+            hogar_seleccionado["id"] = dropdown_hogar.value
             sugerido, ayuda = _sugerencia(hogar_seleccionado["id"])
             campo_coeficiente.value = str(sugerido) if sugerido is not None else ""
             campo_coeficiente.helper_text = ayuda

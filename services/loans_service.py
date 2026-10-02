@@ -66,7 +66,7 @@ class CuotaPrestamoNotFoundError(LoansError):
 class LoansResult:
     """Structured result returned by LoansService operations."""
     success:   bool
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     data:      dict          = field(default_factory=dict)
     message:   str           = ""
 
@@ -102,7 +102,7 @@ class LoansService:
     # INTERNAL HELPERS
     # ----------------------------------------------------------
 
-    def _get_loan(self, prestamo_id: int) -> sqlite3.Row:
+    def _get_loan(self, prestamo_id: str) -> sqlite3.Row:
         row = self._prestamos_repo.obtener_por_id(prestamo_id)
         if row is None:
             raise PrestamoNotFoundError(f"Préstamo id={prestamo_id} not found.")
@@ -115,7 +115,7 @@ class LoansService:
             raise LoansError(f"Currency id={currency_id} not found.")
         return row
 
-    def _get_account(self, account_id: int) -> sqlite3.Row:
+    def _get_account(self, account_id: str) -> sqlite3.Row:
         row = self._cuentas_repo.obtener_por_id(account_id)
         if row is None:
             raise LoansError(f"Account id={account_id} not found.")
@@ -229,7 +229,7 @@ class LoansService:
         moneda_id: int,
         fecha_inicio: str,
         plazo_meses: int,
-        cuenta_debito_id: Optional[int] = None,
+        cuenta_debito_id: Optional[str] = None,
         notas: Optional[str] = None,
     ) -> LoansResult:
         """
@@ -297,13 +297,13 @@ class LoansService:
     # READ
     # ----------------------------------------------------------
 
-    def get_loan(self, prestamo_id: int) -> Optional[sqlite3.Row]:
+    def get_loan(self, prestamo_id: str) -> Optional[sqlite3.Row]:
         return self._prestamos_repo.obtener_por_id(prestamo_id)
 
     def list_loans(self, estado: Optional[str] = None, tipo: Optional[str] = None) -> list[sqlite3.Row]:
         return self._prestamos_repo.listar(estado=estado, tipo=tipo)
 
-    def get_schedule(self, prestamo_id: int) -> list[sqlite3.Row]:
+    def get_schedule(self, prestamo_id: str) -> list[sqlite3.Row]:
         return self._cuotas_repo.listar_por_prestamo(prestamo_id)
 
     # ----------------------------------------------------------
@@ -312,7 +312,7 @@ class LoansService:
 
     def adjust_installment(
         self,
-        cuota_id: int,
+        cuota_id: str,
         monto_capital_minor: Optional[int] = None,
         monto_interes_minor: Optional[int] = None,
         monto_total_minor: Optional[int] = None,
@@ -367,7 +367,7 @@ class LoansService:
     # MARK INSTALLMENT PAID
     # ----------------------------------------------------------
 
-    def mark_installment_paid(self, cuota_id: int, fecha_pago: str) -> LoansResult:
+    def mark_installment_paid(self, cuota_id: str, fecha_pago: str) -> LoansResult:
         """
         Raises:
             CuotaPrestamoNotFoundError si cuota_id no existe.
@@ -391,7 +391,7 @@ class LoansService:
 
     def update_loan(
         self,
-        prestamo_id: int,
+        prestamo_id: str,
         notas: Any = NO_CAMBIAR,
         cuenta_debito_id: Any = NO_CAMBIAR,
     ) -> LoansResult:
@@ -425,7 +425,7 @@ class LoansService:
     # CANCEL LOAN
     # ----------------------------------------------------------
 
-    def cancel_loan(self, prestamo_id: int) -> LoansResult:
+    def cancel_loan(self, prestamo_id: str) -> LoansResult:
         """
         Marca el préstamo como 'cancelado'. NO borra las cuotas ya
         generadas — quedan como registro histórico, mismo criterio de

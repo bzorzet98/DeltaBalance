@@ -462,7 +462,7 @@ def build(
             ),
         )
 
-    def _toggle_objetivo(objetivo_id: int) -> None:
+    def _toggle_objetivo(objetivo_id: str) -> None:
         estado["objetivo_expandido_id"] = None if estado["objetivo_expandido_id"] == objetivo_id else objetivo_id
         _actualizar_dashboard()
 
@@ -614,7 +614,7 @@ def build(
             try:
                 savings_service.create_activo(
                     nombre=nombre, tipo=dropdown_tipo.value, moneda_id=int(campo_moneda.id_seleccionado),
-                    cuenta_id=int(campo_cuenta.id_seleccionado) if campo_cuenta.id_seleccionado else None,
+                    cuenta_id=campo_cuenta.id_seleccionado or None,
                 )
             except SavingsError as err:
                 texto_error.value = str(err)
@@ -703,7 +703,7 @@ def build(
         def _reconstruir_monto() -> None:
             activo = None
             if campo_activo.id_seleccionado:
-                activo = next((a for a in activos_lista if a["id"] == int(campo_activo.id_seleccionado)), None)
+                activo = next((a for a in activos_lista if a["id"] == campo_activo.id_seleccionado), None)
             moneda = monedas_por_id.get(activo["moneda_id"]) if activo else None
             decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
             codigo = moneda["codigo"] if moneda else ""
@@ -732,7 +732,7 @@ def build(
                 texto_error.value = "Seleccioná el activo del rendimiento."
                 page.update()
                 return
-            activo_id = int(campo_activo.id_seleccionado)
+            activo_id = campo_activo.id_seleccionado
             activo = next((a for a in activos_lista if a["id"] == activo_id), None)
             moneda = monedas_por_id.get(activo["moneda_id"]) if activo else None
             decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
@@ -828,7 +828,7 @@ def build(
         def _activo_seleccionado() -> Optional[dict]:
             if not campo_activo.id_seleccionado:
                 return None
-            return next((a for a in activos_con_saldo if a["id"] == int(campo_activo.id_seleccionado)), None)
+            return next((a for a in activos_con_saldo if a["id"] == campo_activo.id_seleccionado), None)
 
         def _reconstruir_monto() -> None:
             activo = _activo_seleccionado()

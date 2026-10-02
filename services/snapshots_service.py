@@ -202,7 +202,7 @@ class SnapshotsService:
             pagina += 1
 
     def _transacciones(
-        self, fecha_hasta: str, cuenta_id: Optional[int] = None, moneda_id: Optional[int] = None,
+        self, fecha_hasta: str, cuenta_id: Optional[str] = None, moneda_id: Optional[int] = None,
     ) -> list[dict]:
         """Transacciones no eliminadas hasta fecha_hasta (inclusive)."""
         return self._paginado(lambda pagina: self._transacciones_repo.listar(
@@ -210,7 +210,7 @@ class SnapshotsService:
             pagina=pagina, por_pagina=LOTE_LECTURA,
         ))
 
-    def _saldos_iniciales(self, cuenta_id: Optional[int] = None) -> dict[tuple[int, int], int]:
+    def _saldos_iniciales(self, cuenta_id: Optional[str] = None) -> dict[tuple[int, int], int]:
         """
         (cuenta_id, moneda_id) → saldo_inicial_minor, una entrada por fila de
         cuentas_saldos (igual que vw_balance_cuentas: sin esa fila no hay
@@ -235,7 +235,7 @@ class SnapshotsService:
             if d["fecha"] <= fecha_hasta
         ]
 
-    def _moneda_de_origen(self, origen_tipo: str, origen_id: int, cache: dict) -> Optional[int]:
+    def _moneda_de_origen(self, origen_tipo: str, origen_id: str, cache: dict) -> Optional[int]:
         """moneda_id del origen de un gasto compartido (gastos_compartidos no tiene moneda propia), o None."""
         clave = (origen_tipo, origen_id)
         if clave not in cache:
@@ -250,7 +250,7 @@ class SnapshotsService:
             cache[clave] = fila["moneda_id"] if fila is not None else None
         return cache[clave]
 
-    def _gastos_pendientes(self, fecha_hasta: str, hogar_id: Optional[int] = None) -> tuple[list[dict], int]:
+    def _gastos_pendientes(self, fecha_hasta: str, hogar_id: Optional[str] = None) -> tuple[list[dict], int]:
         """
         Gastos 'pendiente' con fecha <= fecha_hasta, de un hogar o de todos
         (hogar_id=None: QueryBuilder.where() saltea un filtro None), cada
@@ -425,7 +425,7 @@ class SnapshotsService:
     # SALDO ANTERIOR — POR CLAVE
     # ----------------------------------------------------------
 
-    def get_saldo_anterior_cuenta(self, cuenta_id: int, moneda_id: int, mes: int, anio: int) -> int:
+    def get_saldo_anterior_cuenta(self, cuenta_id: str, moneda_id: int, mes: int, anio: int) -> int:
         """
         Saldo de (cuenta, moneda) al cierre del mes anterior a mes/anio (con
         mes=1, diciembre del año anterior). Del snapshot si existe; si no,
@@ -465,7 +465,7 @@ class SnapshotsService:
         return self._netos_deudas_en_vivo(anterior, tab).get((persona, moneda_id), 0)
 
     def get_saldo_anterior_compartidos(
-        self, hogar_id: int, pagador: str, moneda_id: int, mes: int, anio: int,
+        self, hogar_id: str, pagador: str, moneda_id: int, mes: int, anio: int,
     ) -> int:
         """
         Pendiente acumulado de los gastos compartidos de ese hogar pagados por
@@ -541,7 +541,7 @@ class SnapshotsService:
             for (persona, moneda_id), monto in sorted(netos.items())
         ]
 
-    def get_saldos_anteriores_compartidos(self, hogar_id: int, mes: int, anio: int) -> list[dict]:
+    def get_saldos_anteriores_compartidos(self, hogar_id: str, mes: int, anio: int) -> list[dict]:
         """
         Una entrada por (pagador, moneda) de ese hogar con el pendiente al
         cierre del mes anterior: {pagador, moneda_id, monto_minor,
@@ -575,7 +575,7 @@ class SnapshotsService:
             netos[(self._persona(fila["entidad_persona"]), fila["moneda_id"])] += fila["saldo"]
         return dict(netos)
 
-    def _compartidos_en_vivo(self, hogar_id: int, periodo: Periodo) -> dict[tuple, int]:
+    def _compartidos_en_vivo(self, hogar_id: str, periodo: Periodo) -> dict[tuple, int]:
         gastos, _ = self._gastos_pendientes(fecha_hasta=self._fin_de_mes(periodo), hogar_id=hogar_id)
         return self._pendientes_compartidos(
             [periodo], gastos, clave=lambda g: (g["pagador"], g["moneda_id"]),

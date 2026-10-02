@@ -35,6 +35,7 @@ import sqlite3
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 
 # Ver mismo mecanismo/motivo en repositories/transacciones_repository.py
@@ -58,7 +59,7 @@ class MovimientosActivoRepository:
 
     def _existe_duplicado_reciente(
         self,
-        activo_id: int,
+        activo_id: str,
         tipo: str,
         fecha: str,
         monto_total_minor: int,
@@ -80,7 +81,7 @@ class MovimientosActivoRepository:
 
     def crear(
         self,
-        activo_id: int,
+        activo_id: str,
         tipo: str,
         fecha: str,
         monto_total_minor: int,
@@ -88,11 +89,12 @@ class MovimientosActivoRepository:
         precio_unitario_minor: Optional[int] = None,
         dolar_oficial_momento_minor: Optional[int] = None,
         notas: Optional[str] = None,
-        transaccion_id: Optional[int] = None,
+        transaccion_id: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
-    ) -> int:
+    ) -> str:
         """
-        Inserta un movimiento de activo (compra/venta/rendimiento).
+        Inserta un movimiento de activo (compra/venta/rendimiento) y
+        devuelve su id (UUID, repositories/_ids.py).
 
         Antes del INSERT, rechaza la operación con MovimientoDuplicadoError
         si ya existe un movimiento con el mismo activo_id/tipo/fecha/
@@ -117,34 +119,37 @@ class MovimientosActivoRepository:
                 f"creado hace menos de {VENTANA_DUPLICADO_SEGUNDOS} segundos."
             )
 
+        movimiento_id = nuevo_id()
         sql = """
             INSERT INTO movimientos_activo
-                (activo_id, tipo, fecha, cantidad, precio_unitario_minor,
+                (id, activo_id, tipo, fecha, cantidad, precio_unitario_minor,
                  monto_total_minor, dolar_oficial_momento_minor, notas,
                  transaccion_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            activo_id, tipo, fecha, cantidad, precio_unitario_minor,
+            movimiento_id, activo_id, tipo, fecha, cantidad, precio_unitario_minor,
             monto_total_minor, dolar_oficial_momento_minor, notas,
             transaccion_id,
         )
         if conn is not None:
-            return conn.execute(sql, params).lastrowid
-        return self._db.execute(sql, params)
+            conn.execute(sql, params)
+        else:
+            self._db.execute(sql, params)
+        return movimiento_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, movimiento_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, movimiento_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("movimientos_activo", include_deleted=True)
             .where("id", movimiento_id)
             .ejecutar_uno(self._db.conn)
         )
 
-    def listar_por_activo(self, activo_id: int) -> list[sqlite3.Row]:
+    def listar_por_activo(self, activo_id: str) -> list[sqlite3.Row]:
         return (
             QueryBuilder("movimientos_activo", include_deleted=True)
             .where("activo_id", activo_id)
@@ -152,7 +157,7 @@ class MovimientosActivoRepository:
             .ejecutar(self._db.conn)
         )
 
-    def listar_por_tipo(self, activo_id: int, tipo: str) -> list[sqlite3.Row]:
+    def listar_por_tipo(self, activo_id: str, tipo: str) -> list[sqlite3.Row]:
         return (
             QueryBuilder("movimientos_activo", include_deleted=True)
             .where("activo_id", activo_id)
@@ -165,7 +170,7 @@ class MovimientosActivoRepository:
     # DELETE
     # ----------------------------------------------------------
 
-    def eliminar(self, movimiento_id: int, conn: Optional[sqlite3.Connection] = None) -> None:
+    def eliminar(self, movimiento_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """
         DELETE físico del movimiento. Solo el movimiento en sí — NO borra
         sus asignaciones (eso es responsabilidad de quien orquesta, ver

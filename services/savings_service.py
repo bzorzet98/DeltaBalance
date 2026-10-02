@@ -59,7 +59,7 @@ Purpose:
 
     Tarea 6d (docs/PROXIMOS_PASOS.md, rediseño de la pantalla de Ahorros a
     formato Registro):
-    - register_sale() cambia de firma: el parámetro `objetivo_id: int`
+    - register_sale() cambia de firma: el parámetro `objetivo_id: str`
       obligatorio se reemplaza por `asignaciones: list[dict]` (mismo
       formato que register_purchase()) — una venta ya no fuerza un único
       objetivo al 100%, puede repartirse entre varios. A diferencia de
@@ -153,7 +153,7 @@ class CategoryNotFoundError(SavingsError):
 class SavingsResult:
     """Structured result returned by SavingsService operations."""
     success:   bool
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     data:      dict          = field(default_factory=dict)
     message:   str           = ""
 
@@ -190,13 +190,13 @@ class SavingsService:
     # INTERNAL HELPERS
     # ----------------------------------------------------------
 
-    def _get_activo(self, activo_id: int) -> sqlite3.Row:
+    def _get_activo(self, activo_id: str) -> sqlite3.Row:
         row = self._activos_repo.obtener_por_id(activo_id)
         if row is None:
             raise ActivoNotFoundError(f"Activo financiero id={activo_id} not found.")
         return row
 
-    def _get_objetivo(self, objetivo_id: int) -> sqlite3.Row:
+    def _get_objetivo(self, objetivo_id: str) -> sqlite3.Row:
         row = self._objetivos_repo.obtener_por_id(objetivo_id)
         if row is None:
             raise ObjetivoNotFoundError(f"Objetivo de ahorro id={objetivo_id} not found.")
@@ -210,7 +210,7 @@ class SavingsService:
             raise SavingsError(f"Currency id={currency_id} not found.")
         return row
 
-    def _get_account(self, account_id: int) -> sqlite3.Row:
+    def _get_account(self, account_id: str) -> sqlite3.Row:
         row = self._cuentas_repo.obtener_por_id(account_id)
         if row is None:
             raise AccountNotFoundError(f"Account id={account_id} not found.")
@@ -249,7 +249,7 @@ class SavingsService:
     # ----------------------------------------------------------
 
     def create_activo(
-        self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[int] = None,
+        self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[str] = None,
     ) -> SavingsResult:
         """
         cuenta_id (Tarea 6g, docs/PROXIMOS_PASOS.md): vincula el activo a
@@ -277,7 +277,7 @@ class SavingsService:
     def list_activos(self, tipo: Optional[str] = None) -> list[sqlite3.Row]:
         return self._activos_repo.listar(tipo=tipo)
 
-    def get_or_create_reserved_cash_asset(self, cuenta_id: int, moneda_id: int) -> SavingsResult:
+    def get_or_create_reserved_cash_asset(self, cuenta_id: str, moneda_id: int) -> SavingsResult:
         """
         Busca el activo_financiero tipo='otro' vinculado a cuenta_id. Si
         ya existe, lo reusa tal cual (result.data["creado"] = False) — sin
@@ -361,7 +361,7 @@ class SavingsService:
 
     def register_purchase(
         self,
-        activo_id: int,
+        activo_id: str,
         fecha: str,
         monto_total_minor: int,
         dolar_oficial_momento_minor: Optional[int] = None,
@@ -488,7 +488,7 @@ class SavingsService:
 
     def register_return(
         self,
-        activo_id: int,
+        activo_id: str,
         fecha: str,
         monto_total_minor: int,
         notas: Optional[str] = None,
@@ -597,7 +597,7 @@ class SavingsService:
 
     def register_sale(
         self,
-        activo_id: int,
+        activo_id: str,
         fecha: str,
         monto_total_minor: int,
         asignaciones: list[dict],
@@ -723,7 +723,7 @@ class SavingsService:
     # OBJETIVO BALANCE (read-only aggregation)
     # ----------------------------------------------------------
 
-    def get_objetivo_balance(self, objetivo_id: int) -> dict:
+    def get_objetivo_balance(self, objetivo_id: str) -> dict:
         """
         Agregación de solo lectura del saldo de un objetivo de ahorro,
         separado por tipo de movimiento: compra y rendimiento aportan
@@ -775,7 +775,7 @@ class SavingsService:
     # BALANCE POR CUENTA (read-only aggregation, Tarea 6b)
     # ----------------------------------------------------------
 
-    def get_balance_por_cuenta(self, objetivo_id: int) -> list[dict]:
+    def get_balance_por_cuenta(self, objetivo_id: str) -> list[dict]:
         """
         Agregación de solo lectura: de todo lo aportado/retirado a
         objetivo_id, cuánto pasó realmente por cada cuenta real — sólo
@@ -961,7 +961,7 @@ class SavingsService:
         self,
         fecha_desde: Optional[str] = None,
         fecha_hasta: Optional[str] = None,
-        objetivo_id: Optional[int] = None,
+        objetivo_id: Optional[str] = None,
         tipo_activo: Optional[str] = None,
         tipo_movimiento: Optional[str] = None,
     ) -> list[dict]:
@@ -1039,7 +1039,7 @@ class SavingsService:
             FROM movimientos_activo ma
             JOIN activos_financieros af ON af.id = ma.activo_id
             {where_sql}
-            ORDER BY ma.fecha DESC, ma.id DESC;
+            ORDER BY ma.fecha DESC, ma.rowid DESC;
             """,
             tuple(params),
         )
@@ -1081,7 +1081,7 @@ class SavingsService:
 
     def delete_movement(
         self,
-        movimiento_id: int,
+        movimiento_id: str,
         eliminar_transaccion_vinculada: bool = False,
     ) -> SavingsResult:
         """

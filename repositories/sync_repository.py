@@ -34,6 +34,17 @@ from db.schema_migrations import MARCA_ESCRITURA_SYNC, SEPARADOR_CLAVE, TABLAS_S
 # Columnas que no viajan (sincronizado_en es local de cada base).
 COLUMNAS_LOCALES = ("sincronizado_en",)
 
+# Claves naturales (los UNIQUE de db/schema.sql): una base nueva trae del
+# seed categorías y la cuenta "Caja Efectivo" con UUIDs propios, distintos
+# de los de la base que se está restaurando. Al bajar una de esas filas, si
+# acá ya hay una con la misma clave natural y otro id, se le cambia el id
+# (y el de sus hijos) al remoto en vez de chocar con el UNIQUE.
+CLAVES_NATURALES: dict[str, tuple[str, ...]] = {
+    "categorias": ("categoria_principal", "subcategoria"),
+    "cuentas": ("nombre",),
+    "hogares": ("codigo_invitacion",),
+}
+
 
 class SyncRepository:
     def __init__(self, db: DatabaseManager):
@@ -205,6 +216,8 @@ class SyncRepository:
         valores["sincronizado_en"] = momento
         clave = self.clave_de(tabla, valores)
         if self.fila(tabla, clave) is None:
+            self._adoptar_id_por_clave_natural(conn, tabla, valores)
+        if self.fila(tabla, clave) is None:
             columnas = list(valores)
             conn.execute(
                 f"INSERT INTO {tabla} ({', '.join(columnas)}) VALUES ({', '.join('?' for _ in columnas)});",
@@ -217,6 +230,34 @@ class SyncRepository:
             f"UPDATE {tabla} SET {', '.join(f'{c} = ?' for c in asignaciones)} WHERE {self._where_clave(tabla)};",
             (*(valores[c] for c in asignaciones), *self.valores_de_clave(tabla, clave)),
         )
+
+    def _adoptar_id_por_clave_natural(self, conn: sqlite3.Connection, tabla: str, valores: dict) -> None:
+        """
+        Ver CLAVES_NATURALES: si hay una fila local con la misma clave
+        natural que `valores` pero otro id, pasa a tener el id remoto, y
+        todas las filas que la referencian (FKs declaradas, de cualquier
+        tabla) también. defer_foreign_keys: las FKs se chequean recién al
+        COMMIT, así el orden de los UPDATE no importa (SQLite lo apaga solo
+        al terminar la transacción).
+        """
+        columnas = CLAVES_NATURALES.get(tabla)
+        if not columnas or any(columna not in valores for columna in columnas):
+            return
+        local = conn.execute(
+            f"SELECT id FROM {tabla} WHERE " + " AND ".join(f"{c} = ?" for c in columnas) + " AND id != ?;",
+            (*(valores[c] for c in columnas), valores["id"]),
+        ).fetchone()
+        if local is None:
+            return
+        viejo, nuevo = local["id"], valores["id"]
+        conn.execute("PRAGMA defer_foreign_keys = ON;")
+        for fila in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table';").fetchall():
+            hija = fila["name"]
+            for fk in conn.execute(f"PRAGMA foreign_key_list({hija});").fetchall():
+                if fk["table"] == tabla:
+                    conn.execute(f"UPDATE {hija} SET {fk['from']} = ? WHERE {fk['from']} = ?;", (nuevo, viejo))
+        conn.execute(f"UPDATE {tabla} SET id = ? WHERE id = ?;", (nuevo, viejo))
+        conn.execute("DELETE FROM sync_cambios WHERE tabla = ? AND clave = ?;", (tabla, str(viejo)))
 
     def borrar_fila(self, conn: sqlite3.Connection, tabla: str, clave: str) -> None:
         """DELETE por clave (un borrado que vino de Supabase). Puede lanzar sqlite3.IntegrityError (FK)."""

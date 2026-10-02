@@ -9,7 +9,8 @@ revés.
 
 Una tabla genérica, `deltabalance_filas` (sync/supabase_schema.sql): una
 fila remota por fila local, con clave (usuario_id, tabla, clave) — la clave
-local como texto ('12', o '3|1' si la clave primaria es compuesta) — y la
+primaria local como texto: el UUID de la fila, o '<uuid>|1' si la clave
+primaria es compuesta (cuentas_saldos, hogar_miembros) — y la
 fila entera en `datos` (jsonb). Por qué genérica y no una tabla remota por
 tabla local: el schema local cambia seguido (columnas nuevas vía
 db/schema_migrations.py), y con tablas espejo cada columna nueva rompería
@@ -28,11 +29,15 @@ bajar). La pertenencia a un hogar vive en `deltabalance_hogar_miembros`
   nunca se sincronizaron (sincronizado_en NULL, las anteriores a los
   triggers). Después: sincronizado_en = ahora y fuera de sync_cambios.
 - Se BAJA solo lo PROPIO (usuario_id = el de la sesión): sirve para
-  recuperar la base en otra computadora. Las filas del otro miembro del
-  hogar NO se bajan todavía: los ids son locales de cada base (el gasto #12
-  de uno no es el #12 del otro, y apunta a una transacción que solo existe
-  en la otra base) — eso necesita ids globales y cambios en la pantalla de
-  Compartidos (otra tarea).
+  recuperar la base en otra computadora. Los ids son UUID (sección 25),
+  así que la clave remota de una fila es su id y es la misma en toda
+  computadora. Las filas del otro miembro del hogar NO se bajan todavía:
+  un gasto suyo apunta a una transacción que solo existe en su base y la
+  pantalla de Compartidos no sabe mostrarlo (otra tarea).
+- Restaurar sobre una base nueva: el seed ya trae categorías y "Caja
+  Efectivo" con UUIDs propios. SyncRepository.guardar_fila() las reconoce
+  por clave natural (CLAVES_NATURALES) y les pone el id remoto, en vez de
+  chocar con el UNIQUE.
 - Conflicto (la fila cambió de los dos lados): last-write-wins por
   actualizado_local — _resolver_conflicto(). Una fila sin fecha conocida
   (nunca editada desde que existen los triggers) pierde siempre.
@@ -257,7 +262,7 @@ class SyncEngine:
         """
         return self._correr(self._completo)
 
-    def sync_fila(self, tabla: str, fila_id: int) -> SyncResult:
+    def sync_fila(self, tabla: str, fila_id: str) -> SyncResult:
         """Sube ya una fila (tabla con clave `id`) si está pendiente — para llamar al guardar/editar."""
         if tabla not in TABLAS_SINCRONIZADAS:
             raise ValueError(f"'{tabla}' no es una tabla sincronizada.")

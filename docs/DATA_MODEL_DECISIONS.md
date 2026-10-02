@@ -775,8 +775,9 @@ proceso), `auth.py` (login con email y contraseña, sesión guardada en
 
 **En Supabase**, una tabla genérica, `deltabalance_filas(usuario_id, tabla, clave,
 datos jsonb, hogar_codigo, borrado, actualizado_local, subido_en)`, con clave
-`(usuario_id, tabla, clave)`. `clave` es la clave primaria local como texto: `'12'`,
-o `'3|1'` en `cuentas_saldos` y `hogar_miembros`. Genérica y no una tabla espejo por
+`(usuario_id, tabla, clave)`. `clave` es la clave primaria local como texto: el UUID
+de la fila (sección 25), o `'<uuid>|1'` en `cuentas_saldos` y `hogar_miembros`.
+Genérica y no una tabla espejo por
 tabla local porque el schema local cambia seguido: con espejos, cada columna nueva
 rompería la subida hasta tocar Supabase a mano. Además:
 
@@ -807,10 +808,12 @@ Pendiente de subir = lo que está en `sync_cambios`, más las filas con
 
 1. Se sube todo lo pendiente del usuario.
 2. Se baja solo lo PROPIO, por ejemplo para recuperar la base en otra computadora.
-   Lo del otro miembro del hogar no baja todavía: los ids son locales de cada base
-   (el gasto #12 de uno no es el #12 del otro, y apunta a una transacción que solo
-   existe en la otra base). Para eso hacen falta ids globales y cambios en la
-   pantalla de Compartidos.
+   Con los ids UUID (sección 25) una fila es la misma en toda computadora. Lo del
+   otro miembro del hogar no baja todavía: un gasto suyo apunta a una transacción
+   que solo existe en su base, y la pantalla de Compartidos no sabe mostrarlo.
+   Restaurar sobre una base nueva: las categorías del seed y "Caja Efectivo" nacen
+   con otros UUIDs; `SyncRepository` las reconoce por clave natural
+   (`CLAVES_NATURALES`) y les pone el id remoto en vez de chocar con el UNIQUE.
 3. Conflicto: last-write-wins por `actualizado_local`. Es el `modificado_en` del
    trigger, o `updated_en` / `creada_en`; una fila sin fecha pierde.
 4. La primera sincronización de un usuario en una computadora es una restauración:
@@ -829,3 +832,52 @@ Pendiente de subir = lo que está en `sync_cambios`, más las filas con
 - `sync_fila()` existe pero todavía no la llama nadie. Las ediciones privadas suben
   al abrir la app, al tocar el indicador del Registro o con la sincronización
   periódica, que es solo de las tablas compartidas.
+
+## 25. Ids UUID en todas las tablas — ✅ implementado en schema.sql
+
+Todas las tablas pasaron de `id INTEGER PRIMARY KEY AUTOINCREMENT` a `id TEXT PRIMARY
+KEY NOT NULL` con un UUID v4 en texto, y sus FKs a `TEXT`. Así una fila tiene la
+misma identidad en cualquier computadora, que es lo que necesita la sincronización
+(sección 24).
+
+**Excepciones:**
+
+- `monedas` conserva su id entero (es un dato de referencia, igual en toda base), y
+  `moneda_id` / `moneda_*_id` siguen siendo `INTEGER`.
+- Los snapshots (`saldos_mensuales`, `deudas_mensuales`, `compartidos_mensuales`) y
+  `sync_cambios` / `sync_estado` también conservan su id: son locales y no viajan.
+  Sus FKs a tablas con UUID sí pasaron a `TEXT`.
+
+**Quién genera el id:**
+
+- Los repositorios lo generan en Python (`repositories/_ids.py`, `uuid.uuid4()`),
+  lo pasan explícito en el INSERT y lo devuelven (`str`).
+- `cursor.lastrowid` ya no sirve como id: en una tabla con clave de texto es el
+  rowid interno.
+- El `DEFAULT` de cada `id` en `schema.sql` arma un UUID v4 en SQL. Es la red de
+  seguridad para un INSERT sin id: `seed.sql` y los scripts de `migration/`.
+- `NOT NULL` va explícito porque en SQLite una PRIMARY KEY que no es INTEGER acepta
+  NULL si no se lo prohíbe.
+- `seed.sql` engancha el saldo de "Caja Efectivo" por nombre, ya no por `id = 1`.
+
+**Orden de alta:** donde se desempataba por `id`, ahora se usa `rowid`, porque
+ordenar por un UUID es al azar. La migración copia las filas en su rowid original,
+así que el orden se conserva.
+
+**Bases viejas:** `migration/migrar_a_uuid_pk.py` (ensayo por default, `--confirmar`
+para aplicar).
+
+- Arma una base nueva con este schema y copia todo con un mapa id → UUID: el id, las
+  FKs declaradas (salen de `PRAGMA foreign_key_list`, no de una lista a mano) y las
+  referencias polimórficas `origen_tipo` / `origen_id` de `deudas` y
+  `gastos_compartidos`. `'pago_migrado'` queda en NULL, porque `deuda_pagos` ya no
+  existe.
+- Verifica filas y sumas por tabla, formato de los UUID, `foreign_key_check` e
+  `integrity_check`. Recién entonces hace el backup y reemplaza el archivo, y nunca
+  si la app la tiene abierta.
+- La sync arranca de cero: `sincronizado_en` queda en NULL y se borra la marca de
+  bajada.
+
+**Guarda:** con una base que todavía tiene ids enteros, `inicializar()` frena
+(`exigir_ids_uuid()`) con el mensaje de qué script correr, en vez de romperse en el
+primer alta.

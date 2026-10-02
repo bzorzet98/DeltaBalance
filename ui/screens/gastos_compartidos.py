@@ -321,7 +321,7 @@ def build(
                 datos["cuotas"] = mapa
             return datos["cuotas"]
 
-        def _resolver_origen(origen_tipo: str, origen_id: int) -> dict:
+        def _resolver_origen(origen_tipo: str, origen_id: str) -> dict:
             fila, concepto = None, None
             if origen_tipo == "transaccion":
                 fila = transaction_service.get(origen_id)
@@ -421,7 +421,7 @@ def build(
                 selector: ft.Control = ft.Dropdown(
                     options=[ft.dropdown.Option(key=str(h["hogar_id"]), text=_nombre_hogar(h)) for h in hogares],
                     value=str(hogar["hogar_id"]),
-                    on_select=lambda e: _cambiar_hogar(int(e.control.value)),
+                    on_select=lambda e: _cambiar_hogar(e.control.value),
                     width=ANCHO_SELECTOR_HOGAR, dense=LayoutTokens.CELDA_DENSE,
                     text_size=TypographyTokens.REGISTRO_FONT_SALDO_BAR, tooltip="HOGAR",
                 )
@@ -463,7 +463,7 @@ def build(
             contenedor_resumen.content = _barra_hogar()
             tabla.refrescar(contenedor_resumen)
 
-        def _cambiar_hogar(hogar_id: int) -> None:
+        def _cambiar_hogar(hogar_id: str) -> None:
             ui["hogar_id"] = hogar_id
             # Alta nueva: el coeficiente sugerido depende del hogar.
             ui["alta"] = _alta_vacia()

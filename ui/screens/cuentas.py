@@ -298,7 +298,7 @@ def build(
                         "color_hex": color_actual["valor"],
                     }
                     if dropdown_padre.visible and dropdown_padre.value:
-                        nuevo_padre = int(dropdown_padre.value)
+                        nuevo_padre = dropdown_padre.value
                         if nuevo_padre != cuenta.get("cuenta_pago_id"):
                             kwargs_update["cuenta_pago_id"] = nuevo_padre
                     resultado = accounts_service.update_account(cuenta["id"], **kwargs_update)
@@ -310,7 +310,7 @@ def build(
                         nombre=campo_nombre.value,
                         tipo=dropdown_tipo.value,
                         cuenta_pago_id=(
-                            int(dropdown_padre.value)
+                            dropdown_padre.value
                             if dropdown_tipo.value == "credito" and dropdown_padre.value
                             else None
                         ),

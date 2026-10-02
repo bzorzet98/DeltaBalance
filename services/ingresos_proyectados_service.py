@@ -63,7 +63,7 @@ class IngresoYaCobradoError(IngresoProyectadoError):
 class IngresoProyectadoResult:
     """Structured result returned by IngresosProyectadosService operations."""
     success:   bool
-    entity_id: Optional[int] = None
+    entity_id: Optional[str] = None
     data:      dict          = field(default_factory=dict)
     message:   str           = ""
 
@@ -95,7 +95,7 @@ class IngresosProyectadosService:
     # INTERNAL HELPERS
     # ----------------------------------------------------------
 
-    def _get_ingreso(self, ingreso_id: int) -> sqlite3.Row:
+    def _get_ingreso(self, ingreso_id: str) -> sqlite3.Row:
         row = self._repo.obtener_por_id(ingreso_id)
         if row is None:
             raise IngresoProyectadoNotFoundError(f"Ingreso proyectado id={ingreso_id} not found.")
@@ -170,7 +170,7 @@ class IngresosProyectadosService:
     # READ
     # ----------------------------------------------------------
 
-    def get(self, ingreso_id: int) -> Optional[sqlite3.Row]:
+    def get(self, ingreso_id: str) -> Optional[sqlite3.Row]:
         return self._repo.obtener_por_id(ingreso_id)
 
     def list_for_period(self, mes: int, anio: int) -> list[sqlite3.Row]:
@@ -182,7 +182,7 @@ class IngresosProyectadosService:
 
     def update(
         self,
-        ingreso_id: int,
+        ingreso_id: str,
         concepto: Any = NO_CAMBIAR,
         monto_estimado_minor: Any = NO_CAMBIAR,
         moneda_id: Any = NO_CAMBIAR,
@@ -248,7 +248,7 @@ class IngresosProyectadosService:
     # STATE TRANSITIONS
     # ----------------------------------------------------------
 
-    def mark_partial(self, ingreso_id: int, monto_percibido_minor: int) -> IngresoProyectadoResult:
+    def mark_partial(self, ingreso_id: str, monto_percibido_minor: int) -> IngresoProyectadoResult:
         """
         Transitions to estado='parcial'. Valid from 'pendiente' or another
         'parcial' (receiving income in more than one partial installment is
@@ -290,7 +290,7 @@ class IngresosProyectadosService:
 
     def mark_collected(
         self,
-        ingreso_id: int,
+        ingreso_id: str,
         monto_percibido_minor: Optional[int] = None,
     ) -> IngresoProyectadoResult:
         """

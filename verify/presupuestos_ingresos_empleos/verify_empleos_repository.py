@@ -126,13 +126,15 @@ def main() -> None:
     # este bloque) y el recibo, ambos en la misma transacción externa.
     conn_externo = manager.conn
     with manager.transaction():
-        t_id = conn_externo.execute(
+        # El id es un UUID (DEFAULT de la columna): lastrowid es el rowid interno, no el id.
+        rowid = conn_externo.execute(
             """
             INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
             VALUES ('2026-02-01', 'Sueldo 02/2026', ?, ?, ?, 'ingreso', 86000000);
             """,
             (cuenta_id, categoria_ingreso, moneda_ars),
         ).lastrowid
+        t_id = conn_externo.execute("SELECT id FROM transacciones WHERE rowid = ?;", (rowid,)).fetchone()[0]
         recibo_2 = repo.crear_recibo(
             empleo_id=empleo_1, mes=2, anio=2026,
             sueldo_bruto_minor=100000000, desc_jubilacion_minor=11000000,
@@ -149,13 +151,16 @@ def main() -> None:
     recibos_antes = manager.fetchone("SELECT COUNT(*) AS n FROM recibos_sueldo;")["n"]
     try:
         with manager.transaction():
-            t_id_fallido = conn_externo.execute(
+            rowid_fallido = conn_externo.execute(
                 """
                 INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
                 VALUES ('2026-03-01', 'Sueldo que va a fallar', ?, ?, ?, 'ingreso', 1);
                 """,
                 (cuenta_id, categoria_ingreso, moneda_ars),
             ).lastrowid
+            t_id_fallido = conn_externo.execute(
+                "SELECT id FROM transacciones WHERE rowid = ?;", (rowid_fallido,),
+            ).fetchone()[0]
             repo.crear_recibo(
                 empleo_id=empleo_1, mes=3, anio=2026,
                 sueldo_bruto_minor=1, desc_jubilacion_minor=0, desc_obra_social_minor=0,

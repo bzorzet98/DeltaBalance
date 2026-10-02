@@ -34,7 +34,7 @@ class SaldosMensualesRepository:
 
     def upsert(
         self,
-        cuenta_id: int,
+        cuenta_id: str,
         moneda_id: int,
         mes: int,
         anio: int,
@@ -55,7 +55,7 @@ class SaldosMensualesRepository:
     # READ
     # ----------------------------------------------------------
 
-    def obtener(self, cuenta_id: int, moneda_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def obtener(self, cuenta_id: str, moneda_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("saldos_mensuales", include_deleted=True)
             .where("cuenta_id", cuenta_id)
@@ -65,7 +65,7 @@ class SaldosMensualesRepository:
             .ejecutar_uno(self._db.conn)
         )
 
-    def listar_por_cuenta(self, cuenta_id: int, moneda_id: int) -> list[sqlite3.Row]:
+    def listar_por_cuenta(self, cuenta_id: str, moneda_id: int) -> list[sqlite3.Row]:
         """Todos los snapshots de una (cuenta, moneda), del más viejo al más nuevo."""
         return (
             QueryBuilder("saldos_mensuales", include_deleted=True)

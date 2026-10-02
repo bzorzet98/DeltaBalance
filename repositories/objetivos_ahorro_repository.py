@@ -23,6 +23,7 @@ import sqlite3
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
 from repositories._sentinels import NO_CAMBIAR
 
@@ -40,18 +41,20 @@ class ObjetivosAhorroRepository:
         nombre: str,
         monto_meta_minor: Optional[int] = None,
         fecha_meta: Optional[str] = None,
-    ) -> int:
-        """Inserta un objetivo de ahorro. estado arranca en 'activo' (default de columna)."""
-        return self._db.execute(
-            "INSERT INTO objetivos_ahorro (nombre, monto_meta_minor, fecha_meta) VALUES (?, ?, ?);",
-            (nombre, monto_meta_minor, fecha_meta),
+    ) -> str:
+        """Inserta un objetivo de ahorro y devuelve su id (UUID). estado arranca en 'activo' (default de columna)."""
+        objetivo_id = nuevo_id()
+        self._db.execute(
+            "INSERT INTO objetivos_ahorro (id, nombre, monto_meta_minor, fecha_meta) VALUES (?, ?, ?, ?);",
+            (objetivo_id, nombre, monto_meta_minor, fecha_meta),
         )
+        return objetivo_id
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def obtener_por_id(self, objetivo_id: int) -> Optional[sqlite3.Row]:
+    def obtener_por_id(self, objetivo_id: str) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("objetivos_ahorro", include_deleted=True)
             .where("id", objetivo_id)
@@ -72,7 +75,7 @@ class ObjetivosAhorroRepository:
 
     def actualizar(
         self,
-        objetivo_id: int,
+        objetivo_id: str,
         nombre: Any = NO_CAMBIAR,
         monto_meta_minor: Any = NO_CAMBIAR,
         fecha_meta: Any = NO_CAMBIAR,

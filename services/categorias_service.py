@@ -161,7 +161,7 @@ class CategoriasError(Exception):
 
 
 class CategoryNotFoundError(CategoriasError):
-    def __init__(self, categoria_id: int):
+    def __init__(self, categoria_id: str):
         super().__init__(f"No existe una categoría con id={categoria_id}.")
         self.categoria_id = categoria_id
 
@@ -185,7 +185,7 @@ class CategoryProtegidaError(CategoriasError):
 class CategoriasResult:
     """Structured result returned by CategoriasService write operations."""
     success:      bool
-    categoria_id: Optional[int] = None
+    categoria_id: Optional[str] = None
     data:         dict          = field(default_factory=dict)
     message:      str           = ""
 
@@ -221,7 +221,7 @@ class CategoriasService:
         """
         return self._repo.listar(tipo=tipo, incluir_inactivas=incluir_inactivas)
 
-    def get_category(self, categoria_id: int) -> Optional[sqlite3.Row]:
+    def get_category(self, categoria_id: str) -> Optional[sqlite3.Row]:
         """Fetches a single category by id, or None if it does not exist."""
         return self._repo.obtener_por_id(categoria_id)
 
@@ -240,7 +240,7 @@ class CategoriasService:
     def is_protected(categoria: sqlite3.Row) -> bool:
         return CategoriasService.protection_reason(categoria) is not None
 
-    def _obtener_o_lanzar(self, categoria_id: int) -> sqlite3.Row:
+    def _obtener_o_lanzar(self, categoria_id: str) -> sqlite3.Row:
         fila = self._repo.obtener_por_id(categoria_id)
         if fila is None:
             raise CategoryNotFoundError(categoria_id)
@@ -295,7 +295,7 @@ class CategoriasService:
 
     def update_category(
         self,
-        categoria_id: int,
+        categoria_id: str,
         categoria_principal: Any = NO_CAMBIAR,
         subcategoria: Any = NO_CAMBIAR,
         tipo: Any = NO_CAMBIAR,
@@ -353,7 +353,7 @@ class CategoriasService:
             message=f"Categoría '{principal_final} · {sub_final}' actualizada.",
         )
 
-    def deactivate_category(self, categoria_id: int) -> CategoriasResult:
+    def deactivate_category(self, categoria_id: str) -> CategoriasResult:
         """
         Soft-delete (activa = 0). A diferencia de AccountsService.archive_account(),
         NO exige uso/saldo cero — el soft-delete de categorías ya está pensado
@@ -377,7 +377,7 @@ class CategoriasService:
             message=f"Categoría '{fila['categoria_principal']} · {fila['subcategoria']}' desactivada.",
         )
 
-    def activate_category(self, categoria_id: int) -> CategoriasResult:
+    def activate_category(self, categoria_id: str) -> CategoriasResult:
         """
         Reactiva una categoría desactivada. Sin restricción de protección —
         reactivar siempre es seguro, nunca rompe la convención de nombre que
