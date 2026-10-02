@@ -41,7 +41,7 @@ from repositories.deudas_repository import TABS, DeudaDuplicadaError, DeudasRepo
 from utils.personas import normalizar_persona
 
 # update(): campos que se pueden cambiar.
-CAMPOS_EDITABLES = ("entidad_persona", "concepto", "tab", "monto_minor", "moneda_id", "fecha", "notas")
+CAMPOS_EDITABLES = ("entidad_persona", "concepto", "tab", "monto_minor", "moneda_id", "fecha", "notas", "tag")
 
 
 # =============================================================
@@ -125,7 +125,7 @@ class DebtsService:
 
     @staticmethod
     def _texto(valor: Optional[str]) -> Optional[str]:
-        """concepto/notas: sin espacios de más; vacío = NULL."""
+        """concepto/notas/tag: sin espacios de más; vacío = NULL."""
         return (valor or "").strip() or None
 
     def _obtener(self, deuda_id: str) -> sqlite3.Row:
@@ -154,10 +154,12 @@ class DebtsService:
         notas: Optional[str] = None,
         origen_tipo: str = "manual",
         origen_id: Optional[str] = None,
+        tag: Optional[str] = None,
     ) -> DebtResult:
         """
         Crea una fila del libro en ese tab. monto_minor positivo = la deuda
         crece; negativo = un pago que la baja.
+        tag: etiqueta libre (como transacciones.tag); vacía = NULL.
 
         Raises:
             DebtError si la persona está vacía, el tab no es válido, el monto
@@ -179,6 +181,7 @@ class DebtsService:
                 notas=self._texto(notas),
                 origen_tipo=origen_tipo.strip(),
                 origen_id=origen_id,
+                tag=self._texto(tag),
             )
         except DeudaDuplicadaError as err:
             raise DebtError(str(err)) from err
@@ -246,6 +249,7 @@ class DebtsService:
             "entidad_persona": self._persona,
             "concepto": self._texto,
             "notas": self._texto,
+            "tag": self._texto,
             "tab": self._tab,
             "monto_minor": self._monto,
             "moneda_id": self._moneda,

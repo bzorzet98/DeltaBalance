@@ -131,6 +131,25 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         # mecanismo de pago parcial no existía antes de esta migración.
         sql_backfill="UPDATE gastos_compartidos SET monto_pendiente_minor = monto_adeudado_minor;",
     ),
+    MigracionColumna(
+        # Etiqueta libre, igual que transacciones.tag (docs/DATA_MODEL_DECISIONS.md sección 26).
+        tabla="compras_cuotas",
+        columna="tag",
+        ddl_columna="tag TEXT",
+    ),
+]
+
+# Columnas sobre `deudas` con su estructura FINAL: van después de
+# reestructurar_deudas() (aplicar_migraciones_tabla()), que en una base vieja
+# rearma la tabla desde DDL_DEUDAS_FINAL — agregadas antes, se perderían en
+# esa misma corrida.
+MIGRACIONES_COLUMNA_DEUDAS: list[MigracionColumna] = [
+    MigracionColumna(
+        # Etiqueta libre, igual que transacciones.tag (docs/DATA_MODEL_DECISIONS.md sección 26).
+        tabla="deudas",
+        columna="tag",
+        ddl_columna="tag TEXT",
+    ),
 ]
 
 
@@ -208,14 +227,16 @@ def aplicar_migraciones_tabla(conn: sqlite3.Connection) -> None:
     (CREATE TABLE IF NOT EXISTS): si la tabla ya está, no hace nada. Después
     corre la reestructuración de `deudas` (reestructurar_deudas(), con su
     backup — por eso va primero: el backup queda con la base tal como
-    estaba) y recrea deudas_mensuales si todavía no tiene `tab`
-    (_deudas_mensuales_con_tab()); ninguna de las dos hace nada si ya se hizo.
-    Por último, preparar_sync(): columna sincronizado_en, tablas de control
-    y triggers de la sincronización con Supabase (idempotente).
+    estaba), las columnas de MIGRACIONES_COLUMNA_DEUDAS y recrea
+    deudas_mensuales si todavía no tiene `tab` (_deudas_mensuales_con_tab());
+    ninguna hace nada si ya se hizo. Por último, preparar_sync(): columna
+    sincronizado_en, tablas de control y triggers de la sincronización con
+    Supabase (idempotente).
     """
     for ddl in MIGRACIONES_TABLA:
         conn.execute(ddl)
     reestructurar_deudas(conn)
+    _aplicar_columnas(conn, MIGRACIONES_COLUMNA_DEUDAS)
     _deudas_mensuales_con_tab(conn)
     # Al final: necesita que todas las tablas sincronizadas ya existan con
     # su estructura definitiva (deudas recién reestructurada, tarjetas_config).

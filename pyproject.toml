@@ -1,0 +1,53 @@
+# DeltaBalance — configuración de build de la app (flet build linux | windows |
+# macos | apk | ipa).
+#
+# Flet 0.86.5 lee solo este archivo (un flet.json se ignoraría): nombre,
+# versión y descripción salen de [project]; producto, empresa e id de la app,
+# de [tool.flet]. El ícono no se configura: flet build toma assets/icon.png
+# (cuadrado, idealmente 1024x1024 con fondo transparente).
+#
+# project.dependencies son los paquetes que se empaquetan CON la app — solo
+# lo que importa en ejecución. El entorno de desarrollo sigue saliendo de
+# environment.yml.
+
+[project]
+name = "deltabalance"
+version = "1.0.0"
+description = "Finanzas personales para la vida real"
+authors = [{ name = "Bruno Zorzet" }]
+requires-python = ">=3.11"
+dependencies = [
+    "flet==0.86.5",
+    "flet-charts==0.86.5",
+    "supabase",
+    "python-dotenv",
+]
+
+[tool.flet]
+product = "DeltaBalance"
+company = "Bruno Zorzet"
+copyright = "Copyright (C) 2026 Bruno Zorzet"
+org = "com.deltabalance"
+bundle_id = "com.deltabalance.app"
+
+[tool.flet.app]
+module = "main"
+# Fuera del paquete: datos personales (las bases de data/, el Excel de
+# migration/sources/, las preferencias locales), el .env (tiene
+# SUPABASE_SERVICE_KEY, que salta RLS) y todo lo que no corre en la app.
+exclude = [
+    "data",
+    "migration",
+    "verify",
+    "lab",
+    "tests",
+    "docs",
+    ".env",
+    ".deltabalance_prefs.json",
+    ".flet",
+    ".git",
+    ".claude",
+    ".vscode",
+    ".pytest_cache",
+    "__pycache__",
+]

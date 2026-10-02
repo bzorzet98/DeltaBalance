@@ -378,6 +378,7 @@ class FeesService:
         notes:            Optional[str]   = None,
         first_fee_month:  Optional[int]   = None,
         first_fee_year:   Optional[int]   = None,
+        tag:              Optional[str]   = None,
     ) -> FeesResult:
         """
         Creates a purchase in installments and auto-generates all N fee rows.
@@ -403,6 +404,8 @@ class FeesService:
             first_fee_month / first_fee_year: Optional month (1–12) and year of
                             fee #1. Both or neither; never before the purchase
                             month. None = the purchase month.
+            tag:            Optional free-text label (same as transacciones.tag).
+                            Blank = None.
 
         Returns:
             FeesResult with the purchase id and a summary of generated fees.
@@ -455,6 +458,7 @@ class FeesService:
                 total_cuotas=total_fees,
                 monto_por_cuota_minor=per_fee_minor,
                 notas=notes,
+                tag=(tag or "").strip() or None,
                 conn=conn,
             )
 
@@ -1309,6 +1313,7 @@ class FeesService:
         cuenta_id:         Optional[str] = None,
         fecha:             Optional[str] = None,
         moneda_codigo:     Optional[str] = None,
+        tag:               Optional[str] = None,
     ) -> FeesResult:
         """
         Updates one or more fields of an existing purchase.
@@ -1344,6 +1349,9 @@ class FeesService:
             cuenta_id:         New credit card account ID. None = no change.
             fecha:             New purchase date 'YYYY-MM-DD'. None = no change.
             moneda_codigo:     New currency code, e.g. 'USD'. None = no change.
+            tag:               New free-text label; empty string '' clears it.
+                               None = no change. Never blocked (no row
+                               depends on it).
 
         Returns:
             FeesResult with success=True if at least one field changed.
@@ -1365,6 +1373,9 @@ class FeesService:
             if not concepto.strip():
                 raise FeesError("Concept cannot be empty.")
             campos_repo["concepto"] = concepto.strip()
+
+        if tag is not None:
+            campos_repo["tag"] = tag.strip() or None
 
         if categoria_id is not None:
             self._get_category(categoria_id)  # validate existence

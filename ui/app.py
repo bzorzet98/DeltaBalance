@@ -123,6 +123,16 @@ SIDEBAR_ANCHO_EXPANDIDO = 220
 SIDEBAR_ANCHO_COLAPSADO = 64
 SIDEBAR_PADDING_VERTICAL = 16
 SIDEBAR_PADDING_HORIZONTAL = 8
+# Logo arriba de la sidebar: relativo a assets_dir (ft.run usa "assets" por default).
+SIDEBAR_LOGO_SRC = "icon.png"
+SIDEBAR_LOGO_COLAPSADO = 36
+SIDEBAR_LOGO_EXPANDIDO = 48
+SIDEBAR_LOGO_RADIO = 8
+SIDEBAR_LOGO_ESPACIO = 10  # entre el logo y el nombre (expandida)
+SIDEBAR_ENCABEZADO_PADDING_H = 12
+SIDEBAR_ENCABEZADO_PADDING_V = 8
+SIDEBAR_NOMBRE_APP = "DeltaBalance"
+SIDEBAR_NOMBRE_TAMANIO = 18
 CONTENIDO_PADDING = 24
 COLOR_FONDO_APP = "#1a1a1a"
 # Espera antes de restaurar el scroll de una pantalla recién mostrada.
@@ -432,17 +442,36 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             content=ft.Column([nombre, email, boton], spacing=USUARIO_ESPACIADO, tight=True),
         )
 
+    def _logo(tamanio: int) -> ft.Control:
+        return ft.Image(
+            src=SIDEBAR_LOGO_SRC, width=tamanio, height=tamanio,
+            border_radius=SIDEBAR_LOGO_RADIO, fit=ft.BoxFit.CONTAIN,
+        )
+
     def _contenido_sidebar(expandido: bool) -> ft.Control:
+        # Colapsada: solo el logo. Expandida: logo más grande + el nombre.
         encabezado = (
             ft.Container(
-                padding=ft.Padding.symmetric(horizontal=12, vertical=8),
-                content=ft.Text("DeltaBalance", size=18, weight=ft.FontWeight.BOLD),
+                padding=ft.Padding.symmetric(
+                    horizontal=SIDEBAR_ENCABEZADO_PADDING_H, vertical=SIDEBAR_ENCABEZADO_PADDING_V,
+                ),
+                content=ft.Row(
+                    [
+                        _logo(SIDEBAR_LOGO_EXPANDIDO),
+                        ft.Text(
+                            SIDEBAR_NOMBRE_APP, size=SIDEBAR_NOMBRE_TAMANIO, weight=ft.FontWeight.BOLD,
+                            color=ft.Colors.WHITE,
+                        ),
+                    ],
+                    spacing=SIDEBAR_LOGO_ESPACIO,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
             )
             if expandido
             else ft.Container(
-                padding=ft.Padding.symmetric(vertical=8),
+                padding=ft.Padding.symmetric(vertical=SIDEBAR_ENCABEZADO_PADDING_V),
                 alignment=ft.Alignment.CENTER,
-                content=ft.Text("DB", size=18, weight=ft.FontWeight.BOLD),
+                content=_logo(SIDEBAR_LOGO_COLAPSADO),
             )
         )
 

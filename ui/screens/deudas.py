@@ -47,26 +47,28 @@ los snapshots (ui/components/saldo_anterior.py).
 
 Las filas del tab con fecha en el mes elegido (DebtsService.list_by_tab()).
 Edición inline (CLAUDE.md §10) de todas las celdas vía DebtsService.update():
-Persona, Concepto, Monto (con signo: verde si es positivo, rojo si es
-negativo), Moneda y Fecha. Cambiar la moneda conserva el importe mostrado
+Persona, Concepto, Tag (TablaPlanilla.celda_tag(): vacía la borra), Monto
+(con signo: verde si es positivo, rojo si es negativo), Moneda y Fecha. Cambiar la moneda conserva el importe mostrado
 (si la moneda nueva tiene otros decimales, se reescala el monto, mismo
 criterio que el Registro). Las notas no tienen columna: entran en la
 búsqueda.
 
 --- Fila de alta ---
 
-Persona, Concepto, Monto (CampoMonto, con fórmulas; positivo = la deuda
+Persona, Concepto, Tag (opcional, texto libre: TablaPlanilla.
+campo_tag_alta()), Monto (CampoMonto, con fórmulas; positivo = la deuda
 crece, negativo = un pago), Moneda (SelectorCiclico,
 TablaPlanilla.selector_alta(): en 70 px un Dropdown no entra) y Fecha.
 Enter nunca guarda la fila salvo con el foco en el ✓: Persona → Concepto →
-Monto → Fecha (Moneda es un botón: Enter lo cambiaría, así que la cadena lo
-saltea; con Tab se llega igual); en Fecha, el último campo, Enter o Tab
-llevan el foco al ✓ sin activarlo, y ahí Enter o un click confirman.
+Tag → Monto → Fecha (Moneda es un botón: Enter lo cambiaría, así que la
+cadena lo saltea; con Tab se llega igual); en Fecha, el último campo, Enter
+o Tab llevan el foco al ✓ sin activarlo, y ahí Enter o un click confirman.
 
 --- Barra flotante ---
 
 Solo Eliminar (DebtsService.delete(): una fila no tiene dependencias con
-estado propio, CLAUDE.md §4).
+estado propio, CLAUDE.md §4), y la suma (Σ) de los montos seleccionados con
+su signo, una por moneda.
 
 --- Saldo anterior ---
 
@@ -124,6 +126,7 @@ from utils.money import amount_display
 COLUMNAS = [
     Columna("persona", "PERSONA", 150),
     Columna("concepto", "CONCEPTO", 200),
+    Columna("tag", "TAG", 100),
     Columna("monto", "MONTO", 120, redimensionable=False, alineacion=ft.Alignment.CENTER_RIGHT),
     Columna("moneda", "MONEDA", 70, redimensionable=False),
     Columna("fecha", "FECHA", 100, redimensionable=False),
@@ -152,7 +155,9 @@ _ESTADOS_UI: dict[int, dict] = {}
 
 
 def _alta_vacia(moneda: Optional[str] = None) -> dict:
-    return {"persona": "", "concepto": "", "monto": "", "fecha": date.today().isoformat(), "moneda": moneda}
+    return {
+        "persona": "", "concepto": "", "tag": "", "monto": "", "fecha": date.today().isoformat(), "moneda": moneda,
+    }
 
 
 def _estado_ui(page: ft.Page) -> dict:
@@ -267,6 +272,8 @@ def build(
                 return d["entidad_persona"] or ""
             if columna == "concepto":
                 return d["concepto"] or ""
+            if columna == "tag":
+                return d["tag"] or ""
             if columna == "monto":
                 return _monto_fila(d)
             if columna == "moneda":
@@ -280,7 +287,7 @@ def build(
 
         def _firma(d: dict) -> tuple:
             return (
-                d["entidad_persona"], d["concepto"], d["notas"], d["monto_minor"], d["moneda_id"],
+                d["entidad_persona"], d["concepto"], d["tag"], d["notas"], d["monto_minor"], d["moneda_id"],
                 d["currency_code"], d["currency_symbol"], d["decimales"], d["fecha"],
             )
 
@@ -376,6 +383,7 @@ def build(
             ui["alta"] = {
                 "persona": alta_refs["persona"].value or "",
                 "concepto": alta_refs["concepto"].value or "",
+                "tag": alta_refs["tag"].value or "",
                 "monto": alta_refs["monto"].texto,
                 "fecha": alta_refs["fecha"].value or "",
                 "moneda": alta_refs["moneda"].valor,
@@ -398,6 +406,8 @@ def build(
                 value=borrador["concepto"], hint_text="EJ: CENA", text_align=ft.TextAlign.CENTER,
                 on_change=_on_cambio_borrador, **estilo_campo(),
             )
+            campo_tag = tabla.campo_tag_alta(borrador.get("tag") or "")
+            campo_tag.on_change = _on_cambio_borrador
             # persistir_formula=True: el campo recuerda la fórmula mientras la
             # fila no se guarde. Positivo = la deuda crece, negativo = un pago.
             # Enter resuelve la fórmula y pasa a Fecha.
@@ -423,12 +433,13 @@ def build(
             )
             boton_confirmar = tabla.boton_confirmar_alta(f"AGREGAR EN {ETIQUETA_TAB[tab]}", lambda: _confirmar_alta())
             alta_refs.update(
-                persona=campo_persona, concepto=campo_concepto, monto=campo_monto,
+                persona=campo_persona, concepto=campo_concepto, tag=campo_tag, monto=campo_monto,
                 moneda=selector_moneda, fecha=campo_fecha, boton=boton_confirmar,
             )
 
             campo_persona.on_submit = lambda e: tabla.enfocar(campo_concepto)
-            campo_concepto.on_submit = lambda e: tabla.enfocar(campo_monto.control)
+            campo_concepto.on_submit = lambda e: tabla.enfocar(campo_tag)
+            campo_tag.on_submit = lambda e: tabla.enfocar(campo_monto.control)
             # Fecha es el último campo: Enter o Tab llevan al ✓ sin guardar (ahí Enter confirma).
             tabla.tab_a_confirmar(campo_fecha)
 
@@ -436,6 +447,7 @@ def build(
                 celdas={
                     "persona": campo_persona,
                     "concepto": campo_concepto,
+                    "tag": campo_tag,
                     "monto": campo_monto.control,
                     "moneda": selector_moneda.control,
                     "fecha": celda_fecha,
@@ -485,6 +497,7 @@ def build(
                 resultado = debts_service.create(
                     entidad_persona=persona,
                     concepto=alta_refs["concepto"].value,
+                    tag=alta_refs["tag"].value,  # el service lo recorta; vacío = None
                     tab=tab,  # el del switch activo
                     monto_minor=round(valor * 10 ** moneda["decimales"]),
                     moneda_id=moneda["id"],
@@ -539,6 +552,8 @@ def build(
             return {
                 "persona": tabla.celda_texto(d, "persona", d["entidad_persona"] or "", _guardar_persona),
                 "concepto": tabla.celda_texto(d, "concepto", d["concepto"] or "", lambda nuevo: _guardar(concepto=nuevo)),
+                # update() borra el tag con "" (lo guarda como NULL).
+                "tag": tabla.celda_tag(d, "tag", d["tag"], lambda nuevo: _guardar(tag=nuevo)),
                 "monto": tabla.celda_monto(
                     d, "monto", _monto_fila(d), _color_monto(d), d["monto_minor"], d["decimales"], _guardar_monto,
                 ),
@@ -589,6 +604,7 @@ def build(
             filas_pie=_filas_pie,
             errores_esperados=(DebtError,),
             texto_vacio=f"NO HAY MOVIMIENTOS EN {ETIQUETA_TAB[tab]} PARA ESTE PERÍODO.",
+            columna_suma="monto_minor",  # ya con su signo (+ la deuda crece, − un pago)
         )
         control_tabla = tabla.construir()
         contenedor_saldos.content = _barra_saldos()

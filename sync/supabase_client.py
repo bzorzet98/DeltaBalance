@@ -19,6 +19,19 @@ from pathlib import Path
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+load_dotenv()  # carga .env si existe, no falla si no existe
+
+SUPABASE_URL = os.environ.get(
+    "SUPABASE_URL",
+    "https://cytvrechqghsbaaxckxy.supabase.co/"  # reemplazar con la URL real
+)
+SUPABASE_ANON_KEY = os.environ.get(
+    "SUPABASE_ANON_KEY", 
+    "sb_publishable_9dOsUYsdDo2KsXQ7iUdZSg_3mUUZ-bv"  # reemplazar con la anon key real
+)
+
+def get_client() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 
