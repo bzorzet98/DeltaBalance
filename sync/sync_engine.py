@@ -121,7 +121,7 @@ TABLAS_PRIVADAS = [
     "cuentas_saldos", "cuotas_credito", "resumenes_tarjeta", "tarjetas_config",
 ]
 TABLAS_COMPARTIDAS = [
-    "gastos_compartidos", "hogares", "hogar_miembros", "gasto_compartido_pagos",
+     "hogares", "hogar_miembros", "gastos_compartidos", "gasto_compartido_pagos",
 ]
 
 TABLA_REMOTA = "deltabalance_filas"  # las privadas
