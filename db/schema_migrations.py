@@ -40,6 +40,14 @@ Reestructuración de `deudas` (más abajo, reestructurar_deudas()): convierte
 una base con alguna estructura anterior de la tabla a la estructura final
 de db/schema.sql. Corre al final de aplicar_migraciones_tabla() y no hace
 nada si la tabla ya es la final. Ver docs/DATA_MODEL_DECISIONS.md sección 22.
+
+Reestructuración de `presupuestos` e `ingresos_proyectados` (más abajo,
+reestructurar_presupuestos_ingresos(), pedido explícito, tarea
+"Reestructuración de pantallas Ingresos y Presupuestos" — sin tocar
+db/schema.sql, que sigue creando las tablas con su estructura anterior en
+una base nueva: esta migración las convierte enseguida). Mismo mecanismo
+que deudas: tabla nueva al lado, copia, borrado de la vieja y rename, todo
+en una transacción y con backup previo si hay datos.
 """
 
 from __future__ import annotations
@@ -107,11 +115,10 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         columna="transaccion_id",
         ddl_columna="transaccion_id TEXT REFERENCES transacciones(id)",
     ),
-    MigracionColumna(
-        tabla="presupuestos",
-        columna="formula_estimado",
-        ddl_columna="formula_estimado TEXT",
-    ),
+    # presupuestos.formula_estimado ya no se agrega: la estructura final de
+    # presupuestos (reestructurar_presupuestos_ingresos()) no la tiene, y
+    # estas migraciones corren ANTES que esa — la volverían a agregar en
+    # cada arranque.
     MigracionColumna(
         tabla="activos_financieros",
         columna="cuenta_id",
@@ -228,18 +235,22 @@ def aplicar_migraciones_tabla(conn: sqlite3.Connection) -> None:
     corre la reestructuración de `deudas` (reestructurar_deudas(), con su
     backup — por eso va primero: el backup queda con la base tal como
     estaba), las columnas de MIGRACIONES_COLUMNA_DEUDAS y recrea
-    deudas_mensuales si todavía no tiene `tab` (_deudas_mensuales_con_tab());
-    ninguna hace nada si ya se hizo. Por último, preparar_sync(): columna
-    sincronizado_en, tablas de control y triggers de la sincronización con
-    Supabase (idempotente).
+    deudas_mensuales si todavía no tiene `tab` (_deudas_mensuales_con_tab())
+    y convierte presupuestos / ingresos_proyectados a su estructura final
+    (reestructurar_presupuestos_ingresos()); ninguna hace nada si ya se
+    hizo. Por último, preparar_sync(): columna sincronizado_en, tablas de
+    control y triggers de la sincronización con Supabase (idempotente).
     """
     for ddl in MIGRACIONES_TABLA:
         conn.execute(ddl)
     reestructurar_deudas(conn)
     _aplicar_columnas(conn, MIGRACIONES_COLUMNA_DEUDAS)
     _deudas_mensuales_con_tab(conn)
+    reestructurar_presupuestos_ingresos(conn)
     # Al final: necesita que todas las tablas sincronizadas ya existan con
-    # su estructura definitiva (deudas recién reestructurada, tarjetas_config).
+    # su estructura definitiva (deudas, presupuestos e ingresos_proyectados
+    # recién reestructuradas, tarjetas_config). Sus triggers se fueron con
+    # las tablas viejas: acá se crean sobre las nuevas.
     preparar_sync(conn)
 
 
@@ -440,24 +451,24 @@ def _estructura_deudas(conn: sqlite3.Connection) -> str:
     )
 
 
-def _backup_antes_de_reestructurar(conn: sqlite3.Connection) -> None:
+def _backup_antes_de_reestructurar(conn: sqlite3.Connection, motivo: str = "deudas") -> None:
     """
     Copia completa de la base (API de backup de sqlite3: incluye lo que esté
-    en el -wal) al lado del archivo, antes de tocar `deudas`:
-    <nombre de la base>_backup_antes_deudas_<fecha>_<hora>.db. Sin archivo
+    en el -wal) al lado del archivo, antes de reestructurar `motivo`:
+    <nombre de la base>_backup_antes_<motivo>_<fecha>_<hora>.db. Sin archivo
     (base en memoria), no hace nada.
     """
     archivo = next((fila[2] for fila in conn.execute("PRAGMA database_list;") if fila[1] == "main"), "")
     if not archivo:
         return
     origen = Path(archivo)
-    destino = origen.parent / f"{origen.stem}_backup_antes_deudas_{datetime.now():%Y%m%d_%H%M%S}.db"
+    destino = origen.parent / f"{origen.stem}_backup_antes_{motivo}_{datetime.now():%Y%m%d_%H%M%S}.db"
     copia = sqlite3.connect(destino)
     try:
         conn.backup(copia)
     finally:
         copia.close()
-    print(f"[DeltaBalance] Backup antes de reestructurar deudas: {destino}")
+    print(f"[DeltaBalance] Backup antes de reestructurar {motivo}: {destino}")
 
 
 def _normalizar_personas(conn: sqlite3.Connection, tabla: str) -> None:
@@ -516,6 +527,185 @@ def reestructurar_deudas(conn: sqlite3.Connection) -> None:
         for tabla in viejas:
             conn.execute(f"DROP TABLE {tabla};")
         conn.execute(f"ALTER TABLE {TABLA_NUEVA} RENAME TO deudas;")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
+# =============================================================
+# REESTRUCTURACIÓN DE PRESUPUESTOS E INGRESOS PROYECTADOS
+# =============================================================
+# Pedido explícito (tarea "Reestructuración de pantallas Ingresos y
+# Presupuestos"):
+#
+# ingresos_proyectados — se van `estado` y `monto_percibido_minor`; entran
+#   monto_real_minor (lo cobrado), es_recurrente, notas y creada_en. Cada
+#   fila vieja conserva su id, concepto, mes/año, moneda y estimado;
+#   monto_percibido_minor pasa a monto_real_minor (el estado ya no hace
+#   falta: "cobrado" es real > 0).
+#
+# presupuestos — dos tipos: 'fijo' (concepto libre: ALQUILER, SEGURO…, con
+#   su real cargado a mano en monto_real_minor) y 'variable' (una
+#   categoría del Registro, con el real calculado de las transacciones, o
+#   el ítem especial COMPARTIDOS: categoria_id NULL y concepto
+#   'COMPARTIDOS', ver services/presupuestos_service.py). monto_real_minor
+#   no estaba en el pedido: se agregó con el OK del usuario, porque la
+#   pantalla pide el Real de los fijos editable. Cada fila vieja era el
+#   presupuesto de una categoría: pasa como 'variable' con su id,
+#   categoría, estimado, moneda, mes/año y recurrente. Se descartan
+#   monto_ejecutado_minor (nunca se calculó), notas (la pantalla nunca las
+#   guardó) y formula_estimado (metadata del campo) — decisión del usuario;
+#   quedan en el backup. Desaparece el UNIQUE(categoria_id, mes, anio): un
+#   variable por categoría y mes lo controla ahora el service.
+#
+# Las dos con `id TEXT PRIMARY KEY NOT NULL DEFAULT <uuid>`, como toda tabla
+# de db/schema.sql (sección 25), en vez del `id TEXT PRIMARY KEY` pelado del
+# pedido.
+#
+# Sincronización: los triggers trg_sync_* se van con la tabla vieja y
+# preparar_sync() los crea sobre la nueva. Cada fila migrada se anota en
+# sync_cambios como 'guardado' (ahora): así sube con su forma nueva y le
+# gana a la versión vieja que está en Supabase (con sincronizado_en NULL
+# solamente, la remota — editada más tarde que creada_en — ganaría el
+# last-write-wins y la forma vieja volvería a bajar).
+#
+# Todo en UNA transacción (rollback completo si algo falla; la excepción
+# sube), con backup previo del archivo si alguna de las dos tiene datos.
+
+TABLA_INGRESOS_NUEVA = "ingresos_proyectados_final"
+TABLA_PRESUPUESTOS_NUEVA = "presupuestos_final"
+
+DDL_INGRESOS_FINAL = f"""
+CREATE TABLE {TABLA_INGRESOS_NUEVA} (
+    id                   TEXT PRIMARY KEY NOT NULL DEFAULT {UUID_V4_SQL},
+    concepto             TEXT NOT NULL,
+    monto_estimado_minor INTEGER NOT NULL DEFAULT 0,
+    monto_real_minor     INTEGER NOT NULL DEFAULT 0,
+    moneda_id            INTEGER NOT NULL REFERENCES monedas(id),
+    mes                  INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio                 INTEGER NOT NULL,
+    es_recurrente        INTEGER NOT NULL DEFAULT 0,
+    notas                TEXT,
+    sincronizado_en      TEXT DEFAULT NULL,
+    creada_en            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+DDL_PRESUPUESTOS_FINAL = f"""
+CREATE TABLE {TABLA_PRESUPUESTOS_NUEVA} (
+    id                   TEXT PRIMARY KEY NOT NULL DEFAULT {UUID_V4_SQL},
+    tipo                 TEXT NOT NULL CHECK(tipo IN ('fijo', 'variable')),
+    concepto             TEXT,
+    categoria_id         TEXT REFERENCES categorias(id),
+    monto_estimado_minor INTEGER NOT NULL DEFAULT 0,
+    monto_real_minor     INTEGER NOT NULL DEFAULT 0,
+    moneda_id            INTEGER NOT NULL REFERENCES monedas(id),
+    mes                  INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio                 INTEGER NOT NULL,
+    es_recurrente        INTEGER NOT NULL DEFAULT 0,
+    sincronizado_en      TEXT DEFAULT NULL,
+    creada_en            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+# sincronizado_en y creada_en no se copian: NULL (pendiente de subir) y ahora.
+SQL_INGRESOS_DESDE_ORIGINAL = f"""
+INSERT INTO {TABLA_INGRESOS_NUEVA} (id, concepto, monto_estimado_minor, monto_real_minor, moneda_id, mes, anio)
+SELECT id, concepto, monto_estimado_minor, COALESCE(monto_percibido_minor, 0), moneda_id, mes, anio
+FROM ingresos_proyectados;
+"""
+
+SQL_PRESUPUESTOS_DESDE_ORIGINAL = f"""
+INSERT INTO {TABLA_PRESUPUESTOS_NUEVA} (id, tipo, categoria_id, monto_estimado_minor, moneda_id, mes, anio, es_recurrente)
+SELECT id, 'variable', categoria_id, monto_estimado_minor, moneda_id, mes, anio, COALESCE(es_recurrente, 0)
+FROM presupuestos;
+"""
+
+# Misma marca de tiempo que los triggers de la sync (_ddl_triggers_sync()).
+SQL_REGISTRAR_MIGRADAS = (
+    "INSERT OR REPLACE INTO sync_cambios (tabla, clave, operacion, modificado_en) "
+    "SELECT ?, CAST(id AS TEXT), 'guardado', strftime('%Y-%m-%d %H:%M:%f', 'now') FROM {tabla};"
+)
+
+
+@dataclass(frozen=True)
+class _Reestructuracion:
+    tabla: str
+    tabla_nueva: str
+    columna_final: str      # si la tabla ya la tiene, ya es la final
+    columna_original: str   # la que identifica la estructura anterior
+    ddl: str
+    sql_copia: str
+
+
+REESTRUCTURACIONES_PRESUPUESTOS_INGRESOS: list[_Reestructuracion] = [
+    _Reestructuracion(
+        tabla="ingresos_proyectados", tabla_nueva=TABLA_INGRESOS_NUEVA,
+        columna_final="monto_real_minor", columna_original="monto_percibido_minor",
+        ddl=DDL_INGRESOS_FINAL, sql_copia=SQL_INGRESOS_DESDE_ORIGINAL,
+    ),
+    _Reestructuracion(
+        tabla="presupuestos", tabla_nueva=TABLA_PRESUPUESTOS_NUEVA,
+        columna_final="tipo", columna_original="categoria_id",
+        ddl=DDL_PRESUPUESTOS_FINAL, sql_copia=SQL_PRESUPUESTOS_DESDE_ORIGINAL,
+    ),
+]
+
+
+def _necesita_reestructurar(conn: sqlite3.Connection, r: _Reestructuracion) -> bool:
+    """False si la tabla no existe o ya es la final; True si tiene la estructura anterior."""
+    if not _existe_tabla(conn, r.tabla):
+        return False
+    columnas = _columnas(conn, r.tabla)
+    if r.columna_final in columnas:
+        return False
+    if r.columna_original in columnas:
+        return True
+    raise RuntimeError(
+        f"La tabla `{r.tabla}` tiene una estructura desconocida (columnas: "
+        f"{', '.join(sorted(columnas))}): no se reestructura. Revisá la base antes de abrir la app."
+    )
+
+
+def reestructurar_presupuestos_ingresos(conn: sqlite3.Connection) -> None:
+    """
+    Convierte presupuestos e ingresos_proyectados a su estructura final (ver
+    el bloque de arriba): por cada una que todavía tenga la anterior, crea
+    la tabla nueva, copia las filas, borra la vieja, renombra y anota las
+    filas en sync_cambios. Todo en UNA transacción (rollback completo si
+    algo falla; la excepción sube).
+
+    No hace nada si las dos ya son las finales. Si alguna de las que se
+    convierten tiene datos, antes hace un backup del archivo
+    (_backup_antes_de_reestructurar()).
+
+    Raises:
+        RuntimeError si alguna de las dos no tiene ninguna estructura conocida.
+    """
+    pendientes = [r for r in REESTRUCTURACIONES_PRESUPUESTOS_INGRESOS if _necesita_reestructurar(conn, r)]
+    if not pendientes:
+        return
+
+    # Mismo motivo que en reestructurar_deudas(): se cierra una transacción
+    # implícita que pudiera haber quedado abierta antes del backup y del BEGIN.
+    conn.commit()
+    if any(conn.execute(f"SELECT 1 FROM {r.tabla} LIMIT 1;").fetchone() for r in pendientes):
+        _backup_antes_de_reestructurar(conn, "presupuestos_ingresos")
+    hay_sync = _existe_tabla(conn, "sync_cambios")
+
+    conn.execute("BEGIN;")
+    try:
+        for r in pendientes:
+            conn.execute(f"DROP TABLE IF EXISTS {r.tabla_nueva};")  # un resto de un intento anterior, si lo hubiera
+            conn.execute(r.ddl)
+            conn.execute(r.sql_copia)
+            # Los triggers de la tabla vieja se borran con ella, antes del
+            # DELETE implícito de DROP TABLE: no anotan ningún 'borrado'.
+            conn.execute(f"DROP TABLE {r.tabla};")
+            conn.execute(f"ALTER TABLE {r.tabla_nueva} RENAME TO {r.tabla};")
+            if hay_sync:
+                conn.execute(SQL_REGISTRAR_MIGRADAS.format(tabla=r.tabla), (r.tabla,))
         conn.commit()
     except Exception:
         conn.rollback()

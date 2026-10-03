@@ -1,27 +1,87 @@
 """
 DeltaBalance — services/presupuestos_service.py
 
-Purpose:
-    Domain service for expense budgets (presupuestos). Owns the business
-    rules around setting/copying budgets — data access lives entirely in
-    PresupuestosRepository.
+Presupuestos de cada mes (tabla presupuestos, estructura final de
+db/schema_migrations.py), en dos tipos:
+    'fijo'      concepto libre (ALQUILER, SEGURO, LUZ…) con estimado y real
+                cargados a mano (monto_real_minor).
+    'variable'  una categoría de egreso del Registro, con el real CALCULADO
+                de las transacciones del mes (get_real_variable()) — nunca
+                se guarda —, o el ítem especial COMPARTIDOS.
 
-    Fase 2, bloque PRESUPUESTOS, paso 2a: este service se crea DESDE CERO.
-    No existe ningún PresupuestosService previo ni en db/database.py ni en
-    ningún otro lugar — no hay comportamiento anterior que replicar, el
-    diseño sale directo del repositorio (paso 1) y del schema.
+COMPARTIDOS no es una categoría del Registro: es una fila 'variable' con
+categoria_id NULL y concepto CONCEPTO_COMPARTIDOS. Quien llama lo pide con
+categoria_id=CATEGORIA_COMPARTIDOS (los ids reales son UUID: no chocan) y
+este service lo traduce. Su real (get_real_variable_compartidos(), decisión
+del usuario): lo que el usuario DEBE por los gastos compartidos del mes que
+pagó el OTRO miembro del hogar — suma de monto_adeudado_minor de los gastos
+con pagador ≠ usuario_local (nombres comparados normalizados,
+utils/personas.py). Lo que pagó el usuario ya cuenta en su categoría, con
+solo su parte (ver abajo). Sin usuario_local no se puede saber qué pagó
+cada uno: el real de COMPARTIDOS queda en None.
 
-    Does NOT recalculate monto_ejecutado_minor summing real transactions —
-    ver docstring de update_executed().
+Real de una categoría (get_real_variable()): egresos del Registro de ese
+mes, categoría y moneda (sin las eliminadas, mismo criterio que
+DashboardService.get_gasto_por_categoria()). Si una transacción está
+compartida (gastos_compartidos con origen_tipo='transaccion'), cuenta solo
+la parte del usuario: el monto menos monto_adeudado_minor (lo que le debe
+el otro miembro — una transacción del Registro la pagó el usuario).
+
+Moneda de un gasto compartido (gastos_compartidos no tiene moneda): la de
+su origen (transacción, compra en cuotas o la compra de la cuota). Si el
+origen no está en esta base — es una transacción del otro miembro, que no
+se sincroniza —, MONEDA_SIN_ORIGEN_CODIGO, el mismo default que muestra la
+pantalla de Gastos compartidos.
+
+Reglas de dominio (acá, no en el repositorio):
+- Concepto de un fijo: sin espacios de más y en MAYÚSCULAS, no vacío.
+- Un solo variable por categoría (y un solo COMPARTIDOS) por mes — la
+  regla del viejo UNIQUE(categoria_id, mes, anio): PresupuestoDuplicadoError.
+- Montos enteros (minor units) >= 0; moneda_id tiene que existir; mes entre
+  1 y 12. El real de un variable no se edita (se calcula).
+- Edición y borrado directos: un presupuesto no tiene dependencias con
+  estado propio (ventana de corrección temprana, CLAUDE.md §4).
+- copy_recurrentes(): los recurrentes del mes origen, con real = 0 y sin
+  duplicar lo que el destino ya tiene.
+
+Totales: siempre por moneda, nunca mezclados.
+
+SQL propio solo en get_real_variable() / get_real_variable_compartidos():
+son reportes agregados sobre transacciones y gastos_compartidos (tablas de
+otros dominios), mismo criterio que DashboardService.get_gasto_por_categoria()
+— no son CRUD de una tabla y no le corresponden a un repositorio. El resto
+pasa por PresupuestosRepository / CategoriasRepository.
+
+list_budgets() se mantiene para DashboardService.get_comparacion_presupuesto()
+(pantalla Estadísticas): los variables de categoría, como antes.
+
+Los mensajes de error y de PresupuestoResult ya vienen en MAYÚSCULAS: las
+pantallas los muestran tal cual.
 """
 
 import sqlite3
-from dataclasses import dataclass, field
-from typing import Optional
+from dataclasses import dataclass
+from datetime import date
+from typing import Any, Optional
 
 from db.database import DatabaseManager
-from repositories.presupuestos_repository import PresupuestosRepository
 from repositories.categorias_repository import CategoriasRepository
+from repositories.presupuestos_repository import PresupuestosRepository
+from utils.personas import normalizar_persona
+
+# Ítem especial COMPARTIDOS (ver docstring del módulo).
+CATEGORIA_COMPARTIDOS = "COMPARTIDOS"
+CONCEPTO_COMPARTIDOS = "COMPARTIDOS"
+
+# Moneda de un gasto compartido cuyo origen no está en esta base.
+MONEDA_SIN_ORIGEN_CODIGO = "ARS"
+
+# update(): campos que se pueden cambiar según el tipo.
+CAMPOS_EDITABLES = {
+    "fijo": ("concepto", "monto_estimado_minor", "monto_real_minor", "moneda_id", "es_recurrente"),
+    "variable": ("categoria_id", "monto_estimado_minor", "moneda_id", "es_recurrente"),
+}
+
 
 # =============================================================
 # EXCEPTIONS
@@ -31,24 +91,24 @@ class PresupuestoError(Exception):
     """Raised when a budget operation violates a business rule."""
 
 
+class PresupuestoNotFoundError(PresupuestoError):
+    """Raised when a referenced budget row does not exist."""
+
+
 class CategoryNotFoundError(PresupuestoError):
     """
-    Raised when a referenced category does not exist.
-
-    services/transaction_service.py ya tiene una CategoryNotFoundError
-    (TransactionError) para el mismo concepto — se evaluó reusarla, pero
-    importar una excepción de TransactionService acoplaría
-    PresupuestosService a la jerarquía de excepciones de otro dominio
-    (CLAUDE.md: "alta cohesión, bajo acoplamiento" — dos services de
-    dominios distintos no deberían depender el uno del otro para algo tan
-    básico como reportar un error). Se define acá una clase propia, con el
-    mismo nombre por consistencia conceptual, pero como excepción
-    independiente que cuelga de PresupuestoError.
+    Raised when a referenced category does not exist. Propia de este
+    dominio (no la de TransactionService): dos services de dominios
+    distintos no dependen el uno del otro para reportar un error.
     """
 
 
 class CurrencyNotFoundError(PresupuestoError):
     """Raised when a referenced currency does not exist."""
+
+
+class PresupuestoDuplicadoError(PresupuestoError):
+    """Raised when the month already has a variable budget for that category (or COMPARTIDOS)."""
 
 
 # =============================================================
@@ -57,11 +117,9 @@ class CurrencyNotFoundError(PresupuestoError):
 
 @dataclass
 class PresupuestoResult:
-    """Structured result returned by PresupuestosService operations."""
-    success:   bool
+    success: bool
     entity_id: Optional[str] = None
-    data:      dict          = field(default_factory=dict)
-    message:   str           = ""
+    message: str = ""
 
 
 # =============================================================
@@ -70,16 +128,12 @@ class PresupuestoResult:
 
 class PresupuestosService:
     """
-    Entry point for budget operations (set/get/list/copy).
-
     Usage:
-        db  = DatabaseManager()
         svc = PresupuestosService(db)
-
-        svc.set_budget(
-            categoria_id=8, mes=5, anio=2026, moneda_id=1,
-            monto_estimado_minor=50000, es_recurrente=True,
-        )
+        svc.create_fijo("Alquiler", 15000000, moneda_id=1, mes=10, anio=2026, es_recurrente=1)
+        svc.create_variable(categoria_super, 8000000, moneda_id=1, mes=10, anio=2026)
+        svc.create_variable(CATEGORIA_COMPARTIDOS, 7500000, moneda_id=1, mes=10, anio=2026)
+        svc.list_by_month(10, 2026, usuario_local="BRUNO")   # {"fijos": [...], "variables": [...]}
     """
 
     def __init__(self, db: DatabaseManager):
@@ -88,276 +142,380 @@ class PresupuestosService:
         self._categorias_repo = CategoriasRepository(db)
 
     # ----------------------------------------------------------
-    # INTERNAL HELPERS
+    # VALIDACIONES
     # ----------------------------------------------------------
 
-    def _get_category(self, category_id: str) -> sqlite3.Row:
-        """
-        Fetches a category by id. Raises CategoryNotFoundError if not
-        found. No MonedasRepository exists yet in this codebase (mismo
-        estado que en transaction_service.py/fees_service.py, que también
-        consultan `monedas` directo) — _get_currency() de acá hace lo
-        mismo.
-        """
-        row = self._categorias_repo.obtener_por_id(category_id)
-        if row is None:
-            raise CategoryNotFoundError(f"Category id={category_id} not found.")
-        return row
+    @staticmethod
+    def _concepto(concepto: Optional[str]) -> str:
+        limpio = " ".join((concepto or "").split()).upper()
+        if not limpio:
+            raise PresupuestoError("EL CONCEPTO NO PUEDE ESTAR VACÍO.")
+        return limpio
 
-    def _get_currency(self, currency_id: int) -> sqlite3.Row:
-        """Fetches a currency by id. Raises CurrencyNotFoundError if not found."""
-        row = self._db.fetchone("SELECT * FROM monedas WHERE id = ?;", (currency_id,))
-        if row is None:
-            raise CurrencyNotFoundError(f"Currency id={currency_id} not found.")
-        return row
+    @staticmethod
+    def _monto(monto_minor: Any) -> int:
+        if not isinstance(monto_minor, int) or isinstance(monto_minor, bool):
+            raise PresupuestoError(f"EL MONTO TIENE QUE SER UN ENTERO EN MINOR UNITS (RECIBIDO: {monto_minor!r}).")
+        if monto_minor < 0:
+            raise PresupuestoError("EL MONTO NO PUEDE SER NEGATIVO.")
+        return monto_minor
+
+    @staticmethod
+    def _periodo(mes: Any, anio: Any) -> tuple[int, int]:
+        for valor in (mes, anio):
+            if not isinstance(valor, int) or isinstance(valor, bool):
+                raise PresupuestoError(f"MES Y AÑO TIENEN QUE SER ENTEROS (RECIBIDO: {valor!r}).")
+        if not 1 <= mes <= 12:
+            raise PresupuestoError(f"EL MES TIENE QUE ESTAR ENTRE 1 Y 12 (RECIBIDO: {mes}).")
+        return mes, anio
+
+    def _moneda(self, moneda_id: Any) -> int:
+        if moneda_id not in {fila["id"] for fila in self._db.obtener_monedas()}:
+            raise CurrencyNotFoundError(f"LA MONEDA id={moneda_id} NO EXISTE.")
+        return moneda_id
+
+    @staticmethod
+    def _recurrente(valor: Any) -> int:
+        return 1 if valor else 0
+
+    def _destino_variable(self, categoria_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        """categoria_id pedido → (categoria_id, concepto) a guardar: el ítem COMPARTIDOS o una categoría existente."""
+        if categoria_id == CATEGORIA_COMPARTIDOS:
+            return None, CONCEPTO_COMPARTIDOS
+        if not categoria_id or self._categorias_repo.obtener_por_id(categoria_id) is None:
+            raise CategoryNotFoundError(f"LA CATEGORÍA {categoria_id} NO EXISTE.")
+        return categoria_id, None
+
+    def _sin_duplicado(
+        self, mes: int, anio: int, categoria_id: Optional[str], concepto: Optional[str], excepto_id: Optional[str] = None,
+    ) -> None:
+        """Un solo variable por categoría (o un solo COMPARTIDOS) en el mes."""
+        for fila in self._repo.listar_por_mes(mes, anio):
+            if (
+                fila["tipo"] == "variable" and fila["id"] != excepto_id
+                and fila["categoria_id"] == categoria_id and fila["concepto"] == concepto
+            ):
+                nombre = fila["subcategoria"] or fila["concepto"] or ""
+                raise PresupuestoDuplicadoError(f"'{nombre.upper()}' YA TIENE UN PRESUPUESTO EN {mes:02d}/{anio}.")
+
+    def _obtener(self, presupuesto_id: str) -> sqlite3.Row:
+        fila = self._repo.obtener_por_id(presupuesto_id)
+        if fila is None:
+            raise PresupuestoNotFoundError(f"EL PRESUPUESTO {presupuesto_id} NO EXISTE.")
+        return fila
+
+    @staticmethod
+    def _rango_mes(mes: int, anio: int) -> tuple[str, str]:
+        """[inicio, fin) del mes como 'YYYY-MM-DD' — mismo criterio que DashboardService._rango_mes()."""
+        siguiente = date(anio + 1, 1, 1) if mes == 12 else date(anio, mes + 1, 1)
+        return f"{anio:04d}-{mes:02d}-01", siguiente.isoformat()
 
     # ----------------------------------------------------------
-    # SET BUDGET
+    # CREATE
     # ----------------------------------------------------------
 
-    def set_budget(
+    def create_fijo(
         self,
-        categoria_id: str,
+        concepto: str,
+        monto_estimado_minor: int,
+        moneda_id: int,
         mes: int,
         anio: int,
-        moneda_id: int,
-        monto_estimado_minor: int,
-        es_recurrente: bool = False,
-        notas: Optional[str] = None,
-        formula_estimado: Optional[str] = None,
+        es_recurrente: int = 0,
+        monto_real_minor: int = 0,
     ) -> PresupuestoResult:
         """
-        Crea o actualiza el presupuesto de una categoría para un mes/año
-        (INSERT ... ON CONFLICT DO UPDATE sobre el UNIQUE(categoria_id,
-        mes, anio) — ver PresupuestosRepository.upsert()).
-
-        Args:
-            categoria_id:          Debe existir (CategoryNotFoundError si no).
-            mes:                   1-12 (ValueError si no).
-            anio:                  Año del presupuesto.
-            moneda_id:              Debe existir (CurrencyNotFoundError si no).
-            monto_estimado_minor:  Debe ser > 0 (ValueError si no) — el
-                                   RESULTADO ya calculado, sea de una
-                                   fórmula o de un número directo. Este
-                                   service no evalúa fórmulas (eso vive en
-                                   utils/calculadora_segura.py, capa de
-                                   ui/) — solo persiste el par
-                                   (resultado, fórmula que lo produjo).
-            es_recurrente:         Si este presupuesto se copia por default
-                                   en copy_period(solo_recurrentes=True).
-            notas:                 Nota libre opcional.
-            formula_estimado:      Texto de la fórmula que produjo
-                                   monto_estimado_minor (con el "="
-                                   incluido), o None si se cargó como
-                                   número directo. SIEMPRE se reescribe en
-                                   el camino UPDATE (pasthrough directo de
-                                   PresupuestosRepository.upsert(), sin
-                                   sentinel de "no tocar") — pasar None a
-                                   propósito sobre un presupuesto que antes
-                                   tenía fórmula la limpia a NULL, para no
-                                   dejar una fórmula vieja asociada a un
-                                   monto que ya no le corresponde.
-
-        Returns:
-            PresupuestoResult con los datos del presupuesto seteado.
+        Crea un presupuesto fijo (concepto libre, real cargado a mano).
 
         Raises:
-            ValueError si mes está fuera de rango o monto_estimado_minor <= 0.
-            CategoryNotFoundError si categoria_id no existe.
-            CurrencyNotFoundError si moneda_id no existe.
+            PresupuestoError si el concepto está vacío, algún monto no es un
+            entero >= 0 o el mes no está entre 1 y 12.
+            CurrencyNotFoundError si la moneda no existe.
         """
-        if not (1 <= mes <= 12):
-            raise ValueError(f"Month must be between 1 and 12. Received: {mes}.")
-        if monto_estimado_minor <= 0:
-            raise ValueError(
-                f"monto_estimado_minor must be positive. Received: {monto_estimado_minor}."
-            )
-
-        self._get_category(categoria_id)   # validate existence
-        self._get_currency(moneda_id)      # validate existence
-
-        filas_afectadas = self._repo.upsert(
-            categoria_id=categoria_id,
+        concepto = self._concepto(concepto)
+        mes, anio = self._periodo(mes, anio)
+        presupuesto_id = self._repo.crear(
+            tipo="fijo",
+            moneda_id=self._moneda(moneda_id),
             mes=mes,
             anio=anio,
-            moneda_id=moneda_id,
-            monto_estimado_minor=monto_estimado_minor,
-            es_recurrente=es_recurrente,
-            notas=notas,
-            formula_estimado=formula_estimado,
+            monto_estimado_minor=self._monto(monto_estimado_minor),
+            concepto=concepto,
+            es_recurrente=self._recurrente(es_recurrente),
+            monto_real_minor=self._monto(monto_real_minor),
         )
+        return PresupuestoResult(success=True, entity_id=presupuesto_id, message=f"FIJO '{concepto}' AGREGADO.")
 
-        return PresupuestoResult(
-            success=True,
-            data={
-                "categoria_id":          categoria_id,
-                "mes":                   mes,
-                "anio":                  anio,
-                "moneda_id":             moneda_id,
-                "monto_estimado_minor":  monto_estimado_minor,
-                "es_recurrente":         es_recurrente,
-                "formula_estimado":      formula_estimado,
-                "filas_afectadas":       filas_afectadas,
-            },
-            message=f"Budget set for category {categoria_id} on {mes:02d}/{anio}.",
+    def create_variable(
+        self,
+        categoria_id: str,
+        monto_estimado_minor: int,
+        moneda_id: int,
+        mes: int,
+        anio: int,
+        es_recurrente: int = 0,
+    ) -> PresupuestoResult:
+        """
+        Crea un presupuesto variable: de una categoría del Registro, o el
+        ítem COMPARTIDOS con categoria_id=CATEGORIA_COMPARTIDOS. Su real se
+        calcula (list_by_month()), no se carga.
+
+        Raises:
+            CategoryNotFoundError si la categoría no existe.
+            PresupuestoDuplicadoError si el mes ya tiene esa categoría (o COMPARTIDOS).
+            PresupuestoError si el monto no es un entero >= 0 o el mes no
+            está entre 1 y 12.
+            CurrencyNotFoundError si la moneda no existe.
+        """
+        mes, anio = self._periodo(mes, anio)
+        categoria, concepto = self._destino_variable(categoria_id)
+        self._sin_duplicado(mes, anio, categoria, concepto)
+        presupuesto_id = self._repo.crear(
+            tipo="variable",
+            moneda_id=self._moneda(moneda_id),
+            mes=mes,
+            anio=anio,
+            monto_estimado_minor=self._monto(monto_estimado_minor),
+            concepto=concepto,
+            categoria_id=categoria,
+            es_recurrente=self._recurrente(es_recurrente),
         )
+        return PresupuestoResult(success=True, entity_id=presupuesto_id, message="PRESUPUESTO VARIABLE AGREGADO.")
 
     # ----------------------------------------------------------
     # READ
     # ----------------------------------------------------------
 
-    def get_budget(self, categoria_id: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
-        """Fetches a single budget by its natural key (categoria_id, mes, anio)."""
-        return self._repo.obtener_por_periodo(categoria_id, mes, anio)
+    def list_by_month(self, mes: int, anio: int, usuario_local: Optional[str] = None) -> dict:
+        """
+        Los presupuestos del mes, separados: {"fijos": [...], "variables":
+        [...]}, cada uno en orden de alta. Cada fila es un dict con sus
+        columnas, la moneda (currency_code, currency_symbol, decimales) y:
+            nombre          concepto (fijo / COMPARTIDOS) o la subcategoría.
+            es_compartidos  True solo para el ítem COMPARTIDOS.
+            real_minor      fijo: monto_real_minor; variable: calculado
+                            (get_real_variable() / _compartidos()); None
+                            en COMPARTIDOS si no hay usuario_local.
 
-    def list_budgets(self, mes: int, anio: int) -> list[sqlite3.Row]:
+        Raises:
+            PresupuestoError si el mes no está entre 1 y 12.
         """
-        Lists all budgets for a month/year, enriched with
-        subcategoria/categoria_principal/moneda_codigo (JOIN ya resuelto
-        en PresupuestosRepository.listar_por_periodo()).
-        """
-        return self._repo.listar_por_periodo(mes, anio)
+        mes, anio = self._periodo(mes, anio)
+        listado: dict[str, list[dict]] = {"fijos": [], "variables": []}
+        for fila in self._repo.listar_por_mes(mes, anio):
+            p = dict(fila)  # CLAUDE.md §11
+            if p["tipo"] == "fijo":
+                p.update(nombre=p["concepto"] or "", es_compartidos=False, real_minor=p["monto_real_minor"])
+                listado["fijos"].append(p)
+                continue
+            es_compartidos = p["categoria_id"] is None
+            if es_compartidos:
+                real = (
+                    self.get_real_variable_compartidos(p["moneda_id"], mes, anio, usuario_local)
+                    if usuario_local else None
+                )
+            else:
+                real = self.get_real_variable(p["categoria_id"], p["moneda_id"], mes, anio)
+            p.update(
+                nombre=(p["concepto"] if es_compartidos else p["subcategoria"]) or "",
+                es_compartidos=es_compartidos,
+                real_minor=real,
+            )
+            listado["variables"].append(p)
+        return listado
 
-    def list_budgeted_category_ids(self) -> list[int]:
+    def list_budgets(self, mes: int, anio: int) -> list[dict]:
         """
-        IDs de categorías con al menos un presupuesto cargado alguna vez,
-        en cualquier período — pasthrough directo de
-        PresupuestosRepository.listar_categoria_ids_con_presupuesto(). Sin
-        lógica de negocio propia: filtrar SOLO las de tipo='egreso' o
-        combinar con las agregadas a mano en la sesión es responsabilidad
-        de quien consume esto (ui/screens/presupuestos.py).
+        Los variables de categoría del mes (sin COMPARTIDOS ni fijos), con
+        subcategoria/categoria_principal, ordenados por categoria_principal
+        y subcategoria — lo que usa DashboardService.get_comparacion_presupuesto().
         """
-        return self._repo.listar_categoria_ids_con_presupuesto()
+        mes, anio = self._periodo(mes, anio)
+        variables = [
+            dict(fila) for fila in self._repo.listar_por_mes(mes, anio)
+            if fila["tipo"] == "variable" and fila["categoria_id"] is not None
+        ]
+        return sorted(variables, key=lambda p: (p["categoria_principal"] or "", p["subcategoria"] or ""))
 
     # ----------------------------------------------------------
-    # UPDATE EXECUTED
+    # REAL CALCULADO DE LOS VARIABLES (ver docstring del módulo)
     # ----------------------------------------------------------
 
-    def update_executed(
-        self,
-        categoria_id: str,
-        mes: int,
-        anio: int,
-        monto_ejecutado_minor: int,
-    ) -> PresupuestoResult:
+    def get_real_variable(self, categoria_id: str, moneda_id: int, mes: int, anio: int) -> int:
         """
-        Escribe monto_ejecutado_minor YA CALCULADO por el caller.
+        Egresos del Registro de ese mes en esa categoría y moneda (sin las
+        transacciones eliminadas). Una transacción compartida cuenta solo
+        la parte del usuario: su monto menos monto_adeudado_minor.
 
-        NO recalcula sumando transacciones reales de esa categoría/mes/año
-        (CLAUDE.md sección 1: "monto_ejecutado_minor se actualiza
-        automáticamente sumando transacciones de esa categoría/mes — nunca
-        se carga a mano en dos lugares"). Esa suma automática es una fase
-        futura, cuando este service se conecte con TransaccionesRepository
-        para calcular el ejecutado real — no implementada acá a propósito,
-        para no anticiparse a un diseño que todavía no se definió (filtros
-        de fecha exactos dentro del mes, qué transacciones cuentan, etc.).
-        Por ahora este método es un passthrough simple hacia
-        PresupuestosRepository.actualizar_ejecutado().
+        Raises:
+            PresupuestoError si el mes no está entre 1 y 12.
         """
-        self._repo.actualizar_ejecutado(categoria_id, mes, anio, monto_ejecutado_minor)
-        return PresupuestoResult(
-            success=True,
-            data={
-                "categoria_id":            categoria_id,
-                "mes":                     mes,
-                "anio":                    anio,
-                "monto_ejecutado_minor":   monto_ejecutado_minor,
-            },
-            message=f"Executed amount updated for category {categoria_id} on {mes:02d}/{anio}.",
+        mes, anio = self._periodo(mes, anio)
+        inicio, fin = self._rango_mes(mes, anio)
+        fila = self._db.fetchone(
+            """
+            SELECT COALESCE(SUM(t.monto_minor - COALESCE(g.monto_adeudado_minor, 0)), 0) AS real_minor
+            FROM transacciones t
+            LEFT JOIN gastos_compartidos g
+                   ON g.origen_tipo = 'transaccion' AND g.origen_id = t.id
+            WHERE t.categoria_id = ?
+              AND t.moneda_id = ?
+              AND t.tipo_movimiento = 'egreso'
+              AND t.fecha >= ?
+              AND t.fecha < ?
+              AND t.deleted_at IS NULL;
+            """,
+            (categoria_id, moneda_id, inicio, fin),
+        )
+        return fila["real_minor"]
+
+    def get_real_variable_compartidos(
+        self, moneda_id: int, mes: int, anio: int, usuario_local: Optional[str] = None,
+    ) -> int:
+        """
+        Lo que el usuario debe por los gastos compartidos del mes (por su
+        fecha) que pagó el otro miembro: suma de monto_adeudado_minor de los
+        gastos con pagador ≠ usuario_local, en esa moneda (la del origen;
+        MONEDA_SIN_ORIGEN_CODIGO si el origen no está en esta base).
+
+        Raises:
+            PresupuestoError si falta usuario_local (sin él no se sabe qué
+            pagó cada uno) o el mes no está entre 1 y 12.
+        """
+        yo = normalizar_persona(usuario_local)
+        if not yo:
+            raise PresupuestoError("FALTA EL USUARIO LOCAL: NO SE PUEDE SABER QUÉ GASTOS COMPARTIDOS PAGÓ EL OTRO.")
+        mes, anio = self._periodo(mes, anio)
+        inicio, fin = self._rango_mes(mes, anio)
+        sin_origen = self._db.obtener_moneda_por_codigo(MONEDA_SIN_ORIGEN_CODIGO)
+        filas = self._db.fetchall(
+            """
+            SELECT g.pagador, g.monto_adeudado_minor,
+                   COALESCE(t.moneda_id, cc.moneda_id, ccq.moneda_id, ?) AS moneda_id
+            FROM gastos_compartidos g
+            LEFT JOIN transacciones t    ON g.origen_tipo = 'transaccion'   AND t.id = g.origen_id
+            LEFT JOIN compras_cuotas cc  ON g.origen_tipo = 'compra_cuotas' AND cc.id = g.origen_id
+            LEFT JOIN cuotas_credito q   ON g.origen_tipo = 'cuota_credito' AND q.id = g.origen_id
+            LEFT JOIN compras_cuotas ccq ON ccq.id = q.compra_id
+            WHERE g.fecha >= ? AND g.fecha < ?;
+            """,
+            (sin_origen["id"] if sin_origen is not None else None, inicio, fin),
+        )
+        return sum(
+            fila["monto_adeudado_minor"] for fila in filas
+            if fila["moneda_id"] == moneda_id and normalizar_persona(fila["pagador"]) != yo
         )
 
     # ----------------------------------------------------------
-    # COPY PERIOD
+    # TOTALES
     # ----------------------------------------------------------
 
-    def copy_period(
-        self,
-        mes_origen: int,
-        anio_origen: int,
-        mes_destino: int,
-        anio_destino: int,
-        solo_recurrentes: bool = True,
-    ) -> PresupuestoResult:
+    def get_totales(self, mes: int, anio: int, usuario_local: Optional[str] = None) -> dict:
         """
-        Copia los presupuestos de un período a otro.
+        Totales del mes por moneda (ver totales_de()).
 
-        DECISIÓN DE DISEÑO — el filtro "solo recurrentes" vive ACÁ, no en
-        el repositorio: PresupuestosRepository.copiar_periodo() copia TODO
-        el período tal cual, sin conocer el concepto de "recurrente"; qué
-        significa "copiar solo lo recurrente" es una regla de negocio
-        (CLAUDE.md sección 3: "Sin lógica de negocio adentro" para
-        repositorios). Se optó por NO agregar un método nuevo al
-        repositorio (ej. copiar_periodo_recurrentes()) — en vez de eso,
-        este método lista el período origen con listar_por_periodo(),
-        filtra en Python por es_recurrente == 1, y llama a
-        PresupuestosRepository.upsert() una fila a la vez para cada
-        presupuesto recurrente, dentro de una única transacción
-        (self._db.transaction()) para que la copia sea atómica igual que
-        copiar_periodo() del repositorio (que comitea una sola vez al
-        final, no fila por fila).
+        Raises:
+            PresupuestoError si el mes no está entre 1 y 12.
+        """
+        return self.totales_de(self.list_by_month(mes, anio, usuario_local))
 
-        Detalle importante para no romper la semántica de "copiar" en el
-        camino filtrado: copiar_periodo() del repositorio usa INSERT OR
-        IGNORE (nunca sobreescribe un presupuesto que ya existe en el
-        destino). upsert() en cambio SIEMPRE sobreescribe en conflicto. Para
-        que el camino solo_recurrentes=True tenga el mismo comportamiento
-        de "no pisar lo que ya existe" que el camino sin filtro, este
-        método chequea obtener_por_periodo() antes de cada upsert() y
-        omite la fila si el destino ya tiene un presupuesto para esa
-        categoría — nunca llama a upsert() sobre una fila que ya existe.
+    @staticmethod
+    def totales_de(listado: dict) -> dict:
+        """
+        Totales por moneda de un resultado de list_by_month() ya pedido (así
+        quien ya tiene el listado no recalcula los reales): {currency_code:
+        {moneda_id, currency_symbol, decimales, fijos_estimado, fijos_real,
+        variables_estimado, variables_real}}. Un real None (COMPARTIDOS sin
+        usuario_local) no suma.
+        """
+        totales: dict[str, dict] = {}
+        for seccion, filas in (("fijos", listado["fijos"]), ("variables", listado["variables"])):
+            for p in filas:
+                total = totales.setdefault(p["currency_code"], {
+                    "moneda_id": p["moneda_id"],
+                    "currency_symbol": p["currency_symbol"] or "",
+                    "decimales": p["decimales"],
+                    "fijos_estimado": 0,
+                    "fijos_real": 0,
+                    "variables_estimado": 0,
+                    "variables_real": 0,
+                })
+                total[f"{seccion}_estimado"] += p["monto_estimado_minor"]
+                total[f"{seccion}_real"] += p["real_minor"] or 0
+        return totales
 
-        Args:
-            mes_origen/anio_origen:   Período de origen.
-            mes_destino/anio_destino: Período de destino.
-            solo_recurrentes:         Si True (default), solo copia los
-                                      presupuestos marcados es_recurrente=1.
-                                      Si False, copia todo el período tal
-                                      cual vía
-                                      PresupuestosRepository.copiar_periodo().
+    # ----------------------------------------------------------
+    # UPDATE / DELETE
+    # ----------------------------------------------------------
+
+    def update(self, id: str, **kwargs: Any) -> PresupuestoResult:
+        """
+        Update parcial: solo los campos pasados, que dependen del tipo
+        (CAMPOS_EDITABLES): un fijo edita concepto y real; un variable,
+        su categoría (o CATEGORIA_COMPARTIDOS) — su real no se edita. Mismas
+        validaciones que create_fijo() / create_variable().
 
         Returns:
-            PresupuestoResult con la cantidad de presupuestos copiados.
+            PresupuestoResult con success=False si no se pasó ningún campo.
+
+        Raises:
+            PresupuestoNotFoundError si la fila no existe.
+            PresupuestoError (o una subclase) si un campo no es editable en
+            ese tipo o no es válido.
         """
-        if not solo_recurrentes:
-            copiados = self._repo.copiar_periodo(mes_origen, anio_origen, mes_destino, anio_destino)
-            return PresupuestoResult(
-                success=True,
-                data={"copiados": copiados, "solo_recurrentes": False},
-                message=(
-                    f"{copiados} budget(s) copied from {mes_origen:02d}/{anio_origen} "
-                    f"to {mes_destino:02d}/{anio_destino}."
-                ),
-            )
+        fila = self._obtener(id)
+        tipo = fila["tipo"]
+        desconocidos = set(kwargs) - set(CAMPOS_EDITABLES[tipo])
+        if desconocidos:
+            raise PresupuestoError(f"CAMPOS NO EDITABLES EN UN PRESUPUESTO {tipo.upper()}: {', '.join(sorted(desconocidos))}.")
+        if not kwargs:
+            return PresupuestoResult(success=False, entity_id=id, message="NO HAY CAMPOS PARA ACTUALIZAR.")
 
-        presupuestos_origen = self._repo.listar_por_periodo(mes_origen, anio_origen)
-        recurrentes = [p for p in presupuestos_origen if p["es_recurrente"] == 1]
-
-        conn = self._db.conn
-        copiados = 0
-        with self._db.transaction():
-            for presupuesto in recurrentes:
-                ya_existe = self._repo.obtener_por_periodo(
-                    presupuesto["categoria_id"], mes_destino, anio_destino
-                )
-                if ya_existe is not None:
-                    continue
-                self._repo.upsert(
-                    categoria_id=presupuesto["categoria_id"],
-                    mes=mes_destino,
-                    anio=anio_destino,
-                    moneda_id=presupuesto["moneda_id"],
-                    monto_estimado_minor=presupuesto["monto_estimado_minor"],
-                    es_recurrente=True,
-                    notas=presupuesto["notas"],
-                    conn=conn,
-                )
-                copiados += 1
-
+        validadores = {
+            "concepto": self._concepto,
+            "monto_estimado_minor": self._monto,
+            "monto_real_minor": self._monto,
+            "moneda_id": self._moneda,
+            "es_recurrente": self._recurrente,
+        }
+        campos = {campo: validadores[campo](valor) for campo, valor in kwargs.items() if campo != "categoria_id"}
+        if "categoria_id" in kwargs:
+            categoria, concepto = self._destino_variable(kwargs["categoria_id"])
+            self._sin_duplicado(fila["mes"], fila["anio"], categoria, concepto, excepto_id=id)
+            campos.update(categoria_id=categoria, concepto=concepto)
+        actualizado = self._repo.actualizar(id, **campos)
         return PresupuestoResult(
-            success=True,
-            data={"copiados": copiados, "solo_recurrentes": True},
-            message=(
-                f"{copiados} recurring budget(s) copied from {mes_origen:02d}/{anio_origen} "
-                f"to {mes_destino:02d}/{anio_destino}."
-            ),
+            success=actualizado, entity_id=id,
+            message="PRESUPUESTO ACTUALIZADO." if actualizado else "EL PRESUPUESTO NO CAMBIÓ.",
         )
+
+    def delete(self, id: str) -> PresupuestoResult:
+        """
+        DELETE físico (sin dependencias con estado propio, CLAUDE.md §4).
+
+        Raises:
+            PresupuestoNotFoundError si la fila no existe.
+        """
+        self._obtener(id)
+        self._repo.eliminar(id)
+        return PresupuestoResult(success=True, entity_id=id, message="PRESUPUESTO ELIMINADO.")
+
+    # ----------------------------------------------------------
+    # COPIAR RECURRENTES
+    # ----------------------------------------------------------
+
+    def copy_recurrentes(self, mes_origen: int, anio_origen: int, mes_destino: int, anio_destino: int) -> int:
+        """
+        Copia los presupuestos recurrentes (fijos y variables) del mes
+        origen al destino, con real = 0 y sin duplicar lo que el destino ya
+        tiene. Devuelve cuántos copió.
+
+        Raises:
+            PresupuestoError si algún mes no está entre 1 y 12, o si origen
+            y destino son el mismo mes.
+        """
+        mes_origen, anio_origen = self._periodo(mes_origen, anio_origen)
+        mes_destino, anio_destino = self._periodo(mes_destino, anio_destino)
+        if (mes_origen, anio_origen) == (mes_destino, anio_destino):
+            raise PresupuestoError("EL MES ORIGEN Y EL DESTINO SON EL MISMO.")
+        return self._repo.copiar_recurrentes(mes_origen, anio_origen, mes_destino, anio_destino)

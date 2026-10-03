@@ -16,6 +16,11 @@ guardar los tokens nuevos.
 Nombre de display: prefs, clave "display_name". Local de cada
 computadora, no sube a Supabase (pedido explícito).
 
+Usuario local de hogares compartidos: hardcodeado por UUID de Supabase en
+USUARIOS_LOCALES. Cada login exitoso lo escribe en prefs, clave
+"usuario_local" (la misma que lee ui/components/usuario_local.py); un UUID
+que no está en el mapa escribe "".
+
 Los mensajes de AuthResult ya vienen en MAYÚSCULAS: la pantalla de login
 los muestra tal cual.
 """
@@ -30,7 +35,13 @@ from ui.utils.prefs import escribir_pref, leer_pref
 
 PREF_SESION = "supabase_session"
 PREF_NOMBRE = "display_name"
+PREF_USUARIO_LOCAL = "usuario_local"
 EVENTOS_SESION_NUEVA = ("SIGNED_IN", "TOKEN_REFRESHED")
+
+USUARIOS_LOCALES = {
+    "f5ca8a42-a039-4a46-998e-2b01dbb28e9c": "BRUNO",
+    "3cb96dd5-e56b-47b6-803f-63410d9c3bdd": "NOELIA",
+}
 
 
 @dataclass
@@ -104,6 +115,7 @@ class AuthService:
         if respuesta.session is None:
             return AuthResult(success=False, mensaje="NO SE PUDO INICIAR SESIÓN.")
         self._guardar(respuesta.session)
+        escribir_pref(PREF_USUARIO_LOCAL, USUARIOS_LOCALES.get(respuesta.session.user.id, ""))
         return AuthResult(
             success=True, user_id=respuesta.session.user.id, email=respuesta.session.user.email,
             mensaje="SESIÓN INICIADA.",
@@ -122,6 +134,11 @@ class AuthService:
 
     def get_email(self) -> Optional[str]:
         return self._sesion.get("email") if self._sesion else None
+
+    def get_usuario_local(self) -> Optional[str]:
+        """El usuario local hardcodeado para el UUID de la sesión (USUARIOS_LOCALES), o None."""
+        user_id = self.get_user_id()
+        return USUARIOS_LOCALES.get(user_id)
 
     def is_logged_in(self) -> bool:
         """Hay una sesión guardada (no toca la red: ver docstring del módulo)."""
