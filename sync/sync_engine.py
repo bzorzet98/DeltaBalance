@@ -38,10 +38,14 @@ la subida hasta tocar Supabase a mano.
   fila compartida sin hogar encontrable no se sube (cuenta como error).
 - Se BAJA lo PROPIO de deltabalance_filas (usuario_id = el de la sesión) —
   sirve para recuperar la base en otra computadora — y, de
-  deltabalance_compartidos, las filas de los hogares que YA están en esta
-  base, incluidas las del otro miembro del hogar. Un hogar que todavía no
-  está acá no se baja: restaurar en una computadora nueva no trae las
-  compartidas. Una fila del otro miembro que apunta a algo que solo existe
+  deltabalance_compartidos, todo lo que RLS deja ver: las filas de los
+  hogares de los que el usuario es miembro, incluidas las del otro miembro.
+  La app NO filtra por hogar (antes pedía solo los hogares que ya estaban
+  en esta base, y una base sin hogar — computadora nueva, app empaquetada —
+  no bajaba nunca el suyo): depende de que la política SELECT de
+  deltabalance_compartidos filtre por membresía. Sin ningún hogar acá, las
+  compartidas se bajan desde el principio y no desde la marca
+  (_bajar_tablas()). Una fila del otro miembro que apunta a algo que solo existe
   en su base (ej. gasto_compartido_pagos.transaccion_id) falla por FK y se
   cuenta como error.
 - Restaurar sobre una base nueva: el seed ya trae categorías y "Caja
@@ -540,9 +544,17 @@ class SyncEngine:
     ) -> bool:
         """Baja los cambios de esas tablas, en ese orden. False si alguna compartida fue rechazada (quedó sin bajar)."""
         completa = True
+        # Sin ningún hogar acá, las compartidas se bajan desde el principio:
+        # la marca pudo avanzar con las privadas mientras las compartidas no
+        # se pedían (antes, una base sin hogar no las consultaba), y desde la
+        # marca se saltearía lo subido antes desde otra computadora. Se decide
+        # una vez, antes de bajar `hogares`: si no, las que siguen
+        # (gastos_compartidos…) ya verían el hogar recién bajado.
+        desde_compartidas = desde if self._mis_hogares(repo) else None
         for tabla in tablas:
+            desde_tabla = desde_compartidas if tabla in TABLAS_COMPARTIDAS else desde
             try:
-                c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, desde, c, primera=primera)
+                c.bajadas += self._bajar_cambios(repo, tabla, usuario_id, desde_tabla, c, primera=primera)
             except APIError as err:
                 if tabla not in TABLAS_COMPARTIDAS:
                     raise
@@ -696,17 +708,16 @@ class SyncEngine:
     def _mis_hogares(repo: SyncRepository) -> list[str]:
         return [hogar["id"] for hogar in repo.todas("hogares")]
 
-    def _filas_remotas(self, repo: SyncRepository, tabla: str, usuario_id: str, desde: Optional[str]) -> Iterator[dict]:
-        """Las propias (privadas) o las de mis hogares (compartidas) de esa tabla, con updated_at posterior a `desde`."""
-        hogares = self._mis_hogares(repo) if tabla in TABLAS_COMPARTIDAS else []
-        if tabla in TABLAS_COMPARTIDAS and not hogares:
-            return
+    def _filas_remotas(self, tabla: str, usuario_id: str, desde: Optional[str]) -> Iterator[dict]:
+        """
+        Las propias (privadas) o las de mis hogares (compartidas: sin filtro
+        de hogar, las que RLS deja ver — ver docstring del módulo) de esa
+        tabla, con updated_at posterior a `desde`.
+        """
         inicio = 0
         while True:
             consulta = self._cliente().table(_tabla_remota(tabla)).select("*").eq("tabla", tabla)
-            if tabla in TABLAS_COMPARTIDAS:
-                consulta = consulta.in_("hogar_uuid", hogares)
-            else:
+            if tabla not in TABLAS_COMPARTIDAS:
                 consulta = consulta.eq("usuario_id", usuario_id)
             if desde:
                 consulta = consulta.gt("updated_at", desde)
@@ -728,7 +739,7 @@ class SyncEngine:
         el final (_aplicar_borrados()). Devuelve cuántas filas cambió.
         """
         bajadas = insertadas = 0
-        remotas = list(self._filas_remotas(repo, tabla, usuario_id, desde))
+        remotas = list(self._filas_remotas(tabla, usuario_id, desde))
         for lote in _lotes(remotas, LOTE):
             with repo.escritura_sync() as conn:
                 for remota in lote:
@@ -743,10 +754,7 @@ class SyncEngine:
                     if self._debe_aplicarse(repo, tabla, remota, c, primera) and self._aplicar(repo, conn, tabla, remota, c):
                         bajadas += 1
                         insertadas += 0 if existia else 1
-        if tabla in TABLAS_COMPARTIDAS and not remotas and not self._mis_hogares(repo):
-            print(f"{PREFIJO_LOG} {tabla}: no se consulta Supabase (esta base no tiene ningún hogar)")
-            return bajadas
-        borradas = sum(1 for t, _ in c.borrados if t == tabla)
+        borradas =sum(1 for t, _ in c.borrados if t == tabla)
         print(
             f"{PREFIJO_LOG} {tabla}: {len(remotas)} fila(s) en Supabase → {insertadas} insertada(s), "
             f"{bajadas - insertadas} actualizada(s)"
