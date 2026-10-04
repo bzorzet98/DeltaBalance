@@ -29,6 +29,13 @@ esta migración:
   (StatementAlreadyPaidError) — dos excepciones distintas para dos estados
   distintos, probadas por separado.
 
+Cargos extra (docs/DATA_MODEL_DECISIONS.md sección 28): ahora son filas de
+compras_cuotas con es_cargo_extra = 1 cuya cuota ya está en el resumen —
+las mismas reglas de arriba siguen valiendo, y close_statement() los suma
+como impuestos, no como consumos. El tipo 'otro' ya no existe (no tiene
+categoría especial): donde este script lo usaba, ahora usa 'recargo'. El
+detalle del modelo nuevo está en verify_cargos_extra_sync.py.
+
 fees_by_month()/fees_projection() NO se prueban acá con el mismo detalle
 porque no migraron (siguen siendo reportes agregados directos, ver nota en
 services/fees_service.py) — sí se confirma que siguen funcionando sin
@@ -237,7 +244,7 @@ def main() -> None:
 
     svc.add_extra_charge(stmt_id, concept="Impuesto sellos", charge_type="impuesto", amount_minor=10000)
     svc.add_extra_charge(stmt_id, concept="Ajuste a favor", charge_type="ajuste", amount_minor=-5000)
-    res_cargo_a_eliminar = svc.add_extra_charge(stmt_id, concept="Cargo cargado por error", charge_type="otro", amount_minor=999)
+    res_cargo_a_eliminar = svc.add_extra_charge(stmt_id, concept="Cargo cargado por error", charge_type="recargo", amount_minor=999)
 
     cargos_listados = svc.list_extra_charges(stmt_id)
     caso("list_extra_charges() devuelve los 4 cargos agregados", 4, len(cargos_listados))
@@ -316,7 +323,7 @@ def main() -> None:
     caso_excepcion(
         "add_extra_charge() sobre un resumen 'cerrado' lanza StatementAlreadyClosedError (NO StatementAlreadyPaidError)",
         StatementAlreadyClosedError,
-        lambda: svc.add_extra_charge(stmt_id, concept="Tarde", charge_type="otro", amount_minor=1),
+        lambda: svc.add_extra_charge(stmt_id, concept="Tarde", charge_type="recargo", amount_minor=1),
     )
     caso_excepcion(
         "remove_extra_charge() sobre un resumen 'cerrado' lanza StatementAlreadyClosedError (NO StatementAlreadyPaidError)",
@@ -350,7 +357,7 @@ def main() -> None:
     caso_excepcion(
         "add_extra_charge() sobre un resumen 'pagado' lanza StatementAlreadyPaidError (NO StatementAlreadyClosedError)",
         StatementAlreadyPaidError,
-        lambda: svc.add_extra_charge(stmt_id, concept="Tarde", charge_type="otro", amount_minor=1),
+        lambda: svc.add_extra_charge(stmt_id, concept="Tarde", charge_type="recargo", amount_minor=1),
     )
     caso_excepcion(
         "remove_extra_charge() sobre un resumen 'pagado' lanza StatementAlreadyPaidError (NO StatementAlreadyClosedError)",

@@ -422,6 +422,9 @@ def build(
             )
             sin_borde(campo_monto.control)
             campo_monto.control.text_align = ft.TextAlign.RIGHT
+            # Borrador en cada tecla, no solo al confirmar: si la pantalla se
+            # reconstruye antes del blur, el monto tipeado no se pierde.
+            campo_monto.control.on_change = _on_cambio_borrador
             if borrador["monto"]:
                 campo_monto.control.value = borrador["monto"]
             selector_moneda = tabla.selector_alta(

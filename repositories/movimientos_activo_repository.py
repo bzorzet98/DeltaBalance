@@ -10,12 +10,16 @@ Confirmado por grep en db/database.py (Fase 2, bloque AHORROS, paso 1): no
 existe ningún método relacionado — no hay comportamiento previo que
 replicar.
 
-`movimientos_activo` es un registro de movimiento append-only (mismo rol
-que `deuda_pagos`): no tiene `updated_en`, no tiene `deleted_at`, y no hay
-ningún método de update en este repositorio — un movimiento no se edita,
-si está mal cargado se corrige con un movimiento nuevo (o se borra si
-todavía no generó dependencias, decisión de un futuro service, no de
-este repositorio).
+`movimientos_activo` es un registro de movimientos (mismo rol que la vieja
+`deuda_pagos`): no tiene `updated_en` ni `deleted_at`. Hasta el rediseño
+de Ahorros e Inversiones no tenía ningún update; ahora actualizar() existe
+(pedido explícito) como acceso a datos, pero ningún service lo usa
+todavía: si un movimiento puede editarse o no (sus asignaciones y su
+transacción vinculada dependen de él) lo decide SavingsService.
+
+`tipo` acepta 'compra', 'venta', 'rendimiento' y 'aporte' (CHECK ampliado
+en db/schema_migrations.py); comision_minor es la comisión de ese
+movimiento (columna de la misma migración).
 
 crear() acepta `conn` desde el arranque: un movimiento de tipo 'compra'
 casi siempre se registra junto con su(s) asignacion(es) inicial(es) a un
@@ -32,7 +36,7 @@ se llena es responsabilidad de SavingsService, no de este repositorio.
 """
 
 import sqlite3
-from typing import Optional
+from typing import Any, Optional
 
 from db.database import DatabaseManager
 from repositories._ids import nuevo_id
@@ -42,6 +46,13 @@ from db.query_builder import QueryBuilder
 # (VENTANA_DUPLICADO_SEGUNDOS / TransaccionDuplicadaError) — chequeo de
 # seguridad contra doble-click/doble-Enter, no una regla de negocio.
 VENTANA_DUPLICADO_SEGUNDOS = 5
+
+# actualizar(): columnas que se pueden escribir (las claves de **kwargs van
+# al SQL, así que nunca se acepta una que no esté acá).
+COLUMNAS_EDITABLES = (
+    "tipo", "fecha", "cantidad", "precio_unitario_minor", "monto_total_minor",
+    "dolar_oficial_momento_minor", "comision_minor", "notas", "transaccion_id",
+)
 
 
 class MovimientoDuplicadoError(Exception):
@@ -91,10 +102,12 @@ class MovimientosActivoRepository:
         notas: Optional[str] = None,
         transaccion_id: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
+        comision_minor: int = 0,
     ) -> str:
         """
-        Inserta un movimiento de activo (compra/venta/rendimiento) y
-        devuelve su id (UUID, repositories/_ids.py).
+        Inserta un movimiento de activo (compra/venta/rendimiento/aporte) y
+        devuelve su id (UUID, repositories/_ids.py). comision_minor: la
+        comisión de este movimiento (0 si no hubo).
 
         Antes del INSERT, rechaza la operación con MovimientoDuplicadoError
         si ya existe un movimiento con el mismo activo_id/tipo/fecha/
@@ -124,13 +137,13 @@ class MovimientosActivoRepository:
             INSERT INTO movimientos_activo
                 (id, activo_id, tipo, fecha, cantidad, precio_unitario_minor,
                  monto_total_minor, dolar_oficial_momento_minor, notas,
-                 transaccion_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                 transaccion_id, comision_minor)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             movimiento_id, activo_id, tipo, fecha, cantidad, precio_unitario_minor,
             monto_total_minor, dolar_oficial_momento_minor, notas,
-            transaccion_id,
+            transaccion_id, comision_minor,
         )
         if conn is not None:
             conn.execute(sql, params)
@@ -165,6 +178,38 @@ class MovimientosActivoRepository:
             .order("fecha")
             .ejecutar(self._db.conn)
         )
+
+    def transacciones_vinculadas(self) -> set[str]:
+        """Ids de las transacciones del Registro que ya están vinculadas a algún movimiento."""
+        filas = self._db.fetchall("SELECT DISTINCT transaccion_id FROM movimientos_activo WHERE transaccion_id IS NOT NULL;")
+        return {fila["transaccion_id"] for fila in filas}
+
+    # ----------------------------------------------------------
+    # UPDATE
+    # ----------------------------------------------------------
+
+    def actualizar(self, movimiento_id: str, conn: Optional[sqlite3.Connection] = None, **kwargs: Any) -> bool:
+        """
+        Update parcial: solo las columnas pasadas (COLUMNAS_EDITABLES; None
+        escribe NULL). Devuelve True si actualizó una fila. Si se pasa
+        `conn`, participa de la transacción externa (sin commit).
+
+        Raises:
+            ValueError si alguna clave no es una columna editable.
+        """
+        desconocidas = set(kwargs) - set(COLUMNAS_EDITABLES)
+        if desconocidas:
+            raise ValueError(f"Columnas no editables en movimientos_activo: {', '.join(sorted(desconocidas))}.")
+        if not kwargs:
+            return False
+        columnas = [c for c in COLUMNAS_EDITABLES if c in kwargs]
+        sql = f"UPDATE movimientos_activo SET {', '.join(f'{c} = ?' for c in columnas)} WHERE id = ?;"
+        params = (*(kwargs[c] for c in columnas), movimiento_id)
+        if conn is not None:
+            return conn.execute(sql, params).rowcount > 0
+        cursor = self._db.conn.execute(sql, params)
+        self._db.conn.commit()
+        return cursor.rowcount > 0
 
     # ----------------------------------------------------------
     # DELETE

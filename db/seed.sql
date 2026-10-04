@@ -104,6 +104,13 @@ INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUE
     ('TARJETA DE CRÉDITO', 'Ajuste/Reintegro tarjeta',     'egreso');
 
 -- =============================================================
+-- BROKERS: no van acá. Los siembra db/schema_migrations.py
+-- (BROKERS_INICIALES, INSERT OR IGNORE por nombre) en CADA inicializar():
+-- este archivo solo corre en bases nuevas, y así también los reciben las
+-- bases que ya existían.
+-- =============================================================
+
+-- =============================================================
 -- CUENTA INICIAL: Efectivo ARS
 -- La única cuenta que existe antes de configurar el sistema.
 -- El usuario agrega sus cuentas bancarias desde la UI.

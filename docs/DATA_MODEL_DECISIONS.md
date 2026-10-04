@@ -303,6 +303,11 @@ forma habitual, la resolución correcta sería agregar `moneda_id` a
 `db/schema_migrations.py` — no antes, siguiendo el mismo criterio de "no anticipar
 schema para un caso que todavía no pasó" ya aplicado en la sección 14.
 
+> **Superado por la sección 28:** el caso sí pasa (tarjetas con cuotas en ARS y USD
+> el mismo mes), y se resolvió con la moneda en cada cargo — que ahora es una fila de
+> `compras_cuotas` —, no en el resumen. La regla de arriba solo la usa la migración,
+> para los cargos viejos guardados sin moneda.
+
 ## 16. Vínculo entre movimientos de ahorro y transacciones reales — ✅ implementado (Tarea 6b)
 
 Decisión tomada tras discutirlo con el usuario (ver docs/PROXIMOS_PASOS.md, Tarea 6b):
@@ -732,6 +737,8 @@ guardadas:
   día que cierra.
 - ACTUAL es el último resumen que cerró (cierre <= hoy); ANTERIOR, el de
   antes; PRÓXIMO, el que cierra después.
+- La fecha real de un resumen puntual, si se cargó, manda sobre la calculada
+  (sección 29).
 
 1ª cuota (`create_purchase(first_fee_month, first_fee_year)`): el cronograma
 arranca en ese mes en vez del mes de compra. No puede ser anterior al mes de
@@ -788,13 +795,14 @@ rompería la subida hasta tocar Supabase a mano. Además:
   una función `security definer`, para que la política no se consulte a sí misma.
 
 **Tablas** (`TABLAS_SINCRONIZADAS`, en orden de dependencias): las 10 pedidas más
-`cuentas_saldos`, `cuotas_credito`, `resumenes_tarjeta`, `tarjetas_config` y
-`gasto_compartido_pagos`. Sin estas, una compra llegaría sin sus cuotas y una cuenta
-sin sus saldos. `monedas` no viaja: sale del seed, con los mismos ids en toda base.
+`cuentas_saldos`, `cuotas_credito`, `resumenes_tarjeta`, `tarjetas_config`,
+`tarjetas_resumenes` (sección 29) y `gasto_compartido_pagos`. Sin estas, una compra
+llegaría sin sus cuotas y una cuenta sin sus saldos. `monedas` no viaja: sale del
+seed, con los mismos ids en toda base.
 
 **Localmente** (`preparar_sync()`, en cada `inicializar()`):
 
-- `sincronizado_en` en las 15 tablas.
+- `sincronizado_en` en cada tabla de `TABLAS_SINCRONIZADAS`.
 - `sync_cambios(tabla, clave, operacion, modificado_en)`, que llenan triggers AFTER
   INSERT / UPDATE / DELETE en cada tabla. Así una edición y un borrado también
   viajan, sin tocar ningún service ni repositorio.
@@ -990,3 +998,136 @@ igual qué miembro actualice primero: el upsert de la reparación cambia el
   saliendo de un origen que no está ahí.
 
 Verificación: `verify/sync/verify_referencias_compartidas.py`.
+
+
+## 28. Cargos extra de tarjeta en `compras_cuotas` — ✅ implementado (vía `db/schema_migrations.py`)
+
+**Pedido:** los impuestos, recargos y ajustes/reintegros que se cargan en Compras en
+cuotas con las categorías especiales de TARJETA DE CRÉDITO tienen que aparecer en el
+total por tarjeta (barra de arriba) y en la tabla, cada uno en su moneda, y
+sincronizarse.
+
+**Antes:** vivían en `resumen_cargos_extra`, que no se sincroniza (no está en
+`TABLAS_SINCRONIZADAS`), no se listaban en la tabla y `resumen_por_tarjeta()` solo los
+sumaba si la tarjeta tenía cuotas ese mes en una sola moneda (sección 15). Un paso
+intermedio les agregó `moneda_id` y `fecha` a esa tabla (las columnas quedan:
+la migración de abajo las usa).
+
+**Modelo:** un cargo extra es una fila de `compras_cuotas` con
+`es_cargo_extra = 1` (columna nueva, `INTEGER NOT NULL DEFAULT 0`, vía
+`MigracionColumna`):
+
+- `total_cuotas = 1`; `monto_total_minor = monto_por_cuota_minor` = el monto del
+  cargo, con su signo (negativo = a favor).
+- `categoria_id` = la categoría especial de su tipo (`CATEGORIAS_CARGO_EXTRA`): la
+  categoría ES el tipo. El tipo `'otro'` no tiene categoría y deja de aceptarse.
+- `moneda_id` y `fecha_compra`: los de la fila de alta. Sin moneda, la única de la
+  tarjeta; con varias, hay que pasarla. Sin fecha, el día 1 del mes del resumen.
+- Una cuota en `cuotas_credito` en el mes de su resumen, ya incluida en él
+  (`resumen_id`, `'en_resumen'`): el cargo es parte de ese resumen.
+
+Como `compras_cuotas` y `cuotas_credito` se sincronizan, los cargos también. Las
+filas nuevas quedan con `sincronizado_en` NULL (pendientes de subir), como cualquier
+alta.
+
+**Service (`FeesService`):**
+
+- `add_extra_charge(statement_id, …, currency_code=None, date_str=None)`: misma
+  firma; crea la compra y su cuota. Sigue exigiendo el resumen abierto.
+- `delete_extra_charge(charge_id)`: borra la compra y su cuota mientras el resumen
+  esté abierto (cerrado o pagado: `StatementAlreadyClosedError` /
+  `StatementAlreadyPaidError`). `remove_extra_charge(charge_id, statement_id)` queda
+  para quien ya pasa el resumen: valida que el cargo sea de ese resumen y llama a
+  `delete_extra_charge()`.
+- `list_extra_charges(statement_id)` / `list_extra_charges_in_month(month, year)`:
+  leen de `compras_cuotas` (`es_cargo_extra = 1`), con `monto_minor`, `tipo`, moneda,
+  fecha y `resumen_id`.
+- `resumen_por_tarjeta()`: suma por (tarjeta, moneda) las cuotas de compras en
+  `monto_cuotas_minor` y las de cargos en `monto_cargos_extra_minor`. Una tarjeta con
+  solo cargos ese mes también aparece. `cargos_extra_multiples_monedas` queda siempre
+  en False (ya no hay ambigüedad).
+- `close_statement()` (`ResumenesTarjetaRepository.marcar_cerrado()`): los cargos son
+  impuestos, no consumos — más lo que haya quedado en `resumen_cargos_extra`.
+
+**Migración de lo que ya estaba** (`migrar_cargos_extra_a_compras()`, en cada
+`inicializar()`, no hace nada si no queda nada que mover):
+
+- Cada fila de `resumen_cargos_extra` pasa a `compras_cuotas` con el MISMO id, más su
+  cuota (estado `'pagado'` si el resumen se pagó, `'en_resumen'` si no), y se borra de
+  la tabla vieja. Todo en una transacción, con backup del archivo antes.
+- Moneda: la del cargo; sin ella, la única de las compras con cuotas de esa tarjeta
+  ese mes; sin cuotas, la única de la tarjeta; si no, **ARS**
+  (`compras_cuotas.moneda_id` es NOT NULL y los impuestos de una tarjeta se cobran
+  en pesos).
+- Fecha: la del cargo; sin ella, el día 1 del mes del resumen.
+- Un cargo de tipo `'otro'` (la pantalla nunca los creó) o cuya categoría especial no
+  está en la base no se mueve: queda en `resumen_cargos_extra` y se avisa por consola.
+- No corre con ids enteros (`migrar_a_uuid_pk.py` migra una copia así antes de
+  convertirla).
+- `resumen_cargos_extra` y su repositorio quedan **deprecados**: la tabla se sigue
+  creando y `marcar_cerrado()` todavía suma lo que haya quedado.
+
+**Pantalla Compras en cuotas:** los cargos llegan con las compras del mes y se ven
+como filas con ícono de recibo: Categoría = la especial, Monto con signo, Cuotas y
+1ª cuota "—". Solo lectura (sin cronograma ni edición inline). Se eliminan desde la
+barra flotante, compartir los saltea, y un botón de recibo en la barra del total los
+muestra u oculta (el total los cuenta siempre).
+
+**Efecto a tener en cuenta:** al ser compras de una categoría, cualquier reporte que
+sume `compras_cuotas` por categoría ve los cargos en "Impuesto tarjeta" / "Recargo
+tarjeta" / "Ajuste/Reintegro tarjeta".
+
+Verificación: `verify/compras_cuotas/verify_cargos_extra_sync.py` y
+`verify_cargos_extra_moneda_fecha.py`.
+
+## 29. Fechas reales de cierre y vencimiento por resumen — ✅ implementado (vía `db/schema_migrations.py`)
+
+`tarjetas_config` guarda un día de cierre y uno de vencimiento por tarjeta (sección
+23). Los bancos a veces corren un cierre (feriados, cambios de calendario): hace falta
+poder cargar la fecha real de un resumen puntual.
+
+**Tabla** `tarjetas_resumenes(id, cuenta_id, mes, anio, fecha_cierre, fecha_vence,
+creada_en, updated_en)`, `UNIQUE(cuenta_id, mes, anio)`, en `MIGRACIONES_TABLA`
+junto a `tarjetas_config`. Las dos fechas son opcionales (NULL = la calculada).
+`updated_en` lo escribe el repositorio (`TarjetasResumenesRepository.guardar()`,
+upsert parcial).
+
+**Qué resumen es (mes, anio):** el mes en que cae su cierre con el día default — el
+mismo período que recorre `card_cycle_dates()`. Ej.: con cierre el 15, el resumen
+(09, 2026) es el que cierra el 15/09. Si su fecha real de cierre cae en otro mes
+(ej. el 02/10), sigue siendo el (09, 2026).
+
+**Service (`FeesService`):**
+
+- `get_fecha_cierre(cuenta, mes, anio)` / `get_fecha_vencimiento(…)`: primero la
+  fecha real; si no hay, la calculada desde `tarjetas_config` (sección 23). Con un
+  cierre real y sin vencimiento real, el vencimiento se calcula desde ese cierre real.
+  None si la tarjeta no tiene ninguna de las dos cosas.
+- `set_fechas_resumen(cuenta, mes, anio, closing_date=…, due_date=…)`: cada fecha por
+  separado (la que no se pasa no se toca); `None` / vacía la borra. Solo tarjetas de
+  crédito. Rechaza, sin guardar nada, un vencimiento que no es posterior al cierre.
+- `card_cycle_periods()`: ANTERIOR / ACTUAL / PRÓXIMO con su (mes, anio), sus fechas y
+  si cada una es real. ACTUAL es el último que cerró, con la fecha real si la hay.
+  `card_cycle_dates()` sigue devolviendo la misma forma de antes, ahora con las fechas
+  reales.
+- `suggest_first_fee()`: la compra cae en el primer resumen que cierra ese día o
+  después (con su fecha real), y la 1ª cuota es el mes siguiente a ese resumen. Se
+  mira desde el resumen del mes anterior, por si una fecha real corrió su cierre a
+  este mes. Sin fechas reales da lo mismo que antes.
+
+**Pantalla:** en el panel ⚙ de Compras en cuotas, cada tarjeta muestra sus días
+default (se guardan con GUARDAR DÍAS DEFAULT) y sus tres resúmenes con la fecha de
+cierre y la de vencimiento. Cada fecha se edita con un click (DD/MM/AAAA) y se guarda
+al confirmar; vacía vuelve a la calculada. Una fecha real se ve en color de acento.
+
+**Se sincroniza** (está en `TABLAS_SINCRONIZADAS`, después de `tarjetas_config`;
+pedido explícito): tabla privada, en `deltabalance_filas` como las demás. Su
+`sincronizado_en` y sus triggers los agrega `preparar_sync()`, así que cada fecha
+guardada queda pendiente de subir sin que el service avise nada; las filas que ya
+existían quedan pendientes por `sincronizado_en` NULL. Mismo límite que
+`tarjetas_config`: si dos computadoras del mismo usuario cargan una fecha para el
+mismo resumen antes de sincronizar, la segunda choca con el `UNIQUE(cuenta_id, mes,
+anio)` al bajar y se cuenta como error (sección 24: una computadora por usuario a
+la vez).
+
+Verificación: `verify/compras_cuotas/verify_tarjetas_resumenes.py`.

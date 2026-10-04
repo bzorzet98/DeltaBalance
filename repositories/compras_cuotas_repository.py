@@ -118,12 +118,16 @@ class ComprasCuotasRepository:
         monto_por_cuota_minor: int,
         notas: Optional[str] = None,
         tag: Optional[str] = None,
+        es_cargo_extra: bool = False,
         conn: Optional[sqlite3.Connection] = None,
     ) -> str:
         """
         Inserta una compra en cuotas y devuelve su id (UUID,
         repositories/_ids.py). estado arranca en 'activa' (default de
         columna, no se setea acá explícitamente — igual que hoy).
+        es_cargo_extra=True: un cargo/reintegro del resumen de la tarjeta, no
+        una compra (docs/DATA_MODEL_DECISIONS.md sección 28) — qué implica
+        lo decide FeesService.
 
         Antes del INSERT, rechaza la operación con CompraDuplicadaError si
         ya existe una compra con la misma cuenta_id/monto_total_minor/
@@ -147,12 +151,12 @@ class ComprasCuotasRepository:
         sql = """
             INSERT INTO compras_cuotas
                 (id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
-                 monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                 monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag, es_cargo_extra)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             compra_id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
-            monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag,
+            monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag, 1 if es_cargo_extra else 0,
         )
         if conn is not None:
             conn.execute(sql, params)

@@ -102,6 +102,32 @@ hacer falta acá (Tarea 6g: la categoría del movimiento ya no se elige en
 este formulario). CampoMonto en todos los campos de monto (CLAUDE.md §9);
 `cantidad`/`porcentaje` quedan TextField comunes (no son plata), mismo
 criterio que ui/screens/ahorros.py.
+
+--- Rediseño de Ahorros e Inversiones ---
+
+construir() (el formulario de Compra del Registro) sigue igual: solo suma
+los tipos nuevos ('cedear', 'plazo_flex') y un Broker opcional al crear un
+activo nuevo. Tres formularios nuevos, mismo contrato
+FormularioCompraAhorro (contenido + confirmar), que usa la pantalla de
+Ahorros:
+- construir_nuevo_activo(): nombre, tipo (FCI / ACCIÓN / CEDEAR / PLAZO
+  FIJO / PLAZO FLEX), broker, moneda, cuenta asociada (opcional, Tarea
+  6g), comisiones por defecto y objetivos con porcentaje (suma <= 100;
+  SavingsService.assign_objetivo() por cada uno). on_exito recibe el
+  resultado de create_activo().
+- construir_movimiento(): según el tipo de activo, COMPRA / VENTA /
+  RENDIMIENTO (acciones, CEDEARs: cantidad entera + precio unitario +
+  comisión, y el dólar del día en la compra) o APORTE / RETIRO /
+  RENDIMIENTO (FCI, plazos: monto). Fecha y, salvo en un rendimiento, una
+  transacción del Registro del mismo mes para vincular (opcional; si no se
+  elige ninguna y el activo tiene cuenta, el service crea la suya). Los
+  campos se rearman al cambiar el tipo; la lista de transacciones, al
+  cambiar el mes de la fecha. "RETIRO" es una venta por monto
+  (registrar_retiro()).
+- construir_objetivos_activo(): el reparto del activo entre objetivos,
+  editable (construir_editor_asignaciones() precargado con `iniciales`).
+  Aplica las diferencias con remove_objetivo()/assign_objetivo(), primero
+  las bajas y las rebajas para no pasar nunca del 100% a mitad de camino.
 """
 
 from dataclasses import dataclass
@@ -111,11 +137,12 @@ from typing import Callable, Optional
 import flet as ft
 
 from services.accounts_service import AccountsService
-from services.savings_service import SavingsError, SavingsResult, SavingsService
+from services.savings_service import TIPOS_ACTIVO, SavingsError, SavingsResult, SavingsService
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
+from ui.components.tipo_valor import numero
 from ui.theme.tokens import TypographyTokens
-from utils.money import amount_to_minor
+from utils.money import amount_display, amount_to_minor
 
 # --- Configuración de layout ---
 ANCHO_DIALOGO_COMPRA_AHORRO = 380
@@ -123,10 +150,16 @@ ANCHO_CAMPO_ASIGNACION_OBJETIVO = 200
 ANCHO_CAMPO_ASIGNACION_PORCENTAJE = 90
 ESPACIADO_DIALOGO = 12
 
-TIPOS_ACTIVO = ("accion", "fci", "plazo_fijo", "cripto", "otro")
 # Criterio de qué tipos tienen "unidad" real (tiene sentido pedir cantidad/
 # precio_unitario al comprar) — ver docstring del módulo.
-TIPOS_ACTIVO_CON_CANTIDAD = {"accion", "fci", "cripto"}
+TIPOS_ACTIVO_CON_CANTIDAD = {"accion", "cedear", "fci", "cripto"}
+# Los que se crean desde la pantalla de Ahorros (construir_nuevo_activo()).
+TIPOS_NUEVO_ACTIVO = ("fci", "accion", "cedear", "plazo_fijo", "plazo_flex")
+# Movimientos de construir_movimiento(), según el activo se cuente en unidades o en plata.
+TIPOS_MOVIMIENTO_POR_UNIDADES = (("compra", "COMPRA"), ("venta", "VENTA"), ("rendimiento", "RENDIMIENTO"))
+TIPOS_MOVIMIENTO_POR_MONTO = (("aporte", "APORTE"), ("retiro", "RETIRO"), ("rendimiento", "RENDIMIENTO"))
+# Suma de porcentajes que se considera <= 100 (33.33 + 33.33 + 33.34).
+TOLERANCIA_PORCENTAJE = 1e-6
 
 MONEDA_DOLAR_OFICIAL_CODIGO = "ARS"
 DECIMALES_DEFAULT = 2
@@ -139,12 +172,14 @@ _ID_ACTIVO_NUEVO = "__nuevo__"
 
 def _tipo_activo_display(tipo: str) -> str:
     return {
-        "accion": "Acción",
+        "accion": "ACCIÓN",
         "fci": "FCI",
-        "plazo_fijo": "Plazo fijo",
-        "cripto": "Cripto",
-        "otro": "Otro",
-    }.get(tipo, tipo)
+        "cedear": "CEDEAR",
+        "plazo_fijo": "PLAZO FIJO",
+        "plazo_flex": "PLAZO FLEX",
+        "cripto": "CRIPTO",
+        "otro": "OTRO",
+    }.get(tipo, tipo.upper())
 
 
 def _cuentas_no_credito(cuentas: list[dict]) -> list[dict]:
@@ -187,8 +222,14 @@ class EditorAsignaciones:
     resolver: Callable[[], tuple[Optional[list[dict]], Optional[str]]]
 
 
-def construir_editor_asignaciones(page: ft.Page, objetivos_disponibles: list[dict]) -> EditorAsignaciones:
+def construir_editor_asignaciones(
+    page: ft.Page, objetivos_disponibles: list[dict], iniciales: Optional[list[dict]] = None,
+) -> EditorAsignaciones:
     """
+    iniciales (opcional, rediseño de Ahorros e Inversiones): filas que
+    arrancan cargadas, [{"objetivo_id": ..., "porcentaje": ...}] — las usa
+    construir_objetivos_activo() para editar el reparto actual de un activo.
+
     Lista dinámica de filas (Objetivo + %) — extraída para que
     ui/screens/ahorros.py la reuse LITERALMENTE (no una copia adaptada)
     en el diálogo "Egreso general" (register_sale() con lista de
@@ -220,12 +261,16 @@ def construir_editor_asignaciones(page: ft.Page, objetivos_disponibles: list[dic
         columna_asignaciones.controls = [f["row"] for f in filas_asignacion]
         page.update()
 
-    def _agregar_fila(e=None) -> None:
+    def _agregar_fila(e=None, objetivo_id: Optional[str] = None, porcentaje: Optional[float] = None) -> None:
         campo_objetivo_fila = CampoFiltrable(
             page, [(str(o["id"]), o["nombre"]) for o in objetivos_disponibles],
             on_seleccionar=lambda id_: None, placeholder="Objetivo", width=ANCHO_CAMPO_ASIGNACION_OBJETIVO,
+            valor_inicial_id=str(objetivo_id) if objetivo_id is not None else None,
         )
-        campo_porcentaje_fila = ft.TextField(hint_text="%", width=ANCHO_CAMPO_ASIGNACION_PORCENTAJE, dense=True)
+        campo_porcentaje_fila = ft.TextField(
+            hint_text="%", width=ANCHO_CAMPO_ASIGNACION_PORCENTAJE, dense=True,
+            value=f"{porcentaje:g}" if porcentaje is not None else None,
+        )
         fila_dict = {"objetivo": campo_objetivo_fila, "porcentaje": campo_porcentaje_fila}
 
         def _quitar(e=None, fila_dict=fila_dict) -> None:
@@ -267,6 +312,9 @@ def construir_editor_asignaciones(page: ft.Page, objetivos_disponibles: list[dic
             ids_vistos.add(objetivo_id)
             asignaciones.append({"objetivo_id": objetivo_id, "porcentaje": porcentaje})
         return asignaciones, None
+
+    for inicial in iniciales or []:
+        _agregar_fila(objetivo_id=inicial["objetivo_id"], porcentaje=inicial["porcentaje"])
 
     contenido = ft.Column([columna_asignaciones, boton_agregar], spacing=6)
     return EditorAsignaciones(contenido=contenido, resolver=_resolver)
@@ -326,6 +374,7 @@ def construir(
     dropdown_tipo_activo_nuevo: Optional[ft.Dropdown] = None
     campo_moneda_activo_nuevo: Optional[CampoFiltrable] = None
     campo_cuenta_activo_nuevo: Optional[CampoFiltrable] = None
+    campo_broker_activo_nuevo: Optional[CampoFiltrable] = None
     seccion_activo_nuevo: Optional[ft.Column] = None
 
     if activo_fijo is None:
@@ -354,10 +403,15 @@ def construir(
             valor_inicial_id=str(cuenta_id_inicial) if cuenta_id_inicial is not None else None,
             dense=False,
         )
+        campo_broker_activo_nuevo = CampoFiltrable(
+            page, [(b["id"], b["nombre"]) for b in savings_service.get_brokers()],
+            on_seleccionar=lambda id_: None, placeholder="BROKER (OPCIONAL)", dense=False,
+        )
         seccion_activo_nuevo = ft.Column(
             [
                 campo_nombre_activo_nuevo, dropdown_tipo_activo_nuevo,
-                campo_moneda_activo_nuevo.control, campo_cuenta_activo_nuevo.control,
+                campo_moneda_activo_nuevo.control, campo_broker_activo_nuevo.control,
+                campo_cuenta_activo_nuevo.control,
             ],
             visible=False, spacing=ESPACIADO_DIALOGO,
         )
@@ -482,6 +536,7 @@ def construir(
                     campo_cuenta_activo_nuevo.id_seleccionado
                     if campo_cuenta_activo_nuevo.id_seleccionado else None
                 ),
+                broker_id=campo_broker_activo_nuevo.id_seleccionado or None,
             )
         except SavingsError as err:
             texto_error.value = str(err)
@@ -598,4 +653,353 @@ def construir(
         content=ft.Column(partes, tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO),
     )
 
+    return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)
+
+
+# ============================================================
+# PANTALLA DE AHORROS — nuevo activo, movimiento, objetivos (ver docstring)
+# ============================================================
+
+def _minor_de_campo(campo: CampoMonto, decimales: int) -> tuple[Optional[int], bool]:
+    """(monto en minor units, o None si está vacío; ¿es válido?). Resuelve antes una fórmula pendiente."""
+    if not campo.confirmar():
+        return None, False
+    texto = (campo.texto or "").strip()
+    if not texto:
+        return None, True
+    valor = numero(texto)
+    if valor is None:
+        return None, False
+    return amount_to_minor(valor, decimales), True
+
+
+def _suma_supera_100(asignaciones: list[dict]) -> bool:
+    return sum(a["porcentaje"] for a in asignaciones) > 100 + TOLERANCIA_PORCENTAJE
+
+
+def _contenido_formulario(partes: list[ft.Control]) -> ft.Control:
+    return ft.Container(
+        width=ANCHO_DIALOGO_COMPRA_AHORRO,
+        content=ft.Column(partes, tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO),
+    )
+
+
+def _label_transaccion(t: dict) -> str:
+    """'2026-10-05 · TRANSFERENCIA A COCOS · -$50,000.00 ARS · BBVA' para el selector de vínculo."""
+    signo = {"egreso": "-", "ingreso": "+"}.get(t["tipo_movimiento"], "")
+    monto = amount_display(t["monto_minor"], t["decimales"], t["currency_symbol"] or "")
+    return (
+        f"{t['fecha']} · {(t['concepto'] or '').upper()} · {signo}{monto} {t['currency_code']} · "
+        f"{(t['account_name'] or '').upper()}"
+    )
+
+
+def construir_nuevo_activo(
+    page: ft.Page,
+    savings_service: SavingsService,
+    accounts_service: AccountsService,
+    on_exito: Callable[[SavingsResult], None],
+    tipo_inicial: Optional[str] = None,
+) -> FormularioCompraAhorro:
+    """
+    Alta de un activo (ver docstring del módulo). on_exito recibe el
+    resultado de create_activo() (entity_id = el activo nuevo); los errores
+    quedan en texto_error, dentro del formulario.
+    """
+    monedas = accounts_service.list_currencies()
+    moneda_default = next((m for m in monedas if m["codigo"] == MONEDA_DOLAR_OFICIAL_CODIGO), monedas[0] if monedas else None)
+    monedas_por_id = {str(m["id"]): m for m in monedas}
+    cuentas_activas = _cuentas_no_credito(accounts_service.list_accounts(solo_activas=True))
+
+    campo_nombre = ft.TextField(label="NOMBRE DEL ACTIVO", autofocus=True)
+    dropdown_tipo = ft.Dropdown(
+        label="TIPO", dense=True,
+        options=[ft.dropdown.Option(key=t, text=_tipo_activo_display(t)) for t in TIPOS_NUEVO_ACTIVO],
+        value=tipo_inicial if tipo_inicial in TIPOS_NUEVO_ACTIVO else TIPOS_NUEVO_ACTIVO[0],
+    )
+    campo_broker = CampoFiltrable(
+        page, [(b["id"], b["nombre"]) for b in savings_service.get_brokers()],
+        on_seleccionar=lambda id_: None, placeholder="BROKER (OPCIONAL)", dense=False,
+    )
+    dropdown_moneda = ft.Dropdown(
+        label="MONEDA", dense=True,
+        options=[ft.dropdown.Option(key=str(m["id"]), text=m["codigo"]) for m in monedas],
+        value=str(moneda_default["id"]) if moneda_default else None,
+    )
+    campo_cuenta = CampoFiltrable(
+        page, [(str(c["id"]), c["nombre"]) for c in cuentas_activas],
+        on_seleccionar=lambda id_: None, placeholder="CUENTA ASOCIADA (OPCIONAL)", dense=False,
+    )
+    # Los decimales reales salen de la moneda elegida al confirmar (_minor_de_campo()).
+    campo_comision_compra = CampoMonto(
+        page, on_confirmar=lambda m: None, dense=False, label="COMISIÓN DE COMPRA POR DEFECTO (OPCIONAL)",
+    )
+    campo_comision_venta = CampoMonto(
+        page, on_confirmar=lambda m: None, dense=False, label="COMISIÓN DE VENTA POR DEFECTO (OPCIONAL)",
+    )
+    editor_objetivos = construir_editor_asignaciones(page, savings_service.list_objetivos())
+    texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
+
+    def _error(mensaje: str) -> None:
+        texto_error.value = mensaje.upper()
+        page.update()
+
+    def _confirmar(e=None) -> None:
+        texto_error.value = ""
+        nombre = (campo_nombre.value or "").strip()
+        if not nombre:
+            _error("EL NOMBRE DEL ACTIVO NO PUEDE ESTAR VACÍO.")
+            return
+        moneda = monedas_por_id.get(dropdown_moneda.value or "")
+        if moneda is None:
+            _error("ELEGÍ LA MONEDA DEL ACTIVO.")
+            return
+        comision_compra, valida_compra = _minor_de_campo(campo_comision_compra, moneda["decimales"])
+        comision_venta, valida_venta = _minor_de_campo(campo_comision_venta, moneda["decimales"])
+        if not (valida_compra and valida_venta):
+            _error("UNA COMISIÓN NO ES UN NÚMERO VÁLIDO.")
+            return
+        asignaciones, error_asignaciones = editor_objetivos.resolver()
+        if error_asignaciones is not None:
+            _error(error_asignaciones)
+            return
+        if _suma_supera_100(asignaciones):
+            _error("LOS OBJETIVOS SUMAN MÁS DE 100%.")
+            return
+        try:
+            resultado = savings_service.create_activo(
+                nombre=nombre,
+                tipo=dropdown_tipo.value,
+                moneda_id=moneda["id"],
+                cuenta_id=campo_cuenta.id_seleccionado or None,
+                broker_id=campo_broker.id_seleccionado or None,
+                comision_compra_minor=comision_compra or 0,
+                comision_venta_minor=comision_venta or 0,
+            )
+        except (SavingsError, ValueError) as err:
+            _error(str(err))
+            return
+        for asignacion in asignaciones:
+            try:
+                savings_service.assign_objetivo(resultado.entity_id, asignacion["objetivo_id"], asignacion["porcentaje"])
+            except (SavingsError, ValueError) as err:
+                _error(f"EL ACTIVO SE CREÓ, PERO NO SE PUDO ASIGNAR UN OBJETIVO: {err}")
+                return
+        on_exito(resultado)
+
+    contenido = _contenido_formulario([
+        campo_nombre, dropdown_tipo, campo_broker.control, dropdown_moneda, campo_cuenta.control,
+        campo_comision_compra.control, campo_comision_venta.control,
+        ft.Divider(height=1),
+        ft.Text("OBJETIVOS (SUMA HASTA 100%)", size=TypographyTokens.LABEL_SIZE, weight=ft.FontWeight.BOLD),
+        editor_objetivos.contenido,
+        texto_error,
+    ])
+    return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)
+
+
+def construir_movimiento(
+    page: ft.Page,
+    savings_service: SavingsService,
+    accounts_service: AccountsService,
+    activo: dict,
+    on_exito: Callable[[SavingsResult], None],
+    tipo_inicial: Optional[str] = None,
+) -> FormularioCompraAhorro:
+    """
+    Movimiento de un activo (ver docstring del módulo). `activo`: una
+    entrada de SavingsService.get_resumen_por_tipo() (activo_id, activo,
+    tipo, por_unidades, moneda, decimales, comisiones por defecto).
+    """
+    opciones_tipo = TIPOS_MOVIMIENTO_POR_UNIDADES if activo["por_unidades"] else TIPOS_MOVIMIENTO_POR_MONTO
+    claves_tipo = [clave for clave, _ in opciones_tipo]
+    decimales = activo["decimales"]
+    codigo = activo["moneda"]
+    moneda_ars = next((m for m in accounts_service.list_currencies() if m["codigo"] == MONEDA_DOLAR_OFICIAL_CODIGO), None)
+    decimales_dolar = moneda_ars["decimales"] if moneda_ars else DECIMALES_DEFAULT
+
+    dropdown_tipo = ft.Dropdown(
+        label="TIPO DE MOVIMIENTO", dense=True,
+        options=[ft.dropdown.Option(key=clave, text=texto) for clave, texto in opciones_tipo],
+        value=tipo_inicial if tipo_inicial in claves_tipo else claves_tipo[0],
+        on_select=lambda e: _dibujar_campos(),
+    )
+    campo_fecha = ft.TextField(
+        label="FECHA (AAAA-MM-DD)", value=date.today().isoformat(), on_blur=lambda e: _dibujar_vinculo(),
+    )
+    contenedor_campos = ft.Column(spacing=ESPACIADO_DIALOGO)
+    contenedor_vinculo = ft.Column(spacing=ESPACIADO_DIALOGO)
+    texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
+    refs: dict = {"vinculo": None, "mes_vinculo": None}
+
+    def _dibujar_campos() -> None:
+        tipo = dropdown_tipo.value
+        if tipo in ("compra", "venta"):
+            comision_default = activo["comision_compra_minor"] if tipo == "compra" else activo["comision_venta_minor"]
+            refs["cantidad"] = ft.TextField(label="CANTIDAD (ENTERA)")
+            refs["precio"] = CampoMonto(
+                page, on_confirmar=lambda m: None, decimales=decimales, dense=False,
+                label=f"PRECIO UNITARIO ({codigo})",
+            )
+            refs["comision"] = CampoMonto(
+                page, on_confirmar=lambda m: None, decimales=decimales, dense=False,
+                valor_inicial_minor=comision_default or None, label=f"COMISIÓN ({codigo}, OPCIONAL)",
+            )
+            controles: list[ft.Control] = [refs["cantidad"], refs["precio"].control, refs["comision"].control]
+            if tipo == "compra":
+                refs["dolar"] = CampoMonto(
+                    page, on_confirmar=lambda m: None, decimales=decimales_dolar, dense=False,
+                    label="DÓLAR DEL DÍA (ARS, OPCIONAL)",
+                )
+                controles.append(refs["dolar"].control)
+        else:
+            refs["monto"] = CampoMonto(
+                page, on_confirmar=lambda m: None, decimales=decimales, dense=False, label=f"MONTO ({codigo})",
+            )
+            controles = [refs["monto"].control]
+        contenedor_campos.controls = controles
+        # Un rendimiento no se vincula a una transacción (registrar_rendimiento() no la acepta).
+        contenedor_vinculo.visible = tipo != "rendimiento"
+        page.update()
+
+    def _dibujar_vinculo() -> None:
+        """Transacciones del mes de la fecha — se rearma solo si cambió el mes (conserva lo elegido)."""
+        fecha = (campo_fecha.value or "").strip()
+        if fecha[:7] == refs["mes_vinculo"]:
+            return
+        try:
+            transacciones = savings_service.list_transacciones_vinculables(fecha)
+        except SavingsError:
+            return  # fecha inválida todavía: se avisa al confirmar
+        refs["mes_vinculo"] = fecha[:7]
+        refs["vinculo"] = CampoFiltrable(
+            page, [(t["id"], _label_transaccion(t)) for t in transacciones],
+            on_seleccionar=lambda id_: None, placeholder="VINCULAR A TRANSACCIÓN DEL REGISTRO (OPCIONAL)", dense=False,
+        )
+        contenedor_vinculo.controls = [refs["vinculo"].control]
+        page.update()
+
+    _dibujar_campos()
+    _dibujar_vinculo()
+
+    def _error(mensaje: str) -> None:
+        texto_error.value = mensaje.upper()
+        page.update()
+
+    def _confirmar(e=None) -> None:
+        texto_error.value = ""
+        fecha = (campo_fecha.value or "").strip()
+        try:
+            datetime.strptime(fecha, "%Y-%m-%d")
+        except ValueError:
+            _error("LA FECHA DEBE TENER EL FORMATO AAAA-MM-DD.")
+            return
+        tipo = dropdown_tipo.value
+        vinculo = refs["vinculo"]
+        transaccion_id = (vinculo.id_seleccionado or None) if vinculo is not None and tipo != "rendimiento" else None
+        try:
+            if tipo in ("compra", "venta"):
+                texto_cantidad = (refs["cantidad"].value or "").strip()
+                if not texto_cantidad.isdigit() or int(texto_cantidad) <= 0:
+                    _error("LA CANTIDAD TIENE QUE SER UN NÚMERO ENTERO MAYOR A 0.")
+                    return
+                precio, valido_precio = _minor_de_campo(refs["precio"], decimales)
+                comision, valida_comision = _minor_de_campo(refs["comision"], decimales)
+                if not valido_precio or not precio:
+                    _error("INGRESÁ UN PRECIO UNITARIO VÁLIDO.")
+                    return
+                if not valida_comision:
+                    _error("LA COMISIÓN NO ES UN NÚMERO VÁLIDO.")
+                    return
+                if tipo == "compra":
+                    dolar, valido_dolar = _minor_de_campo(refs["dolar"], decimales_dolar)
+                    if not valido_dolar:
+                        _error("EL DÓLAR DEL DÍA NO ES UN NÚMERO VÁLIDO.")
+                        return
+                    resultado = savings_service.registrar_compra(
+                        activo["activo_id"], int(texto_cantidad), precio, comision or 0, fecha,
+                        transaccion_id=transaccion_id, dolar_momento_minor=dolar,
+                    )
+                else:
+                    resultado = savings_service.registrar_venta(
+                        activo["activo_id"], int(texto_cantidad), precio, comision or 0, fecha,
+                        transaccion_id=transaccion_id,
+                    )
+            else:
+                monto, valido_monto = _minor_de_campo(refs["monto"], decimales)
+                if not valido_monto or not monto:
+                    _error("INGRESÁ UN MONTO VÁLIDO.")
+                    return
+                if tipo == "aporte":
+                    resultado = savings_service.registrar_aporte(
+                        activo["activo_id"], monto, fecha, transaccion_id=transaccion_id,
+                    )
+                elif tipo == "retiro":
+                    resultado = savings_service.registrar_retiro(
+                        activo["activo_id"], monto, fecha, transaccion_id=transaccion_id,
+                    )
+                else:
+                    resultado = savings_service.registrar_rendimiento(activo["activo_id"], monto, fecha)
+        except (SavingsError, ValueError) as err:
+            _error(str(err))
+            return
+        on_exito(resultado)
+
+    contenido = _contenido_formulario([dropdown_tipo, campo_fecha, contenedor_campos, contenedor_vinculo, texto_error])
+    return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)
+
+
+def construir_objetivos_activo(
+    page: ft.Page,
+    savings_service: SavingsService,
+    activo: dict,
+    on_exito: Callable[[str], None],
+) -> FormularioCompraAhorro:
+    """
+    Reparto del activo entre objetivos (ver docstring del módulo). `activo`:
+    una entrada de get_resumen_por_tipo() (activo_id, activo, objetivos).
+    on_exito recibe el mensaje para mostrar.
+    """
+    editor = construir_editor_asignaciones(page, savings_service.list_objetivos(), iniciales=activo["objetivos"])
+    texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
+
+    def _error(mensaje: str) -> None:
+        texto_error.value = mensaje.upper()
+        page.update()
+
+    def _confirmar(e=None) -> None:
+        texto_error.value = ""
+        asignaciones, error_asignaciones = editor.resolver()
+        if error_asignaciones is not None:
+            _error(error_asignaciones)
+            return
+        if _suma_supera_100(asignaciones):
+            _error("LOS OBJETIVOS SUMAN MÁS DE 100%.")
+            return
+        actuales = {o["objetivo_id"]: o["porcentaje"] for o in activo["objetivos"]}
+        nuevos = {a["objetivo_id"]: a["porcentaje"] for a in asignaciones}
+        try:
+            # Primero las bajas y las rebajas: así la suma nunca pasa de 100 a mitad de camino.
+            for objetivo_id in actuales.keys() - nuevos.keys():
+                savings_service.remove_objetivo(activo["activo_id"], objetivo_id)
+            cambios = sorted(
+                (item for item in nuevos.items() if actuales.get(item[0]) != item[1]),
+                key=lambda item: item[1] - actuales.get(item[0], 0),
+            )
+            for objetivo_id, porcentaje in cambios:
+                savings_service.assign_objetivo(activo["activo_id"], objetivo_id, porcentaje)
+        except (SavingsError, ValueError) as err:
+            _error(str(err))
+            return
+        on_exito(f"OBJETIVOS DE {activo['activo'].upper()} ACTUALIZADOS.")
+
+    contenido = _contenido_formulario([
+        ft.Text(
+            f"{activo['activo'].upper()}: QUÉ PARTE ES DE CADA OBJETIVO (SUMA HASTA 100%). "
+            "VALE PARA LOS MOVIMIENTOS QUE CARGUES DESDE AHORA.",
+            size=TypographyTokens.LABEL_SIZE,
+        ),
+        editor.contenido,
+        texto_error,
+    ])
     return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)

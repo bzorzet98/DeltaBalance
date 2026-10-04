@@ -8,11 +8,14 @@ Purpose:
     into a single payable amount.
 
     Owns these tables exclusively:
-        - compras_cuotas
+        - compras_cuotas (also the statement's extra charges: es_cargo_extra = 1,
+          docs/DATA_MODEL_DECISIONS.md section 28)
         - cuotas_credito
         - resumenes_tarjeta
         - tarjetas_config (closing / due day of each credit card —
           docs/DATA_MODEL_DECISIONS.md section 23)
+        - tarjetas_resumenes (the real closing / due date of one statement,
+          when it is not the one the days give — section 29)
 
     Does NOT create transactions. The actual cash outflow (paying the credit card
     statement) is handled by TransactionService. FeesService only manages the
@@ -22,7 +25,18 @@ Purpose:
     is already shared before letting update_purchase() change its total —
     same read-only cross-domain pattern SharedExpensesService already uses
     over compras_cuotas/cuotas_credito. Also reads (never writes) deudas,
-    only so delete_purchase() never deletes a purchase a debt points to.
+    only so delete_purchase() never deletes a purchase a debt points to,
+    cuentas_saldos, only for the default currency of an extra charge
+    (add_extra_charge()), and categorias, only to find the special category
+    of each charge type (CATEGORIAS_CARGO_EXTRA).
+
+    Extra charges (taxes, surcharges, adjustments/refunds of a statement):
+    a compras_cuotas row with es_cargo_extra = 1, the special category of
+    its type, and ONE fee in cuotas_credito already in its statement
+    ('en_resumen'). add_extra_charge() / delete_extra_charge() /
+    list_extra_charges_in_month(); resumen_por_tarjeta() and
+    close_statement() count them apart from the purchases.
+    resumen_cargos_extra is deprecated (it does not sync).
 
     Key workflows:
         1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito,
@@ -40,16 +54,20 @@ Purpose:
            reschedule_fees()      → moves pending fees to other months by hand (no two
                                     fees of a purchase in the same month)
         Card config: set_card_config() / get_card_config() (tarjetas_config),
-        card_cycle_dates() (previous / current / next statement dates) and
-        suggest_first_fee() (next month, or two months ahead after the closing day).
+        set_fechas_resumen() (one statement's real dates, tarjetas_resumenes),
+        get_fecha_cierre() / get_fecha_vencimiento() (the real date if there
+        is one, otherwise the one the days give), card_cycle_dates() /
+        card_cycle_periods() (previous / current / next statement) and
+        suggest_first_fee() (the month after the statement the purchase
+        falls into).
            delete_purchase()      → physical delete of a purchase + its fees while
                                     nothing depends on them (§4); otherwise
                                     cancel_purchase()
         2. open_statement()       → creates or fetches a resumenes_tarjeta for a month
         3. confirm_fee()          → marks a cuota as 'en_resumen', linking it to a statement
         4. close_statement()      → marks 'cerrado' AND consolidates real totals
-                                    (monto_consumos_minor, monto_impuestos_minor via
-                                    resumen_cargos_extra, and derived porcentaje_impuesto_bp)
+                                    (monto_consumos_minor, monto_impuestos_minor from
+                                    its extra charges, and derived porcentaje_impuesto_bp)
         5. pay_statement()        → marks it 'pagado', writes the paid amount
                                     (monto_pagado_minor, now required); caller
                                     creates the transaction separately
@@ -68,19 +86,23 @@ from typing import Any, Optional
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
 from utils.money import amount_display
+from repositories._sentinels import NO_CAMBIAR
+from repositories.categorias_repository import CategoriasRepository
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
+from repositories.cuentas_repository import CuentasRepository
 from repositories.cuotas_credito_repository import CuotasCreditoRepository
 from repositories.deudas_repository import DeudasRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
-from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 from repositories.tarjetas_config_repository import TarjetasConfigRepository
+from repositories.tarjetas_resumenes_repository import TarjetasResumenesRepository
 
 # Mapeo nombre de categoría especial (categoria_principal, subcategoria —
 # ver services/categorias_service.py CATEGORIAS_PROTEGIDAS, que las
 # protege de renombre/desactivación por esta misma dependencia) →
-# charge_type de resumen_cargos_extra (Tarea 3 de
-# docs/PROXIMOS_PASOS.md). Vive acá (motor de datos) y no en ui/ porque es
+# charge_type del cargo extra (Tarea 3 de docs/PROXIMOS_PASOS.md; desde la
+# sección 28 de docs/DATA_MODEL_DECISIONS.md el cargo es una fila de
+# compras_cuotas con esa categoría: la categoría ES su tipo). Vive acá (motor de datos) y no en ui/ porque es
 # una regla de negocio real — "elegir esta categoría significa esto es un
 # cargo extra de tipo X, no una compra" — que un futuro script de lab/ que
 # importe datos históricos también podría necesitar (CLAUDE.md §2), no un
@@ -95,6 +117,19 @@ CATEGORIAS_CARGO_EXTRA: dict[tuple[str, str], str] = {
     ("TARJETA DE CRÉDITO", "Recargo tarjeta"): "recargo",
     ("TARJETA DE CRÉDITO", "Ajuste/Reintegro tarjeta"): "ajuste",
 }
+# charge_type → (categoria_principal, subcategoria) de su categoría especial.
+CATEGORIA_POR_CHARGE_TYPE: dict[str, tuple[str, str]] = {tipo: nombre for nombre, tipo in CATEGORIAS_CARGO_EXTRA.items()}
+# subcategoria de una categoría especial → charge_type (las 3 subcategorías son distintas).
+_CHARGE_TYPE_POR_SUBCATEGORIA: dict[str, str] = {sub: tipo for (_, sub), tipo in CATEGORIAS_CARGO_EXTRA.items()}
+
+# Fechas de resumen (docs/DATA_MODEL_DECISIONS.md sección 29).
+# suggest_first_fee(): resúmenes donde puede caer una compra, en meses desde
+# el de la compra — el anterior por si una fecha real corrió su cierre a
+# este mes; el normal es 0 o 1.
+DELTAS_RESUMEN_DE_UNA_COMPRA = (-1, 0, 1, 2)
+# card_cycle_periods(): cuántos meses mira para atrás buscando el último
+# resumen que cerró.
+MAX_PASOS_RESUMEN_ACTUAL = 4
 
 # =============================================================
 # EXCEPTIONS
@@ -170,7 +205,7 @@ class FeesService:
         # Monthly per-card breakdown for the dashboard (Tarea 4)
         svc.resumen_por_tarjeta(month=5, year=2026)
         # → [{"cuenta_id": 2, "monto_total_minor": ..., ...}, ...] — only
-        #   cards with actual cuotas due that month.
+        #   cards with cuotas due or extra charges that month.
     """
 
     def __init__(self, db: DatabaseManager):
@@ -184,12 +219,15 @@ class FeesService:
         self._compras_repo = ComprasCuotasRepository(db)
         self._cuotas_repo = CuotasCreditoRepository(db)
         self._resumenes_repo = ResumenesTarjetaRepository(db)
-        self._cargos_repo = ResumenCargosExtraRepository(db)
         self._tarjetas_repo = TarjetasConfigRepository(db)
+        self._fechas_resumen_repo = TarjetasResumenesRepository(db)
         # Read-only — see module docstring (update_purchase()).
         self._gastos_repo = GastosCompartidosRepository(db)
         # Read-only — see module docstring (delete_purchase()).
         self._deudas_repo = DeudasRepository(db)
+        # Read-only — see module docstring (add_extra_charge()).
+        self._cuentas_repo = CuentasRepository(db)
+        self._categorias_repo = CategoriasRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -402,8 +440,10 @@ class FeesService:
             amount_per_fee: Optional per-fee amount. If None, computed automatically.
             notes:          Optional description.
             first_fee_month / first_fee_year: Optional month (1–12) and year of
-                            fee #1. Both or neither; never before the purchase
-                            month. None = the purchase month.
+                            fee #1. Both or neither. Any month is valid, even
+                            one before the purchase month — choosing it is up
+                            to the user (pedido explícito). None = the
+                            purchase month.
             tag:            Optional free-text label (same as transacciones.tag).
                             Blank = None.
 
@@ -411,8 +451,8 @@ class FeesService:
             FeesResult with the purchase id and a summary of generated fees.
 
         Raises:
-            FeesError for invalid inputs (including a first fee before the
-                purchase month, or only one of first_fee_month/first_fee_year).
+            FeesError for invalid inputs (including only one of
+                first_fee_month/first_fee_year, or an invalid month/year).
             ValueError for invalid date or currency.
         """
         if total_amount <= 0:
@@ -429,12 +469,8 @@ class FeesService:
         elif first_fee_month is None or first_fee_year is None:
             raise FeesError("first_fee_month and first_fee_year must be passed together.")
         else:
+            # Cualquier mes vale, también uno anterior al de la compra (pedido explícito).
             first_month, first_year = self._validate_period(first_fee_month, first_fee_year, "First fee")
-            if (first_year, first_month) < (purchase_year, purchase_month):
-                raise FeesError(
-                    f"The first fee ({first_month:02d}/{first_year}) cannot be before the purchase month "
-                    f"({purchase_month:02d}/{purchase_year})."
-                )
         currency       = self._get_currency(currency_code)
         dec            = currency["decimales"]
 
@@ -700,41 +736,27 @@ class FeesService:
     def resumen_por_tarjeta(self, mes: int, anio: int) -> list[dict]:
         """
         Desglose del total a pagar este mes por cada tarjeta de crédito
-        (cuentas.tipo='credito') CON ACTIVIDAD REAL ese período: solo
-        tarjetas con al menos una cuotas_credito venciendo (mes_proyectado/
-        anio_proyectado) en mes/anio — detección dinámica vía el INNER
-        JOIN de la query de abajo, nunca una lista fija de todas las
-        tarjetas existentes (mismo criterio que
-        DashboardService.get_movimientos_por_cuenta()).
+        (cuentas.tipo='credito') CON ACTIVIDAD REAL ese período: al menos
+        una cuotas_credito venciendo (mes_proyectado/anio_proyectado) en
+        mes/anio — de una compra o de un cargo extra — detección dinámica,
+        nunca una lista fija de todas las tarjetas existentes (mismo
+        criterio que DashboardService.get_movimientos_por_cuenta()). Una
+        tarjeta con solo cargos extra ese mes también aparece.
 
-        Para cada grupo (cuenta_id, moneda_id):
-        - monto_cuotas_minor: suma de monto_cuota_minor de esas cuotas.
-          Excluye estado='omitido' (cuotas de compras canceladas vía
-          cancel_purchase() — no son "a pagar"). Incluye 'pendiente',
-          'en_resumen' y 'pagado': lo que importa acá es qué vencía ese
-          mes, no si ya se confirmó/pagó.
-        - monto_cargos_extra_minor: suma de resumen_cargos_extra del
-          resumen de esa cuenta/mes/año (vía
-          ResumenesTarjetaRepository.obtener_por_periodo() +
-          ResumenCargosExtraRepository.listar_por_resumen()) — 0 si el
-          resumen todavía no se abrió o no tiene cargos cargados (hoy no
-          hay UI para cargarlos, Tarea 3 pendiente — el cálculo ya los
-          suma para cuando esa UI exista).
+        Un grupo por (cuenta_id, moneda_id) — cada cargo extra está en su
+        moneda (compras_cuotas.moneda_id):
+        - monto_cuotas_minor: suma de monto_cuota_minor de las cuotas de
+          COMPRAS (es_cargo_extra = 0). Excluye estado='omitido' (cuotas de
+          compras canceladas vía cancel_purchase() — no son "a pagar").
+          Incluye 'pendiente', 'en_resumen' y 'pagado': lo que importa acá
+          es qué vencía ese mes, no si ya se confirmó/pagó.
+        - monto_cargos_extra_minor: suma, con su signo, de las cuotas de los
+          cargos extra (es_cargo_extra = 1, docs/DATA_MODEL_DECISIONS.md
+          sección 28) — el mes de un cargo es el de su resumen.
         - monto_total_minor: monto_cuotas_minor + monto_cargos_extra_minor.
-
-        Ambigüedad de moneda de los cargos extra (ver
-        docs/DATA_MODEL_DECISIONS.md sección 15): `resumen_cargos_extra`
-        no tiene columna de moneda propia — un resumen es por
-        cuenta/mes/año, no por cuenta/mes/año/moneda. Si la MISMA tarjeta
-        tuviera cuotas venciendo en más de una moneda el mismo mes (caso
-        límite que el schema permite pero no ocurre en el uso real: una
-        tarjeta física factura en una sola moneda), no hay forma de saber
-        a cuál de los dos totales sumar los cargos extra sin inventar una
-        convención no documentada — en ese caso monto_cargos_extra_minor
-        queda en 0 en TODOS los grupos de esa tarjeta ese mes, y
-        cargos_extra_multiples_monedas=True lo señala en vez de adivinar.
-        Con una sola moneda por tarjeta ese mes (caso normal) se suman sin
-        ambigüedad.
+        - cargos_extra_multiples_monedas: siempre False. Se mantiene por
+          compatibilidad: con la moneda en cada cargo ya no hay ambigüedad
+          (la de la sección 15).
 
         Args:
             mes:  Mes 1–12.
@@ -751,8 +773,44 @@ class FeesService:
         """
         if not (1 <= mes <= 12):
             raise ValueError(f"Month must be between 1 and 12. Received: {mes}.")
+        return [
+            {
+                "cuenta_id":                       fila["cuenta_id"],
+                "account_name":                    fila["account_name"],
+                "moneda_id":                       fila["moneda_id"],
+                "currency_code":                   fila["currency_code"],
+                "currency_symbol":                 fila["currency_symbol"],
+                "decimales":                       fila["decimales"],
+                "monto_cuotas_minor":              fila["monto_cuotas_minor"],
+                "monto_cargos_extra_minor":        fila["monto_cargos_extra_minor"],
+                "monto_total_minor":               fila["monto_cuotas_minor"] + fila["monto_cargos_extra_minor"],
+                "cargos_extra_multiples_monedas":  False,
+            }
+            for fila in self._cuotas_por_tarjeta(mes, anio)
+        ]
 
-        filas_cuotas = (
+    def list_extra_charges_in_month(self, month: int, year: int) -> list[dict]:
+        """
+        Extra charges (compras_cuotas with es_cargo_extra = 1) whose fee
+        falls in month/year — the month of their statement, the same one
+        resumen_por_tarjeta() adds them to. Same shape as
+        list_extra_charges() (see _as_extra_charge()).
+
+        Raises:
+            ValueError if month is not 1–12.
+        """
+        return [
+            self._as_extra_charge(fila)
+            for fila in self.list_purchases_due_in_month(month, year) if fila["es_cargo_extra"]
+        ]
+
+    def _cuotas_por_tarjeta(self, mes: int, anio: int) -> list[sqlite3.Row]:
+        """
+        Cuotas que vencen en mes/anio (sin las 'omitido'), sumadas por
+        tarjeta de crédito y moneda: las de compras (monto_cuotas_minor) y
+        las de cargos extra (monto_cargos_extra_minor) por separado.
+        """
+        return (
             QueryBuilder("cuotas_credito qc", include_deleted=True)
             .select(
                 "c.id AS cuenta_id",
@@ -761,7 +819,8 @@ class FeesService:
                 "m.codigo AS currency_code",
                 "m.simbolo AS currency_symbol",
                 "m.decimales",
-                "SUM(qc.monto_cuota_minor) AS monto_cuotas_minor",
+                "SUM(CASE WHEN pc.es_cargo_extra = 1 THEN 0 ELSE qc.monto_cuota_minor END) AS monto_cuotas_minor",
+                "SUM(CASE WHEN pc.es_cargo_extra = 1 THEN qc.monto_cuota_minor ELSE 0 END) AS monto_cargos_extra_minor",
             )
             .join("compras_cuotas pc", "pc.id = qc.compra_id")
             .join("cuentas c",         "c.id = pc.cuenta_id")
@@ -774,37 +833,6 @@ class FeesService:
             .order("c.nombre")
             .ejecutar(self._db.conn)
         )
-
-        monedas_por_cuenta: dict[int, set] = {}
-        for fila in filas_cuotas:
-            monedas_por_cuenta.setdefault(fila["cuenta_id"], set()).add(fila["moneda_id"])
-
-        resultado = []
-        for fila in filas_cuotas:
-            cuenta_id = fila["cuenta_id"]
-            ambiguo = len(monedas_por_cuenta[cuenta_id]) > 1
-
-            cargos_extra_minor = 0
-            if not ambiguo:
-                resumen = self._resumenes_repo.obtener_por_periodo(cuenta_id, mes, anio)
-                if resumen:
-                    cargos = self._cargos_repo.listar_por_resumen(resumen["id"])
-                    cargos_extra_minor = sum(c["monto_minor"] for c in cargos)
-
-            resultado.append({
-                "cuenta_id":                       cuenta_id,
-                "account_name":                    fila["account_name"],
-                "moneda_id":                       fila["moneda_id"],
-                "currency_code":                   fila["currency_code"],
-                "currency_symbol":                 fila["currency_symbol"],
-                "decimales":                       fila["decimales"],
-                "monto_cuotas_minor":              fila["monto_cuotas_minor"],
-                "monto_cargos_extra_minor":        cargos_extra_minor,
-                "monto_total_minor":               fila["monto_cuotas_minor"] + cargos_extra_minor,
-                "cargos_extra_multiples_monedas":  ambiguo,
-            })
-
-        return resultado
 
     # ----------------------------------------------------------
     # STATEMENT MANAGEMENT
@@ -967,10 +995,11 @@ class FeesService:
         )
 
     # ----------------------------------------------------------
-    # EXTRA CHARGES (resumen_cargos_extra)
+    # EXTRA CHARGES (compras_cuotas with es_cargo_extra = 1 — section 28)
     # ----------------------------------------------------------
 
-    _EXTRA_CHARGE_TYPES = ("impuesto", "recargo", "ajuste", "otro")
+    # Only the types with a special category: the category IS the type.
+    _EXTRA_CHARGE_TYPES = tuple(CATEGORIA_POR_CHARGE_TYPE)
 
     def add_extra_charge(
         self,
@@ -978,33 +1007,51 @@ class FeesService:
         concept:      str,
         charge_type:  str,
         amount_minor: int,
+        currency_code: Optional[str] = None,
+        date_str:     Optional[Any] = None,
     ) -> FeesResult:
         """
-        Adds an extra charge (tax, surcharge, adjustment) to an OPEN
-        statement. Does NOT touch resumenes_tarjeta.monto_impuestos_minor /
-        porcentaje_impuesto_bp — those are only recalculated for real by
-        close_statement() (see its docstring and
-        docs/DATA_MODEL_DECISIONS.md sección 12). Adding a charge here only
-        writes to resumen_cargos_extra.
+        Adds an extra charge (tax, surcharge, adjustment/refund) to an OPEN
+        statement, as a compras_cuotas row with es_cargo_extra = 1 — it
+        syncs like any purchase (docs/DATA_MODEL_DECISIONS.md section 28):
+        total_cuotas = 1, monto_total_minor = monto_por_cuota_minor =
+        amount_minor, the special category of charge_type
+        (CATEGORIAS_CARGO_EXTRA), and ONE fee in cuotas_credito on the
+        statement's month, already in it (resumen_id, 'en_resumen'). New
+        rows keep sincronizado_en NULL: pending upload.
+
+        Does NOT touch resumenes_tarjeta.monto_impuestos_minor /
+        porcentaje_impuesto_bp — only close_statement() recalculates them
+        (section 12).
 
         Args:
-            statement_id: The statement to add the charge to. Must be
-                         'abierto' — 'cerrado'/'pagado' statements reject
-                         further charges.
+            statement_id: The statement (card + month). Must be 'abierto' —
+                         'cerrado'/'pagado' statements reject further charges.
             concept:      Description. E.g. 'IVA', 'Impuesto PAIS'.
-            charge_type:  One of 'impuesto', 'recargo', 'ajuste', 'otro'.
-            amount_minor: The charge amount in minor units. Can be negative
-                         (e.g. an adjustment in the user's favor).
+            charge_type:  'impuesto', 'recargo' or 'ajuste' — the types with a
+                         special category ('otro' has none: no longer accepted).
+            amount_minor: In minor units, with its sign (negative = an
+                         adjustment in the user's favor).
+            currency_code: None = the card's only currency (cuentas_saldos).
+                         Not checked against the card's currencies — same as
+                         create_purchase(); the UI offers only those.
+            date_str:     'YYYY-MM-DD' or a date. None = day 1 of the
+                         statement's month.
 
         Returns:
-            FeesResult with the new charge id.
+            FeesResult with the new charge id (its compras_cuotas id).
 
         Raises:
             StatementNotFoundError if the statement does not exist.
-            FeesError if concept is empty.
-            ValueError if charge_type is not one of the valid types.
+            FeesError if concept is empty, the special category is not in the
+                database, or currency_code is None and the card does not have
+                exactly one currency.
+            ValueError for an invalid charge_type, an unknown currency or an
+                invalid date.
             StatementAlreadyPaidError if the statement is already paid.
             StatementAlreadyClosedError if the statement is closed (but not paid).
+            CompraDuplicadaError (repositories/compras_cuotas_repository.py)
+                for the same charge loaded twice within a few seconds.
         """
         statement = self._get_statement(statement_id)
 
@@ -1015,106 +1062,199 @@ class FeesService:
                 f"Invalid charge_type: '{charge_type}'. "
                 f"Expected one of {self._EXTRA_CHARGE_TYPES}."
             )
+        self._require_statement_open(statement)
+        categoria = self._categoria_de_cargo(charge_type)
+        moneda_id, moneda_codigo = self._moneda_de_cargo(statement["cuenta_id"], currency_code)
+        mes, anio = statement["mes"], statement["anio"]
+        fecha = self._validate_date(date_str) if date_str else f"{anio:04d}-{mes:02d}-01"
 
-        if statement["estado"] == "pagado":
-            raise StatementAlreadyPaidError(
-                f"Statement id={statement_id} is already paid and cannot be modified."
+        conn = self._db.conn
+        with self._db.transaction():
+            charge_id = self._compras_repo.crear(
+                fecha_compra=fecha,
+                concepto=concept.strip(),
+                cuenta_id=statement["cuenta_id"],
+                categoria_id=categoria["id"],
+                moneda_id=moneda_id,
+                monto_total_minor=amount_minor,
+                total_cuotas=1,
+                monto_por_cuota_minor=amount_minor,
+                es_cargo_extra=True,
+                conn=conn,
             )
-        if statement["estado"] == "cerrado":
-            raise StatementAlreadyClosedError(
-                f"Statement id={statement_id} is closed and cannot be modified."
+            (fee_id,) = self._cuotas_repo.crear_lote(
+                compra_id=charge_id,
+                cuotas=[{"numero_cuota": 1, "mes_proyectado": mes, "anio_proyectado": anio,
+                         "monto_cuota_minor": amount_minor}],
+                conn=conn,
             )
-
-        charge_id = self._cargos_repo.agregar(
-            statement_id, concept.strip(), charge_type, amount_minor,
-        )
+            self._cuotas_repo.marcar_estado(fee_id, "en_resumen", resumen_id=statement_id, conn=conn)
 
         return FeesResult(
             success=True,
             entity_id=charge_id,
             data={
-                "charge_id":    charge_id,
-                "statement_id": statement_id,
-                "concept":      concept.strip(),
-                "charge_type":  charge_type,
-                "amount_minor": amount_minor,
+                "charge_id":     charge_id,
+                "fee_id":        fee_id,
+                "statement_id":  statement_id,
+                "concept":       concept.strip(),
+                "charge_type":   charge_type,
+                "amount_minor":  amount_minor,
+                "currency_code": moneda_codigo,
+                "date":          fecha,
             },
             message=f"Extra charge '{concept.strip()}' ({charge_type}) added to statement #{statement_id}.",
         )
 
-    def list_extra_charges(self, statement_id: str) -> list[sqlite3.Row]:
+    def list_extra_charges(self, statement_id: str) -> list[dict]:
         """
-        Returns all extra charges of a statement.
-
-        Args:
-            statement_id: Primary key in resumenes_tarjeta.
-
-        Returns:
-            List of resumen_cargos_extra rows.
+        The extra charges of a statement (the ones whose fee is in it), in
+        creation order, with the shape of _as_extra_charge().
 
         Raises:
             StatementNotFoundError if the statement does not exist.
         """
         self._get_statement(statement_id)  # validate existence
-        return self._cargos_repo.listar_por_resumen(statement_id)
+        cargos = []
+        for cuota in self._cuotas_repo.listar_por_resumen(statement_id):
+            compra = self._compras_repo.obtener_enriquecida(cuota["compra_id"])
+            if compra is not None and compra["es_cargo_extra"]:
+                cargos.append(self._as_extra_charge(dict(compra)))  # CLAUDE.md §11
+        return cargos
+
+    def delete_extra_charge(self, charge_id: str) -> FeesResult:
+        """
+        Deletes an extra charge (its compras_cuotas row and its fee) while
+        its statement is still open — the same rule as before for a charge
+        (CLAUDE.md §4: the statement is what gives it state of its own).
+        Also blocked if something was shared from it (the UI does not let
+        it, but the purchase rules apply).
+
+        Raises:
+            PurchaseNotFoundError if charge_id does not exist.
+            FeesError if it is a regular purchase (use delete_purchase()), or
+                it is shared.
+            StatementAlreadyPaidError / StatementAlreadyClosedError if its
+                statement is paid / closed.
+        """
+        compra = self._get_purchase(charge_id)
+        if not compra["es_cargo_extra"]:
+            raise FeesError(f"Purchase id={charge_id} is not an extra charge — use delete_purchase().")
+        cuotas = self._cuotas_repo.listar_por_compra(charge_id)
+        for resumen_id in {c["resumen_id"] for c in cuotas if c["resumen_id"]}:
+            self._require_statement_open(self._get_statement(resumen_id))
+        accion = "it cannot be deleted"
+        self._require_purchase_not_shared(charge_id, accion)
+        self._require_fees_not_shared(charge_id, cuotas, accion)
+
+        conn = self._db.conn
+        with self._db.transaction():
+            fees_deleted = self._cuotas_repo.eliminar_por_compra(charge_id, conn=conn)
+            self._compras_repo.eliminar(charge_id, conn=conn)
+
+        return FeesResult(
+            success=True,
+            entity_id=charge_id,
+            data={"charge_id": charge_id, "fees_deleted": fees_deleted},
+            message=f"Extra charge #{charge_id} deleted.",
+        )
 
     def remove_extra_charge(self, charge_id: str, statement_id: str) -> FeesResult:
         """
-        Removes an extra charge from an OPEN statement. Requires both ids
-        so the charge's ownership can be validated — a charge_id that
-        exists but belongs to a different statement is rejected, instead
-        of silently deleting the wrong row.
-
-        Does NOT touch resumenes_tarjeta.monto_impuestos_minor /
-        porcentaje_impuesto_bp — same reasoning as add_extra_charge().
-
-        Args:
-            charge_id:    The resumen_cargos_extra row to remove.
-            statement_id: The statement it must belong to.
-
-        Returns:
-            FeesResult with success=True.
+        delete_extra_charge(), checking first that the charge belongs to
+        that statement — a charge_id that exists but is on a different
+        statement is rejected, instead of silently deleting the wrong row.
+        Kept for the callers that already pass the statement.
 
         Raises:
             StatementNotFoundError if the statement does not exist.
             FeesError if the charge does not exist or belongs to a
                       different statement.
-            StatementAlreadyPaidError if the statement is already paid.
-            StatementAlreadyClosedError if the statement is closed (but not paid).
+            The errors of delete_extra_charge().
         """
-        statement = self._get_statement(statement_id)
+        self._get_statement(statement_id)
+        compra = self._compras_repo.obtener_por_id(charge_id)
+        cuotas = self._cuotas_repo.listar_por_compra(charge_id) if compra is not None else []
+        if compra is None or not compra["es_cargo_extra"] or all(c["resumen_id"] != statement_id for c in cuotas):
+            raise FeesError(f"Extra charge id={charge_id} not found on statement id={statement_id}.")
+        return self.delete_extra_charge(charge_id)
 
-        charge = self._cargos_repo.obtener_por_id(charge_id)
-        if charge is None or charge["resumen_id"] != statement_id:
+    def _as_extra_charge(self, compra: dict) -> dict:
+        """
+        An extra charge as list_extra_charges() / list_extra_charges_in_month()
+        return it: id (its compras_cuotas id), cuenta_id, account_name,
+        concepto, categoria_id, category_name, tipo (charge_type, from its
+        special category), monto_minor (with its sign), fecha, moneda_id,
+        currency_code, currency_symbol, decimales, and from its fee:
+        resumen_id, mes / anio (the statement's month) and estado_cuota.
+        `compra`: the enriched shape (get_purchase()).
+        """
+        cuotas = self._cuotas_repo.listar_por_compra(compra["id"])
+        cuota = cuotas[0] if cuotas else None
+        return {
+            "id":              compra["id"],
+            "cuenta_id":       compra["cuenta_id"],
+            "account_name":    compra["account_name"],
+            "concepto":        compra["concepto"],
+            "categoria_id":    compra["categoria_id"],
+            "category_name":   compra["category_name"],
+            "tipo":            _CHARGE_TYPE_POR_SUBCATEGORIA.get(compra["category_name"]),
+            "monto_minor":     compra["monto_total_minor"],
+            "fecha":           compra["fecha_compra"],
+            "moneda_id":       compra["moneda_id"],
+            "currency_code":   compra["currency_code"],
+            "currency_symbol": compra["currency_symbol"],
+            "decimales":       compra["decimales"],
+            "resumen_id":      cuota["resumen_id"] if cuota else None,
+            "mes":             cuota["mes_proyectado"] if cuota else None,
+            "anio":            cuota["anio_proyectado"] if cuota else None,
+            "estado_cuota":    cuota["estado"] if cuota else None,
+        }
+
+    def _categoria_de_cargo(self, charge_type: str) -> sqlite3.Row:
+        """The special category of a charge type. FeesError if it is not in the database."""
+        principal, subcategoria = CATEGORIA_POR_CHARGE_TYPE[charge_type]
+        categoria = self._categorias_repo.obtener_por_nombre(principal, subcategoria)
+        if categoria is None:
             raise FeesError(
-                f"Extra charge id={charge_id} not found on statement id={statement_id}."
+                f"Special category '{principal} · {subcategoria}' not found "
+                f"(see migration/agregar_categorias_tarjeta.py)."
             )
+        return categoria
 
+    def _moneda_de_cargo(self, cuenta_id: str, currency_code: Optional[str]) -> tuple[int, str]:
+        """(moneda_id, codigo) of a charge: currency_code, or the card's only currency."""
+        if currency_code:
+            moneda = self._get_currency(currency_code)
+            return moneda["id"], moneda["codigo"]
+        saldos = self._cuentas_repo.listar_saldos(cuenta_id)
+        if len(saldos) != 1:
+            raise FeesError(
+                f"Account id={cuenta_id} operates in {len(saldos)} currencies: pass currency_code."
+            )
+        return saldos[0]["moneda_id"], saldos[0]["codigo"]
+
+    @staticmethod
+    def _require_statement_open(statement: sqlite3.Row) -> None:
+        """StatementAlreadyPaidError / StatementAlreadyClosedError unless the statement is 'abierto'."""
         if statement["estado"] == "pagado":
             raise StatementAlreadyPaidError(
-                f"Statement id={statement_id} is already paid and cannot be modified."
+                f"Statement id={statement['id']} is already paid and cannot be modified."
             )
         if statement["estado"] == "cerrado":
             raise StatementAlreadyClosedError(
-                f"Statement id={statement_id} is closed and cannot be modified."
+                f"Statement id={statement['id']} is closed and cannot be modified."
             )
-
-        self._cargos_repo.eliminar(charge_id)
-
-        return FeesResult(
-            success=True,
-            entity_id=charge_id,
-            data={"charge_id": charge_id, "statement_id": statement_id},
-            message=f"Extra charge #{charge_id} removed from statement #{statement_id}.",
-        )
 
     def close_statement(self, statement_id: str) -> FeesResult:
         """
         Marks a statement as 'cerrado' (reviewed, ready to pay) and
         CONSOLIDATES its totals for real: monto_consumos_minor is
         recalculated as the sum of every cuotas_credito row linked to this
-        statement, monto_impuestos_minor as the sum of every
-        resumen_cargos_extra row of this statement, and
+        statement that belongs to a purchase, monto_impuestos_minor as the
+        sum of its extra charges (the linked fees of es_cargo_extra rows —
+        section 28 — plus any row left in the deprecated
+        resumen_cargos_extra; see ResumenesTarjetaRepository.marcar_cerrado()), and
         porcentaje_impuesto_bp is derived from both
         (monto_impuestos_minor*10000 // monto_consumos_minor, 0 if there are
         no consumos). This is one of the two intentionally sanctioned
@@ -1793,7 +1933,7 @@ class FeesService:
         )
 
     # ----------------------------------------------------------
-    # CARD CONFIG (tarjetas_config: closing / due day of each card)
+    # CARD CONFIG (tarjetas_config: default closing / due day of each card)
     # ----------------------------------------------------------
 
     @staticmethod
@@ -1839,18 +1979,141 @@ class FeesService:
             message=f"Card #{account_id}: closes on day {closing_day}, due on day {due_day}.",
         )
 
-    def card_cycle_dates(self, account_id: str, today: Optional[Any] = None) -> Optional[dict]:
+    # ----------------------------------------------------------
+    # STATEMENT DATES (tarjetas_resumenes: real dates of one statement — section 29)
+    # ----------------------------------------------------------
+    # A statement is keyed by (month, year): the month its closing falls on
+    # with the default day (dia_cierre) — the same period card_cycle_dates()
+    # walks. Its real closing / due date (tarjetas_resumenes) wins over the
+    # calculated one; each one separately.
+
+    def _fechas_resumen(
+        self, account_id: str, month: int, year: int, config: Optional[sqlite3.Row],
+    ) -> dict:
         """
-        Previous / current / next statement of a card, from its config:
+        {"mes", "anio", "cierre", "vencimiento" (date or None),
+        "cierre_especifica", "vencimiento_especifica" (bool)} of the
+        statement (month, year): the real date when there is one, otherwise
+        the one `config` (tarjetas_config of the card) gives — None without
+        config. With a real closing date and no real due date, the due date
+        is calculated from that real closing (_due_date()).
+        """
+        fila = self._fechas_resumen_repo.obtener(account_id, month, year)
+        cierre_real = fila["fecha_cierre"] if fila is not None else None
+        vence_real = fila["fecha_vence"] if fila is not None else None
+        if cierre_real:
+            cierre: Optional[date] = date.fromisoformat(cierre_real)
+        elif config is not None:
+            cierre = self._day_in_month(config["dia_cierre"], month, year)
+        else:
+            cierre = None
+        if vence_real:
+            vencimiento: Optional[date] = date.fromisoformat(vence_real)
+        elif config is not None and cierre is not None:
+            dia_cierre = cierre.day if cierre_real else config["dia_cierre"]
+            vencimiento = self._due_date(cierre, dia_cierre, config["dia_vencimiento"])
+        else:
+            vencimiento = None
+        return {
+            "mes": month, "anio": year, "cierre": cierre, "vencimiento": vencimiento,
+            "cierre_especifica": bool(cierre_real), "vencimiento_especifica": bool(vence_real),
+        }
+
+    def get_fecha_cierre(self, account_id: str, month: int, year: int) -> Optional[str]:
+        """
+        'YYYY-MM-DD' closing date of the card's statement (month, year): the
+        real one (tarjetas_resumenes) if there is one; otherwise dia_cierre
+        of that month (its last day when the month is shorter). None if the
+        card has neither.
+
+        Raises:
+            FeesError for an invalid period.
+        """
+        month, year = self._validate_period(month, year, "Statement")
+        cierre = self._fechas_resumen(account_id, month, year, self._tarjetas_repo.obtener(account_id))["cierre"]
+        return cierre.isoformat() if cierre is not None else None
+
+    def get_fecha_vencimiento(self, account_id: str, month: int, year: int) -> Optional[str]:
+        """
+        'YYYY-MM-DD' due date of the card's statement (month, year): the
+        real one (tarjetas_resumenes) if there is one; otherwise
+        dia_vencimiento after its closing date (_due_date(), from the real
+        closing date when there is one). None if it cannot be worked out.
+
+        Raises:
+            FeesError for an invalid period.
+        """
+        month, year = self._validate_period(month, year, "Statement")
+        vencimiento = self._fechas_resumen(account_id, month, year, self._tarjetas_repo.obtener(account_id))["vencimiento"]
+        return vencimiento.isoformat() if vencimiento is not None else None
+
+    def set_fechas_resumen(
+        self,
+        account_id:   str,
+        month:        int,
+        year:         int,
+        closing_date: Any = NO_CAMBIAR,
+        due_date:     Any = NO_CAMBIAR,
+    ) -> FeesResult:
+        """
+        Saves the real closing and/or due date of one statement (month,
+        year) of a credit card. NO_CAMBIAR (default) leaves that date as it
+        is; None or "" deletes it (back to the calculated one).
+
+        Returns:
+            FeesResult with the resulting dates ('cierre' / 'vencimiento',
+            'YYYY-MM-DD' or None).
+
+        Raises:
+            FeesError if the account does not exist, is inactive or is not a
+                credit card, for an invalid period, or if the resulting due
+                date is not after the resulting closing date (nothing is
+                saved).
+            ValueError for an invalid date.
+        """
+        cuenta = self._get_account(account_id)
+        if cuenta["tipo"] != "credito":
+            raise FeesError(f"Account id={account_id} is not a credit card.")
+        month, year = self._validate_period(month, year, "Statement")
+        cambios = {
+            columna: (self._validate_date(valor) if valor else None)
+            for columna, valor in (("fecha_cierre", closing_date), ("fecha_vence", due_date))
+            if valor is not NO_CAMBIAR
+        }
+
+        config = self._tarjetas_repo.obtener(account_id)
+        with self._db.transaction() as conn:
+            self._fechas_resumen_repo.guardar(account_id, month, year, **cambios, conn=conn)
+            # Lee sobre la misma conexión: ve lo recién escrito; si no cierra, rollback.
+            fechas = self._fechas_resumen(account_id, month, year, config)
+            if fechas["cierre"] and fechas["vencimiento"] and fechas["vencimiento"] <= fechas["cierre"]:
+                raise FeesError(
+                    f"The due date ({fechas['vencimiento'].isoformat()}) must be after the closing date "
+                    f"({fechas['cierre'].isoformat()})."
+                )
+
+        cierre = fechas["cierre"].isoformat() if fechas["cierre"] else None
+        vencimiento = fechas["vencimiento"].isoformat() if fechas["vencimiento"] else None
+        return FeesResult(
+            success=True,
+            entity_id=account_id,
+            data={"mes": month, "anio": year, "cierre": cierre, "vencimiento": vencimiento},
+            message=f"Card #{account_id}, statement {month:02d}/{year}: closes {cierre}, due {vencimiento}.",
+        )
+
+    def card_cycle_periods(self, account_id: str, today: Optional[Any] = None) -> Optional[dict]:
+        """
+        Previous / current / next statement of a card, with their real
+        dates when there are (tarjetas_resumenes):
             {"dia_cierre": 15, "dia_vencimiento": 5,
-             "anterior": {"cierre": "2026-08-15", "vencimiento": "2026-09-05"},
-             "actual":   {"cierre": "2026-09-15", "vencimiento": "2026-10-05"},
-             "proximo":  {"cierre": "2026-10-15", "vencimiento": "2026-11-05"}}
+             "anterior": {"mes": 8, "anio": 2026, "cierre": "2026-08-15",
+                          "vencimiento": "2026-09-05", "cierre_especifica": False,
+                          "vencimiento_especifica": False},
+             "actual": {...}, "proximo": {...}}
         "actual" is the statement that closed most recently (closing date
-        <= today), "anterior" the one before it, "proximo" the one that
-        closes next. Closing = dia_cierre of each month (the month's last day
-        when it is shorter); due date: see _due_date(). None if the card has
-        no config.
+        <= today, the real one if set), "anterior" the one before it,
+        "proximo" the one after. None if the card has no config (the days
+        define the periods).
 
         Args:
             today: 'YYYY-MM-DD' or a date; None = today.
@@ -1862,42 +2125,76 @@ class FeesService:
         if config is None:
             return None
         hoy = date.fromisoformat(self._validate_date(today)) if today is not None else date.today()
-        dia_cierre, dia_vencimiento = config["dia_cierre"], config["dia_vencimiento"]
-        month, year = hoy.month, hoy.year
-        if self._day_in_month(dia_cierre, month, year) > hoy:
-            month, year = self._add_months(month, year, -1)  # this month's statement has not closed yet
+        # Desde el mes siguiente para atrás: una fecha real puede adelantar
+        # un cierre a este mes. Tope de pasos por si las fechas reales no
+        # tienen sentido entre sí.
+        month, year = self._add_months(hoy.month, hoy.year, 1)
+        for _ in range(MAX_PASOS_RESUMEN_ACTUAL):
+            if self._fechas_resumen(account_id, month, year, config)["cierre"] <= hoy:
+                break
+            month, year = self._add_months(month, year, -1)
 
-        def _resumen(delta: int) -> dict:
+        def _periodo(delta: int) -> dict:
             m, a = self._add_months(month, year, delta)
-            cierre = self._day_in_month(dia_cierre, m, a)
-            return {
-                "cierre": cierre.isoformat(),
-                "vencimiento": self._due_date(cierre, dia_cierre, dia_vencimiento).isoformat(),
-            }
+            fechas = self._fechas_resumen(account_id, m, a, config)
+            return {**fechas, "cierre": fechas["cierre"].isoformat(), "vencimiento": fechas["vencimiento"].isoformat()}
 
         return {
-            "dia_cierre": dia_cierre,
-            "dia_vencimiento": dia_vencimiento,
-            "anterior": _resumen(-1),
-            "actual": _resumen(0),
-            "proximo": _resumen(1),
+            "dia_cierre": config["dia_cierre"],
+            "dia_vencimiento": config["dia_vencimiento"],
+            "anterior": _periodo(-1),
+            "actual": _periodo(0),
+            "proximo": _periodo(1),
+        }
+
+    def card_cycle_dates(self, account_id: str, today: Optional[Any] = None) -> Optional[dict]:
+        """
+        card_cycle_periods() with only the dates of each statement:
+            {"dia_cierre": 15, "dia_vencimiento": 5,
+             "anterior": {"cierre": "2026-08-15", "vencimiento": "2026-09-05"},
+             "actual":   {"cierre": "2026-09-15", "vencimiento": "2026-10-05"},
+             "proximo":  {"cierre": "2026-10-15", "vencimiento": "2026-11-05"}}
+        Closing = the real date, or dia_cierre of each month (the month's
+        last day when it is shorter); due date: the real one, or see
+        _due_date(). None if the card has no config.
+
+        Raises:
+            ValueError for an invalid `today`.
+        """
+        periodos = self.card_cycle_periods(account_id, today)
+        if periodos is None:
+            return None
+        return {
+            "dia_cierre": periodos["dia_cierre"],
+            "dia_vencimiento": periodos["dia_vencimiento"],
+            **{
+                clave: {"cierre": periodos[clave]["cierre"], "vencimiento": periodos[clave]["vencimiento"]}
+                for clave in ("anterior", "actual", "proximo")
+            },
         }
 
     def suggest_first_fee(self, account_id: Optional[str], date_str: Any) -> tuple[int, int]:
         """
         Suggested (month, year) of fee #1 for a purchase made on date_str:
-        the month after the purchase; two months after when the card has a
-        closing day configured and the purchase is after it that month (it
-        goes into the next statement). account_id None (no card chosen yet)
-        or a card without config → the month after.
+        the month after the statement it falls into — the first one that
+        closes on the purchase day or later, with its real closing date when
+        there is one (get_fecha_cierre()). With only the default days: the
+        month after the purchase, or two months after when it is after that
+        month's closing day. account_id None (no card chosen yet) or a card
+        without any closing date → the month after.
 
         Raises:
             ValueError for an invalid date.
         """
         compra = date.fromisoformat(self._validate_date(date_str))
-        meses = 1
-        config = self._tarjetas_repo.obtener(account_id) if account_id is not None else None
-        if config is not None and compra > self._day_in_month(config["dia_cierre"], compra.month, compra.year):
-            meses = 2
-        return self._add_months(compra.month, compra.year, meses)
+        if account_id is not None:
+            config = self._tarjetas_repo.obtener(account_id)
+            # Desde el resumen del mes anterior: una fecha real puede pasar
+            # su cierre a este mes.
+            for delta in DELTAS_RESUMEN_DE_UNA_COMPRA:
+                month, year = self._add_months(compra.month, compra.year, delta)
+                cierre = self._fechas_resumen(account_id, month, year, config)["cierre"]
+                if cierre is not None and compra <= cierre:
+                    return self._add_months(month, year, 1)
+        return self._add_months(compra.month, compra.year, 1)
 

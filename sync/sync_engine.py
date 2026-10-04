@@ -132,7 +132,7 @@ from ui.utils.prefs import escribir_pref, leer_pref
 TABLAS_PRIVADAS = [
     "transacciones", "cuentas", "categorias", "deudas",
     "compras_cuotas", "presupuestos", "ingresos_proyectados",
-    "cuentas_saldos", "cuotas_credito", "resumenes_tarjeta", "tarjetas_config",
+    "cuentas_saldos", "cuotas_credito", "resumenes_tarjeta", "tarjetas_config", "tarjetas_resumenes",
 ]
 TABLAS_COMPARTIDAS = [
      "hogares", "hogar_miembros", "gastos_compartidos", "gasto_compartido_pagos",

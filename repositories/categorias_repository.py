@@ -34,6 +34,13 @@ class CategoriasRepository:
     def obtener_por_id(self, categoria_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM categorias WHERE id = ?;", (categoria_id,))
 
+    def obtener_por_nombre(self, categoria_principal: str, subcategoria: str) -> Optional[sqlite3.Row]:
+        """Por su clave natural (UNIQUE(categoria_principal, subcategoria)), activa o no."""
+        return self._db.fetchone(
+            "SELECT * FROM categorias WHERE categoria_principal = ? AND subcategoria = ?;",
+            (categoria_principal, subcategoria),
+        )
+
     def actualizar(
         self,
         categoria_id: str,

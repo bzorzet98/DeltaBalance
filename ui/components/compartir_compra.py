@@ -34,6 +34,11 @@ No se puede elegir modo_deuda desde acá (pedido explícito): usa el que ya
 tiene la compra guardada (compras_cuotas.modo_deuda, default
 'prorrateado' si nunca se seteó explícito al crearla).
 
+Reparto: [%] [0.XX] [$] — ver ui/components/reparto_compartido.py
+(compartido con compartir_gasto.py y compartir_varios.py). La base es el
+total de la compra (monto_base_compra()); con $ el monto fijo es sobre ese
+total.
+
 Identidad del usuario local y diálogo de "todavía no tenés hogar": ver
 ui/components/usuario_local.py, compartido con compartir_gasto.py.
 
@@ -44,16 +49,32 @@ compras_cuotas/cuotas_credito desde acá) — nunca repositories/ ni db/
 directo (CLAUDE.md §2/§3).
 """
 
-from typing import Callable, Optional
+from typing import Callable
 
 import flet as ft
 
 from services.fees_service import FeesService
 from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
-from ui.components.usuario_local import abrir_dialogo_sin_hogar, obtener_usuario_local
+from ui.components.reparto_compartido import RepartoCompartido
+from ui.components.tipo_valor import TIPO_PORCENTAJE
+from ui.components.usuario_local import abrir_dialogo_sin_hogar, obtener_usuario_local, ordenar_hogares
 
 # --- Configuración de layout ---
 ANCHO_DIALOGO = 360
+ESPACIADO = 10
+ETIQUETA_PREVIA_COMPRA = "ADEUDADO SOBRE EL TOTAL"
+
+
+def monto_base_compra(compra: dict) -> int:
+    """
+    Monto base de la compra ENTERA (con signo: negativo en una devolución) —
+    el mismo que usa add_shared_purchase() en modo 'total_unico'
+    (monto_total_minor − monto_reintegro_minor). Es la base del reparto en
+    los diálogos: con $, el monto fijo se pasa a % de este total y ese % se
+    aplica igual a cada cuota en modo 'prorrateado' (si ya había cuotas
+    compartidas, el adeudado nuevo es proporcionalmente menor).
+    """
+    return compra["monto_total_minor"] - (compra["monto_reintegro_minor"] or 0)
 
 
 def _estado_compartido(
@@ -121,49 +142,37 @@ def build_icon(
     # ------------------------------------------------------------
     def _abrir_cargar_compra(usuario_local: str, mis_hogares: list[dict]) -> None:
         hogar_seleccionado = {"id": mis_hogares[0]["hogar_id"]}
-
-        def _sugerencia(hogar_id: str) -> tuple[Optional[float], str]:
-            otros = [
-                m for m in shared_expenses_service.list_miembros(hogar_id)
-                if m["usuario_local"] != usuario_local
-            ]
-            if not otros:
-                return None, "Sin otro miembro en este hogar todavía."
-            otro = otros[0]
-            sugerido = shared_expenses_service.get_suggested_coefficient(hogar_id, otro["usuario_local"])
-            if sugerido is None:
-                return None, f"'{otro['usuario_local']}' no tiene un coeficiente default configurado."
-            return sugerido, f"Sugerido según el default de '{otro['usuario_local']}'."
-
-        sugerido_inicial, ayuda_inicial = _sugerencia(hogar_seleccionado["id"])
-        campo_coeficiente = ft.TextField(
-            label="Coeficiente (%) del otro miembro",
-            value=str(sugerido_inicial) if sugerido_inicial is not None else "",
-            helper_text=ayuda_inicial,
-            autofocus=(len(mis_hogares) == 1),
+        base_total = monto_base_compra(compra)
+        # [%] [0.XX] [$] (ui/components/reparto_compartido.py); arranca en %,
+        # el formato que tenía este diálogo. Con $ el monto fijo es sobre el
+        # TOTAL de la compra (ver monto_base_compra()).
+        reparto = RepartoCompartido(
+            page, shared_expenses_service, usuario_local, hogar_seleccionado["id"],
+            decimales=compra["decimales"], tipo_inicial=TIPO_PORCENTAJE,
+            base_minor=base_total, simbolo=compra["currency_symbol"] or "",
+            etiqueta_previa=ETIQUETA_PREVIA_COMPRA, autofocus=(len(mis_hogares) == 1),
+            # Enter no comparte: del valor pasa al botón (ahí Enter o click confirman).
+            on_enter=lambda: page.run_task(boton_confirmar.focus),
         )
 
         def _on_select_hogar(e: ft.ControlEvent) -> None:
             hogar_seleccionado["id"] = dropdown_hogar.value
-            sugerido, ayuda = _sugerencia(hogar_seleccionado["id"])
-            campo_coeficiente.value = str(sugerido) if sugerido is not None else ""
-            campo_coeficiente.helper_text = ayuda
-            page.update()
+            reparto.cambiar_hogar(hogar_seleccionado["id"])
 
-        controles: list[ft.Control] = [ft.Text(f"Modo de deuda de esta compra: {compra['modo_deuda']}.")]
+        controles: list[ft.Control] = [ft.Text(f"MODO DE DEUDA DE ESTA COMPRA: {compra['modo_deuda'].upper()}.")]
         if compra["modo_deuda"] == "prorrateado" and compartidas > 0:
             controles.append(
                 ft.Text(
-                    f"{compartidas} de {total} cuota(s) ya tenían un gasto compartido y se van a saltear — "
-                    f"esto va a compartir las {total - compartidas} restante(s).",
+                    f"{compartidas} DE {total} CUOTA(S) YA TENÍAN UN GASTO COMPARTIDO Y SE VAN A SALTEAR — "
+                    f"ESTO VA A COMPARTIR LAS {total - compartidas} RESTANTE(S).",
                     color=ft.Colors.OUTLINE,
                 )
             )
         if len(mis_hogares) > 1:
             dropdown_hogar = ft.Dropdown(
-                label="Hogar",
+                label="HOGAR",
                 options=[
-                    ft.dropdown.Option(key=str(h["hogar_id"]), text=h["nombre"] or f"Hogar #{h['hogar_id']}")
+                    ft.dropdown.Option(key=str(h["hogar_id"]), text=(h["nombre"] or f"HOGAR #{h['hogar_id']}").upper())
                     for h in mis_hogares
                 ],
                 value=str(hogar_seleccionado["id"]),
@@ -171,13 +180,13 @@ def build_icon(
                 autofocus=True,
             )
             controles.append(dropdown_hogar)
-        controles.append(campo_coeficiente)
+        controles.append(reparto.control)
 
-        def _confirmar(e: ft.ControlEvent) -> None:
+        def _confirmar(e=None) -> None:
             try:
-                coeficiente = float((campo_coeficiente.value or "").strip().replace(",", "."))
-            except ValueError:
-                _mostrar_mensaje("El coeficiente no es un número válido.", es_error=True)
+                coeficiente = reparto.porcentaje(base_total)
+            except ValueError as err:
+                _mostrar_mensaje(str(err), es_error=True)
                 return
             try:
                 resultado = shared_expenses_service.add_shared_purchase(
@@ -190,19 +199,20 @@ def build_icon(
                 _mostrar_mensaje(str(err), es_error=True)
                 return
             _cerrar_dialogo()
-            _mostrar_mensaje(f"{resultado.data['gastos_creados']} gasto(s) compartido(s) registrado(s).")
+            _mostrar_mensaje(f"{resultado.data['gastos_creados']} GASTO(S) COMPARTIDO(S) REGISTRADO(S).")
             on_cambio()
 
+        boton_confirmar = ft.ElevatedButton(content=ft.Text("CONFIRMAR"), on_click=_confirmar)
         dialogo = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Compartir esta compra"),
+            title=ft.Text("COMPARTIR ESTA COMPRA"),
             content=ft.Container(
                 width=ANCHO_DIALOGO,
-                content=ft.Column(controles, tight=True, spacing=10, scroll=ft.ScrollMode.AUTO),
+                content=ft.Column(controles, tight=True, spacing=ESPACIADO, scroll=ft.ScrollMode.AUTO),
             ),
             actions=[
-                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar),
+                ft.TextButton(content=ft.Text("CANCELAR"), on_click=_cerrar_dialogo),
+                boton_confirmar,
             ],
             actions_alignment=ft.MainAxisAlignment.END,
         )
@@ -245,7 +255,11 @@ def build_icon(
     # del bug corregido.
     async def _abrir_flujo() -> None:
         usuario_local = await obtener_usuario_local(page)
-        mis_hogares = shared_expenses_service.list_my_hogares(usuario_local) if usuario_local else []
+        # El hogar por defecto (el primero) es el de más miembros — ver ordenar_hogares().
+        mis_hogares = (
+            ordenar_hogares(shared_expenses_service, shared_expenses_service.list_my_hogares(usuario_local))
+            if usuario_local else []
+        )
         if not mis_hogares:
             _abrir_sin_hogar(nombre_prellenado=usuario_local or "")
             return

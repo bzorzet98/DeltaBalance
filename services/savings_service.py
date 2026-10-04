@@ -79,19 +79,61 @@ Purpose:
       get_balance_por_cuenta(), que sí lo hacen). Pensadas para el
       dashboard de ui/screens/ahorros.py ("Por tipo de ahorro"/"Por
       activo"), ver esos métodos para el detalle completo.
+
+    Rediseño de Ahorros e Inversiones (pedido explícito; schema en
+    db/schema_migrations.py — ampliar_tipos_ahorro() — y db/schema.sql):
+    - Brokers (get_brokers()) y activos con broker_id y comisiones por
+      defecto (create_activo()). Tipos nuevos: 'cedear' y 'plazo_flex'.
+    - Reparto VIGENTE de cada activo entre objetivos (activo_objetivos:
+      assign_objetivo()/remove_objetivo(), suma <= 100). Decisión del
+      usuario: cada movimiento de los métodos nuevos (registrar_*())
+      genera sus `asignaciones` con esos porcentajes — así
+      get_objetivo_balance() y el resto de los saldos por objetivo siguen
+      andando. La venta también se prorratea (el pedido no le pone
+      objetivo); lo que no está repartido (suma < 100) queda sin asignar.
+      Los activos que ya existían arrancan sin reparto.
+    - Movimiento 'aporte' (CHECK ampliado de movimientos_activo.tipo — en
+      vez de la columna tipo_movimiento del pedido, decisión del usuario):
+      plata que entra a un FCI / plazo, sin unidades. Las agregaciones de
+      siempre lo cuentan igual que una compra.
+    - registrar_compra()/registrar_venta() (acciones, CEDEARs: cantidad ×
+      precio ± comisión), registrar_aporte()/registrar_retiro() (FCI,
+      plazos: monto — no estaban en el pedido, son los movimientos de esos
+      tipos en el diálogo) y registrar_rendimiento(). Todos pueden vincular
+      una transacción del Registro ya existente (transaccion_id); si no, y
+      el activo tiene cuenta_id, crean la transacción real como siempre
+      (Tarea 6g). Comparten _registrar_movimiento().
+    - get_resumen_por_tipo()/get_resumen_por_objetivo(): para la pestaña
+      RESUMEN y las tarjetas de cada tipo.
+    Los mensajes nuevos (los de estos métodos) ya vienen en MAYÚSCULAS;
+    los de los métodos anteriores siguen en inglés.
 """
 
+import math
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Optional
 
 from db.database import DatabaseManager
+from repositories.activo_objetivos_repository import TOLERANCIA_PORCENTAJE, ActivoObjetivosRepository
 from repositories.activos_financieros_repository import ActivosFinancierosRepository
+from repositories.brokers_repository import BrokersRepository
 from repositories.objetivos_ahorro_repository import ObjetivosAhorroRepository
-from repositories.movimientos_activo_repository import MovimientosActivoRepository
+from repositories.movimientos_activo_repository import MovimientoDuplicadoError, MovimientosActivoRepository
 from repositories.asignaciones_repository import AsignacionesRepository
 from repositories.transacciones_repository import TransaccionesRepository
 from repositories.cuentas_repository import CuentasRepository
+
+# Tipos de activo, en el orden de las pestañas de ui/screens/ahorros.py
+# (CHECK de activos_financieros.tipo, db/schema_migrations.py).
+TIPOS_ACTIVO = ("fci", "accion", "cedear", "plazo_fijo", "plazo_flex", "cripto", "otro")
+# Los que se cuentan en unidades (cantidad × precio); el resto, en plata (monto).
+TIPOS_POR_UNIDADES = ("accion", "cedear")
+# get_resumen_por_objetivo(): la parte de los activos que no está repartida.
+OBJETIVO_SIN_ASIGNAR = "SIN ASIGNAR"
+# Transacciones del Registro que se ofrecen para vincular (list_transacciones_vinculables()).
+MAX_TRANSACCIONES_VINCULABLES = 500
 
 # =============================================================
 # EXCEPTIONS
@@ -145,6 +187,10 @@ class CategoryNotFoundError(SavingsError):
     un TypeError crudo si algún día falta."""
 
 
+class BrokerNotFoundError(SavingsError):
+    """Raised when a referenced broker does not exist."""
+
+
 # =============================================================
 # RESULT TYPE
 # =============================================================
@@ -185,6 +231,8 @@ class SavingsService:
         self._asignaciones_repo = AsignacionesRepository(db)
         self._transacciones_repo = TransaccionesRepository(db)
         self._cuentas_repo = CuentasRepository(db)
+        self._brokers_repo = BrokersRepository(db)
+        self._activo_objetivos_repo = ActivoObjetivosRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -244,12 +292,69 @@ class SavingsService:
             )
         return row["id"]
 
+    def _get_broker(self, broker_id: str) -> sqlite3.Row:
+        row = self._brokers_repo.obtener_por_id(broker_id)
+        if row is None:
+            raise BrokerNotFoundError(f"EL BROKER {broker_id} NO EXISTE.")
+        return row
+
+    def _crear_transaccion_vinculada(
+        self, activo: sqlite3.Row, fecha: str, monto_minor: int, tipo_movimiento: str,
+        concepto: str, notas: Optional[str], conn: sqlite3.Connection,
+    ) -> Optional[str]:
+        """
+        Transacción real del movimiento (Tareas 6b/6g): en la cuenta del
+        activo, con la categoría protegida 'Ahorro/Inversión' y la moneda
+        del activo. None si el activo no tiene cuenta (movimiento informal).
+        """
+        if activo["cuenta_id"] is None:
+            return None
+        return self._transacciones_repo.crear(
+            fecha=fecha,
+            concepto=concepto,
+            cuenta_id=activo["cuenta_id"],
+            categoria_id=self._get_categoria_ahorro_inversion_id(),
+            moneda_id=activo["moneda_id"],
+            tipo_movimiento=tipo_movimiento,
+            monto_minor=monto_minor,
+            notas=notas,
+            conn=conn,
+        )
+
+    def _crear_asignaciones(
+        self, movimiento_id: str, repartos: list[tuple[str, float, int]], conn: sqlite3.Connection,
+    ) -> list[dict]:
+        """Una asignación por (objetivo_id, porcentaje, monto_asignado_minor), dentro de la transacción del caller."""
+        creadas = []
+        for objetivo_id, porcentaje, monto_asignado_minor in repartos:
+            asignacion_id = self._asignaciones_repo.crear(
+                movimiento_id=movimiento_id,
+                objetivo_id=objetivo_id,
+                porcentaje=porcentaje,
+                monto_asignado_minor=monto_asignado_minor,
+                conn=conn,
+            )
+            creadas.append({
+                "asignacion_id": asignacion_id,
+                "objetivo_id": objetivo_id,
+                "porcentaje": porcentaje,
+                "monto_asignado_minor": monto_asignado_minor,
+            })
+        return creadas
+
     # ----------------------------------------------------------
     # ACTIVOS FINANCIEROS
     # ----------------------------------------------------------
 
     def create_activo(
-        self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[str] = None,
+        self,
+        nombre: str,
+        tipo: str,
+        moneda_id: int,
+        cuenta_id: Optional[str] = None,
+        broker_id: Optional[str] = None,
+        comision_compra_minor: int = 0,
+        comision_venta_minor: int = 0,
     ) -> SavingsResult:
         """
         cuenta_id (Tarea 6g, docs/PROXIMOS_PASOS.md): vincula el activo a
@@ -259,20 +364,46 @@ class SavingsService:
         sin cuenta_id sigue generando movimientos puramente informales
         (transaccion_id NULL), igual que antes de esta tarea.
 
+        broker_id / comisiones (rediseño de Ahorros e Inversiones): dónde
+        se opera el activo (opcional) y sus comisiones de compra/venta por
+        defecto (el diálogo de movimiento las precarga). Van al final de la
+        firma — el pedido ponía broker_id antes de moneda_id — para no
+        romper a los callers que ya pasan moneda_id por posición.
+
         Raises:
-            SavingsError si moneda_id no existe.
+            SavingsError si el nombre está vacío, el tipo no es uno de
+                TIPOS_ACTIVO, una comisión es negativa o moneda_id no existe.
             AccountNotFoundError si cuenta_id se pasa y no existe.
+            BrokerNotFoundError si broker_id se pasa y no existe.
         """
+        if not (nombre or "").strip():
+            raise SavingsError("EL NOMBRE DEL ACTIVO NO PUEDE ESTAR VACÍO.")
+        if tipo not in TIPOS_ACTIVO:
+            raise SavingsError(f"TIPO DE ACTIVO INVÁLIDO: '{tipo}'.")
+        if comision_compra_minor < 0 or comision_venta_minor < 0:
+            raise SavingsError("LAS COMISIONES NO PUEDEN SER NEGATIVAS.")
         self._get_currency(moneda_id)  # validate existence
         if cuenta_id is not None:
             self._get_account(cuenta_id)  # validate existence
-        activo_id = self._activos_repo.crear(nombre=nombre, tipo=tipo, moneda_id=moneda_id, cuenta_id=cuenta_id)
+        if broker_id is not None:
+            self._get_broker(broker_id)  # validate existence
+        activo_id = self._activos_repo.crear(
+            nombre=nombre.strip(), tipo=tipo, moneda_id=moneda_id, cuenta_id=cuenta_id, broker_id=broker_id,
+            comision_compra_minor=comision_compra_minor, comision_venta_minor=comision_venta_minor,
+        )
         return SavingsResult(
             success=True,
             entity_id=activo_id,
-            data={"nombre": nombre, "tipo": tipo, "moneda_id": moneda_id, "cuenta_id": cuenta_id},
-            message=f"Activo financiero '{nombre}' created.",
+            data={
+                "nombre": nombre.strip(), "tipo": tipo, "moneda_id": moneda_id, "cuenta_id": cuenta_id,
+                "broker_id": broker_id,
+            },
+            message=f"ACTIVO '{nombre.strip().upper()}' CREADO.",
         )
+
+    def get_brokers(self) -> list[dict]:
+        """Los brokers activos, por nombre."""
+        return [dict(fila) for fila in self._brokers_repo.listar()]
 
     def list_activos(self, tipo: Optional[str] = None) -> list[sqlite3.Row]:
         return self._activos_repo.listar(tipo=tipo)
@@ -423,25 +554,11 @@ class SavingsService:
                 f"La suma de porcentaje de las asignaciones ({suma_porcentaje}) supera 100."
             )
 
-        cuenta_id = activo["cuenta_id"]
-        categoria_id = self._get_categoria_ahorro_inversion_id() if cuenta_id is not None else None
-
         conn = self._db.conn
         with self._db.transaction():
-            transaccion_id = None
-            if cuenta_id is not None:
-                transaccion_id = self._transacciones_repo.crear(
-                    fecha=fecha,
-                    concepto=f"Aporte a ahorro — {activo['nombre']}",
-                    cuenta_id=cuenta_id,
-                    categoria_id=categoria_id,
-                    moneda_id=activo["moneda_id"],
-                    tipo_movimiento="egreso",
-                    monto_minor=monto_total_minor,
-                    notas=notas,
-                    conn=conn,
-                )
-
+            transaccion_id = self._crear_transaccion_vinculada(
+                activo, fecha, monto_total_minor, "egreso", f"Aporte a ahorro — {activo['nombre']}", notas, conn,
+            )
             movimiento_id = self._movimientos_repo.crear(
                 activo_id=activo_id, tipo="compra", fecha=fecha,
                 monto_total_minor=monto_total_minor, cantidad=cantidad,
@@ -449,22 +566,14 @@ class SavingsService:
                 dolar_oficial_momento_minor=dolar_oficial_momento_minor,
                 notas=notas, transaccion_id=transaccion_id, conn=conn,
             )
-            asignaciones_creadas = []
-            for asignacion in asignaciones:
-                monto_asignado_minor = round(monto_total_minor * asignacion["porcentaje"] / 100)
-                asignacion_id = self._asignaciones_repo.crear(
-                    movimiento_id=movimiento_id,
-                    objetivo_id=asignacion["objetivo_id"],
-                    porcentaje=asignacion["porcentaje"],
-                    monto_asignado_minor=monto_asignado_minor,
-                    conn=conn,
-                )
-                asignaciones_creadas.append({
-                    "asignacion_id": asignacion_id,
-                    "objetivo_id": asignacion["objetivo_id"],
-                    "porcentaje": asignacion["porcentaje"],
-                    "monto_asignado_minor": monto_asignado_minor,
-                })
+            asignaciones_creadas = self._crear_asignaciones(
+                movimiento_id,
+                [
+                    (a["objetivo_id"], a["porcentaje"], round(monto_total_minor * a["porcentaje"] / 100))
+                    for a in asignaciones
+                ],
+                conn,
+            )
 
         return SavingsResult(
             success=True,
@@ -522,7 +631,11 @@ class SavingsService:
         if monto_total_minor <= 0:
             raise ValueError(f"monto_total_minor must be positive. Received: {monto_total_minor}.")
 
-        compras = self._movimientos_repo.listar_por_tipo(activo_id, "compra")
+        # 'aporte' (rediseño de Ahorros e Inversiones) cuenta igual que una compra.
+        compras = [
+            *self._movimientos_repo.listar_por_tipo(activo_id, "compra"),
+            *self._movimientos_repo.listar_por_tipo(activo_id, "aporte"),
+        ]
         totales_por_objetivo: dict[int, int] = {}
         for compra in compras:
             for asignacion in self._asignaciones_repo.listar_por_movimiento(compra["id"]):
@@ -663,25 +776,11 @@ class SavingsService:
                 f"La suma de porcentaje de las asignaciones ({suma_porcentaje}) supera 100."
             )
 
-        cuenta_id = activo["cuenta_id"]
-        categoria_id = self._get_categoria_ahorro_inversion_id() if cuenta_id is not None else None
-
         conn = self._db.conn
         with self._db.transaction():
-            transaccion_id = None
-            if cuenta_id is not None:
-                transaccion_id = self._transacciones_repo.crear(
-                    fecha=fecha,
-                    concepto=f"Retiro de ahorro — {activo['nombre']}",
-                    cuenta_id=cuenta_id,
-                    categoria_id=categoria_id,
-                    moneda_id=activo["moneda_id"],
-                    tipo_movimiento="ingreso",
-                    monto_minor=monto_total_minor,
-                    notas=notas,
-                    conn=conn,
-                )
-
+            transaccion_id = self._crear_transaccion_vinculada(
+                activo, fecha, monto_total_minor, "ingreso", f"Retiro de ahorro — {activo['nombre']}", notas, conn,
+            )
             movimiento_id = self._movimientos_repo.crear(
                 activo_id=activo_id, tipo="venta", fecha=fecha,
                 monto_total_minor=monto_total_minor, cantidad=cantidad,
@@ -689,22 +788,14 @@ class SavingsService:
                 dolar_oficial_momento_minor=dolar_oficial_momento_minor,
                 notas=notas, transaccion_id=transaccion_id, conn=conn,
             )
-            asignaciones_creadas = []
-            for asignacion in asignaciones:
-                monto_asignado_minor = round(monto_total_minor * asignacion["porcentaje"] / 100)
-                asignacion_id = self._asignaciones_repo.crear(
-                    movimiento_id=movimiento_id,
-                    objetivo_id=asignacion["objetivo_id"],
-                    porcentaje=asignacion["porcentaje"],
-                    monto_asignado_minor=monto_asignado_minor,
-                    conn=conn,
-                )
-                asignaciones_creadas.append({
-                    "asignacion_id": asignacion_id,
-                    "objetivo_id": asignacion["objetivo_id"],
-                    "porcentaje": asignacion["porcentaje"],
-                    "monto_asignado_minor": monto_asignado_minor,
-                })
+            asignaciones_creadas = self._crear_asignaciones(
+                movimiento_id,
+                [
+                    (a["objetivo_id"], a["porcentaje"], round(monto_total_minor * a["porcentaje"] / 100))
+                    for a in asignaciones
+                ],
+                conn,
+            )
 
         return SavingsResult(
             success=True,
@@ -756,7 +847,7 @@ class SavingsService:
                     f"Movimiento id={asignacion['movimiento_id']} referenced by "
                     f"asignacion id={asignacion['id']} not found."
                 )
-            if movimiento["tipo"] == "compra":
+            if movimiento["tipo"] in ("compra", "aporte"):
                 invertido_minor += asignacion["monto_asignado_minor"]
             elif movimiento["tipo"] == "rendimiento":
                 rendimiento_minor += asignacion["monto_asignado_minor"]
@@ -817,7 +908,7 @@ class SavingsService:
                 t.cuenta_id                                                    AS cuenta_id,
                 c.nombre                                                       AS cuenta_nombre,
                 t.moneda_id                                                    AS moneda_id,
-                SUM(CASE WHEN ma.tipo = 'compra'
+                SUM(CASE WHEN ma.tipo IN ('compra', 'aporte')
                          THEN a.monto_asignado_minor ELSE 0 END)               AS aportado_minor,
                 SUM(CASE WHEN ma.tipo = 'venta'
                          THEN a.monto_asignado_minor ELSE 0 END)               AS retirado_minor
@@ -876,7 +967,7 @@ class SavingsService:
                 af.tipo                                                       AS tipo,
                 af.moneda_id                                                  AS moneda_id,
                 SUM(CASE
-                        WHEN ma.tipo IN ('compra', 'rendimiento') THEN ma.monto_total_minor
+                        WHEN ma.tipo IN ('compra', 'aporte', 'rendimiento') THEN ma.monto_total_minor
                         WHEN ma.tipo = 'venta' THEN -ma.monto_total_minor
                         ELSE 0
                     END)                                                      AS saldo_neto_minor
@@ -930,12 +1021,12 @@ class SavingsService:
             SELECT
                 ma.activo_id                                                  AS activo_id,
                 SUM(CASE
-                        WHEN ma.tipo = 'compra' THEN ma.cantidad
+                        WHEN ma.tipo IN ('compra', 'aporte') THEN ma.cantidad
                         WHEN ma.tipo = 'venta' THEN -ma.cantidad
                         ELSE NULL
                     END)                                                      AS cantidad_neta,
                 SUM(CASE
-                        WHEN ma.tipo IN ('compra', 'rendimiento') THEN ma.monto_total_minor
+                        WHEN ma.tipo IN ('compra', 'aporte', 'rendimiento') THEN ma.monto_total_minor
                         WHEN ma.tipo = 'venta' THEN -ma.monto_total_minor
                         ELSE 0
                     END)                                                      AS saldo_neto_minor
@@ -964,6 +1055,7 @@ class SavingsService:
         objetivo_id: Optional[str] = None,
         tipo_activo: Optional[str] = None,
         tipo_movimiento: Optional[str] = None,
+        activo_id: Optional[str] = None,
     ) -> list[dict]:
         """
         Lista movimientos_activo de TODOS los activos (a diferencia de
@@ -1021,6 +1113,9 @@ class SavingsService:
         if objetivo_id is not None:
             condiciones.append("ma.id IN (SELECT movimiento_id FROM asignaciones WHERE objetivo_id = ?)")
             params.append(objetivo_id)
+        if activo_id is not None:  # "VER MOVIMIENTOS" de un activo (rediseño de Ahorros e Inversiones)
+            condiciones.append("ma.activo_id = ?")
+            params.append(activo_id)
 
         where_sql = f"WHERE {' AND '.join(condiciones)}" if condiciones else ""
         filas = self._db.fetchall(
@@ -1034,6 +1129,8 @@ class SavingsService:
                 ma.tipo                                                       AS tipo,
                 ma.fecha                                                      AS fecha,
                 ma.cantidad                                                   AS cantidad,
+                ma.precio_unitario_minor                                     AS precio_unitario_minor,
+                ma.comision_minor                                            AS comision_minor,
                 ma.monto_total_minor                                         AS monto_total_minor,
                 ma.transaccion_id                                            AS transaccion_id
             FROM movimientos_activo ma
@@ -1144,3 +1241,486 @@ class SavingsService:
                 )
             ),
         )
+
+    # ----------------------------------------------------------
+    # REPARTO DEL ACTIVO ENTRE OBJETIVOS (activo_objetivos)
+    # ----------------------------------------------------------
+
+    def assign_objetivo(self, activo_id: str, objetivo_id: str, porcentaje: float) -> SavingsResult:
+        """
+        Asigna `porcentaje` del activo al objetivo; si ese objetivo ya
+        estaba asignado, le cambia el porcentaje. Afecta a los movimientos
+        que se registren DESPUÉS (sus asignaciones salen de este reparto);
+        los anteriores conservan las suyas.
+
+        Raises:
+            ActivoNotFoundError / ObjetivoNotFoundError si no existen.
+            AsignacionInvalidaError si el porcentaje no está entre 0
+                (exclusivo) y 100, o si los objetivos del activo sumarían
+                más de 100 (no se escribe nada).
+        """
+        self._get_activo(activo_id)
+        objetivo = self._get_objetivo(objetivo_id)
+        if not isinstance(porcentaje, (int, float)) or isinstance(porcentaje, bool) or not 0 < porcentaje <= 100:
+            raise AsignacionInvalidaError(f"EL PORCENTAJE TIENE QUE ESTAR ENTRE 0 Y 100 (RECIBIDO: {porcentaje!r}).")
+
+        existente = self._activo_objetivos_repo.obtener(activo_id, objetivo_id)
+        conn = self._db.conn
+        with self._db.transaction():
+            if existente is not None:
+                self._activo_objetivos_repo.actualizar_porcentaje(existente["id"], float(porcentaje), conn=conn)
+                reparto_id = existente["id"]
+            else:
+                reparto_id = self._activo_objetivos_repo.crear(activo_id, objetivo_id, float(porcentaje), conn=conn)
+            # Misma conexión: ve lo recién escrito. Si se pasa de 100, la excepción hace rollback.
+            if not self._activo_objetivos_repo.validar_porcentajes(activo_id):
+                raise AsignacionInvalidaError("LOS OBJETIVOS DE ESTE ACTIVO SUMARÍAN MÁS DE 100%.")
+        return SavingsResult(
+            success=True,
+            entity_id=reparto_id,
+            data={"activo_id": activo_id, "objetivo_id": objetivo_id, "porcentaje": float(porcentaje)},
+            message=f"{objetivo['nombre'].upper()}: {porcentaje:g}% DEL ACTIVO.",
+        )
+
+    def remove_objetivo(self, activo_id: str, objetivo_id: str) -> SavingsResult:
+        """
+        Saca al objetivo del reparto del activo (los movimientos ya
+        registrados conservan sus asignaciones).
+
+        Raises:
+            SavingsError si ese objetivo no estaba asignado al activo.
+        """
+        existente = self._activo_objetivos_repo.obtener(activo_id, objetivo_id)
+        if existente is None:
+            raise SavingsError("ESE OBJETIVO NO ESTÁ ASIGNADO A ESTE ACTIVO.")
+        self._activo_objetivos_repo.eliminar(existente["id"])
+        return SavingsResult(
+            success=True, entity_id=existente["id"],
+            message=f"{existente['objetivo_nombre'].upper()} YA NO ESTÁ EN {existente['activo_nombre'].upper()}.",
+        )
+
+    def _reparto(self, activo_id: str, monto_minor: int) -> list[tuple[str, float, int]]:
+        """
+        (objetivo_id, porcentaje, monto) de un movimiento según el reparto
+        vigente del activo. Cada monto se redondea hacia abajo; si los
+        porcentajes suman 100, el resto del redondeo va al objetivo de
+        mayor monto (así la suma da exacta), y si suman menos, lo que falta
+        queda sin asignar. Montos en 0 no generan asignación.
+        """
+        repartos = self._activo_objetivos_repo.listar_por_activo(activo_id)
+        filas = [
+            [r["objetivo_id"], r["porcentaje"], math.floor(monto_minor * r["porcentaje"] / 100)] for r in repartos
+        ]
+        if filas and abs(sum(r["porcentaje"] for r in repartos) - 100) <= TOLERANCIA_PORCENTAJE:
+            mayor = max(filas, key=lambda fila: fila[2])
+            mayor[2] += monto_minor - sum(fila[2] for fila in filas)
+        return [(objetivo_id, porcentaje, monto) for objetivo_id, porcentaje, monto in filas if monto > 0]
+
+    # ----------------------------------------------------------
+    # MOVIMIENTOS (rediseño de Ahorros e Inversiones)
+    # ----------------------------------------------------------
+
+    @staticmethod
+    def _fecha(fecha: str) -> str:
+        try:
+            datetime.strptime(fecha, "%Y-%m-%d")
+        except (TypeError, ValueError):
+            raise SavingsError(f"FECHA INVÁLIDA '{fecha}': TIENE QUE SER AAAA-MM-DD.") from None
+        return fecha
+
+    @staticmethod
+    def _positivo(valor: object, nombre: str) -> float:
+        if not isinstance(valor, (int, float)) or isinstance(valor, bool) or valor <= 0:
+            raise SavingsError(f"{nombre} TIENE QUE SER MAYOR A 0 (RECIBIDO: {valor!r}).")
+        return valor
+
+    @staticmethod
+    def _comision(comision_minor: object) -> int:
+        if not isinstance(comision_minor, int) or isinstance(comision_minor, bool) or comision_minor < 0:
+            raise SavingsError(f"LA COMISIÓN TIENE QUE SER UN ENTERO >= 0 EN MINOR UNITS (RECIBIDO: {comision_minor!r}).")
+        return comision_minor
+
+    def _validar_transaccion_para_vincular(self, transaccion_id: str) -> None:
+        if self._transacciones_repo.obtener_por_id(transaccion_id) is None:
+            raise SavingsError(f"LA TRANSACCIÓN {transaccion_id} NO EXISTE.")
+        if transaccion_id in self._movimientos_repo.transacciones_vinculadas():
+            raise SavingsError("ESA TRANSACCIÓN YA ESTÁ VINCULADA A OTRO MOVIMIENTO DE AHORRO.")
+
+    def _registrar_movimiento(
+        self,
+        activo: sqlite3.Row,
+        tipo: str,
+        texto: str,
+        fecha: str,
+        monto_total_minor: int,
+        *,
+        cantidad: Optional[float] = None,
+        precio_unitario_minor: Optional[int] = None,
+        comision_minor: int = 0,
+        dolar_oficial_momento_minor: Optional[int] = None,
+        notas: Optional[str] = None,
+        transaccion_id: Optional[str] = None,
+        tipo_transaccion: Optional[str] = None,
+        concepto_transaccion: str = "",
+    ) -> SavingsResult:
+        """
+        Lo común a registrar_*(): movimiento + asignaciones según el reparto
+        vigente del activo (_reparto()) + transacción del Registro, todo
+        atómico. La transacción: la vinculada si se pasa transaccion_id (ya
+        validada por el caller); si no, y hay tipo_transaccion, la que crea
+        _crear_transaccion_vinculada() (None si el activo no tiene cuenta).
+        """
+        if monto_total_minor <= 0:
+            raise SavingsError(f"EL MONTO DEL MOVIMIENTO TIENE QUE SER MAYOR A 0 (QUEDÓ EN {monto_total_minor}).")
+        reparto = self._reparto(activo["id"], monto_total_minor)
+        conn = self._db.conn
+        try:
+            with self._db.transaction():
+                if transaccion_id is None and tipo_transaccion is not None:
+                    transaccion_id = self._crear_transaccion_vinculada(
+                        activo, fecha, monto_total_minor, tipo_transaccion, concepto_transaccion, notas, conn,
+                    )
+                movimiento_id = self._movimientos_repo.crear(
+                    activo_id=activo["id"], tipo=tipo, fecha=fecha, monto_total_minor=monto_total_minor,
+                    cantidad=cantidad, precio_unitario_minor=precio_unitario_minor,
+                    dolar_oficial_momento_minor=dolar_oficial_momento_minor, notas=notas,
+                    transaccion_id=transaccion_id, conn=conn, comision_minor=comision_minor,
+                )
+                asignaciones = self._crear_asignaciones(movimiento_id, reparto, conn)
+        except MovimientoDuplicadoError as err:
+            raise SavingsError(f"MOVIMIENTO DUPLICADO (DOBLE CLICK): {err}") from err
+        return SavingsResult(
+            success=True,
+            entity_id=movimiento_id,
+            data={"asignaciones": asignaciones, "transaccion_id": transaccion_id, "monto_total_minor": monto_total_minor},
+            message=f"{texto} DE '{activo['nombre'].upper()}' REGISTRADO.",
+        )
+
+    def registrar_compra(
+        self,
+        activo_id: str,
+        cantidad: float,
+        precio_unitario_minor: int,
+        comision_minor: int,
+        fecha: str,
+        transaccion_id: Optional[str] = None,
+        dolar_momento_minor: Optional[int] = None,
+    ) -> SavingsResult:
+        """
+        Compra de unidades (acciones, CEDEARs): monto_total = cantidad ×
+        precio + comisión (lo que sale de la cuenta). En los tipos por
+        unidades (TIPOS_POR_UNIDADES) la cantidad tiene que ser entera.
+        dolar_momento_minor va a dolar_oficial_momento_minor (la columna ya
+        existía con ese nombre).
+
+        Raises:
+            ActivoNotFoundError si el activo no existe.
+            SavingsError si cantidad/precio no son > 0, la comisión es
+                negativa, la fecha no es AAAA-MM-DD o la transacción a
+                vincular no existe o ya está vinculada.
+        """
+        activo = self._get_activo(activo_id)
+        self._positivo(cantidad, "LA CANTIDAD")
+        if activo["tipo"] in TIPOS_POR_UNIDADES and not float(cantidad).is_integer():
+            raise SavingsError("LA CANTIDAD DE ACCIONES / CEDEARS TIENE QUE SER ENTERA.")
+        self._positivo(precio_unitario_minor, "EL PRECIO UNITARIO")
+        comision_minor = self._comision(comision_minor)
+        self._fecha(fecha)
+        if transaccion_id is not None:
+            self._validar_transaccion_para_vincular(transaccion_id)
+        return self._registrar_movimiento(
+            activo, "compra", "COMPRA", fecha, round(cantidad * precio_unitario_minor) + comision_minor,
+            cantidad=cantidad, precio_unitario_minor=precio_unitario_minor, comision_minor=comision_minor,
+            dolar_oficial_momento_minor=dolar_momento_minor, transaccion_id=transaccion_id,
+            tipo_transaccion="egreso", concepto_transaccion=f"Compra — {activo['nombre']}",
+        )
+
+    def registrar_venta(
+        self,
+        activo_id: str,
+        cantidad: float,
+        precio_unitario_minor: int,
+        comision_minor: int,
+        fecha: str,
+        transaccion_id: Optional[str] = None,
+    ) -> SavingsResult:
+        """
+        Venta de unidades: monto_total = cantidad × precio − comisión (lo
+        que entra a la cuenta). Se reparte entre los objetivos según el
+        reparto vigente del activo (decisión del usuario: el pedido no le
+        pone objetivo a la venta).
+
+        Raises:
+            ActivoNotFoundError si el activo no existe.
+            SavingsError si cantidad/precio no son > 0, la comisión es
+                negativa o se come todo el monto, se vende más de lo que
+                hay, la fecha no es AAAA-MM-DD o la transacción a vincular
+                no existe o ya está vinculada.
+        """
+        activo = self._get_activo(activo_id)
+        self._positivo(cantidad, "LA CANTIDAD")
+        if activo["tipo"] in TIPOS_POR_UNIDADES and not float(cantidad).is_integer():
+            raise SavingsError("LA CANTIDAD DE ACCIONES / CEDEARS TIENE QUE SER ENTERA.")
+        self._positivo(precio_unitario_minor, "EL PRECIO UNITARIO")
+        comision_minor = self._comision(comision_minor)
+        self._fecha(fecha)
+        disponibles = self._estadisticas_por_activo(activo_id).get(activo_id, {}).get("unidades") or 0
+        if cantidad > disponibles:
+            raise SavingsError(f"NO PODÉS VENDER {cantidad:g}: HAY {disponibles:g}.")
+        if transaccion_id is not None:
+            self._validar_transaccion_para_vincular(transaccion_id)
+        return self._registrar_movimiento(
+            activo, "venta", "VENTA", fecha, round(cantidad * precio_unitario_minor) - comision_minor,
+            cantidad=cantidad, precio_unitario_minor=precio_unitario_minor, comision_minor=comision_minor,
+            transaccion_id=transaccion_id, tipo_transaccion="ingreso", concepto_transaccion=f"Venta — {activo['nombre']}",
+        )
+
+    def registrar_aporte(
+        self,
+        activo_id: str,
+        monto_minor: int,
+        fecha: str,
+        comision_minor: int = 0,
+        transaccion_id: Optional[str] = None,
+        dolar_momento_minor: Optional[int] = None,
+        notas: Optional[str] = None,
+    ) -> SavingsResult:
+        """
+        Aporte de plata (FCI, plazo fijo / flex: tipo='aporte', sin
+        unidades). No estaba en el pedido: es el movimiento de esos tipos
+        en el diálogo. monto_total = monto (lo que queda invertido); la
+        comisión se guarda aparte, informativa.
+
+        Raises:
+            ActivoNotFoundError si el activo no existe.
+            SavingsError si el monto no es > 0, la comisión es negativa,
+                la fecha no es AAAA-MM-DD o la transacción a vincular no
+                existe o ya está vinculada.
+        """
+        activo = self._get_activo(activo_id)
+        self._positivo(monto_minor, "EL MONTO")
+        comision_minor = self._comision(comision_minor)
+        self._fecha(fecha)
+        if transaccion_id is not None:
+            self._validar_transaccion_para_vincular(transaccion_id)
+        return self._registrar_movimiento(
+            activo, "aporte", "APORTE", fecha, int(monto_minor), comision_minor=comision_minor,
+            dolar_oficial_momento_minor=dolar_momento_minor, notas=notas, transaccion_id=transaccion_id,
+            tipo_transaccion="egreso", concepto_transaccion=f"Aporte a ahorro — {activo['nombre']}",
+        )
+
+    def registrar_retiro(
+        self,
+        activo_id: str,
+        monto_minor: int,
+        fecha: str,
+        comision_minor: int = 0,
+        transaccion_id: Optional[str] = None,
+        notas: Optional[str] = None,
+    ) -> SavingsResult:
+        """
+        Retiro de plata de un activo por monto (FCI, plazos): tipo='venta'
+        sin unidades, repartido según el reparto vigente. No estaba en el
+        pedido (ver registrar_aporte()). No puede superar el saldo.
+
+        Raises:
+            ActivoNotFoundError si el activo no existe.
+            SavingsError si el monto no es > 0 o supera el saldo, la
+                comisión es negativa, la fecha no es AAAA-MM-DD o la
+                transacción a vincular no existe o ya está vinculada.
+        """
+        activo = self._get_activo(activo_id)
+        self._positivo(monto_minor, "EL MONTO")
+        comision_minor = self._comision(comision_minor)
+        self._fecha(fecha)
+        saldo = self._estadisticas_por_activo(activo_id).get(activo_id, {}).get("saldo_minor") or 0
+        if monto_minor > saldo:
+            raise SavingsError("EL RETIRO SUPERA EL SALDO DEL ACTIVO.")
+        if transaccion_id is not None:
+            self._validar_transaccion_para_vincular(transaccion_id)
+        return self._registrar_movimiento(
+            activo, "venta", "RETIRO", fecha, int(monto_minor), comision_minor=comision_minor, notas=notas,
+            transaccion_id=transaccion_id, tipo_transaccion="ingreso",
+            concepto_transaccion=f"Retiro de ahorro — {activo['nombre']}",
+        )
+
+    def registrar_rendimiento(
+        self, activo_id: str, monto_minor: int, fecha: str, notas: Optional[str] = None,
+    ) -> SavingsResult:
+        """
+        Rendimiento (intereses, dividendos), repartido entre los objetivos
+        según el reparto vigente del activo (activo_objetivos) — a
+        diferencia de register_return(), que reparte según las compras
+        anteriores. Sin transacción del Registro (mismo criterio que
+        register_return(), docs/DATA_MODEL_DECISIONS.md sección 16).
+
+        Raises:
+            ActivoNotFoundError si el activo no existe.
+            SavingsError si el monto no es > 0 o la fecha no es AAAA-MM-DD.
+        """
+        activo = self._get_activo(activo_id)
+        self._positivo(monto_minor, "EL MONTO")
+        self._fecha(fecha)
+        return self._registrar_movimiento(activo, "rendimiento", "RENDIMIENTO", fecha, int(monto_minor), notas=notas)
+
+    def list_transacciones_vinculables(self, fecha: str) -> list[dict]:
+        """
+        Transacciones del Registro del mes de `fecha` (sin las eliminadas)
+        que todavía no están vinculadas a ningún movimiento de ahorro —
+        para el selector "VINCULAR A TRANSACCIÓN" del diálogo de
+        movimiento. Shape de TransaccionesRepository.listar_enriquecida(),
+        la más nueva primero, hasta MAX_TRANSACCIONES_VINCULABLES.
+
+        Raises:
+            SavingsError si la fecha no es AAAA-MM-DD.
+        """
+        dia = datetime.strptime(self._fecha(fecha), "%Y-%m-%d").date()
+        desde = dia.replace(day=1)
+        hasta = date(dia.year + (dia.month == 12), dia.month % 12 + 1, 1)  # día 1 del mes siguiente
+        vinculadas = self._movimientos_repo.transacciones_vinculadas()
+        filas = self._transacciones_repo.listar_enriquecida(
+            fecha_desde=desde.isoformat(), fecha_hasta=hasta.isoformat(), por_pagina=MAX_TRANSACCIONES_VINCULABLES,
+        )
+        return [dict(fila) for fila in filas if fila["id"] not in vinculadas and fila["fecha"] < hasta.isoformat()]
+
+    # ----------------------------------------------------------
+    # RESÚMENES (pestañas de ui/screens/ahorros.py)
+    # ----------------------------------------------------------
+
+    def _estadisticas_por_activo(self, activo_id: Optional[str] = None) -> dict[str, dict]:
+        """
+        activo_id → {saldo_minor, unidades, costo_minor, unidades_costeadas}
+        con todos sus movimientos: saldo = entradas − ventas; unidades =
+        compras/aportes − ventas (None si nunca se cargó una cantidad);
+        costo/unidades_costeadas = las compras con cantidad Y precio (para
+        el precio promedio, sin comisiones). Agregación de reporte, mismo
+        criterio que get_balance_por_activo().
+        """
+        where, params = ("WHERE activo_id = ?", (activo_id,)) if activo_id is not None else ("", ())
+        filas = self._db.fetchall(
+            f"""
+            SELECT
+                activo_id,
+                SUM(CASE WHEN tipo IN ('compra', 'aporte', 'rendimiento') THEN monto_total_minor
+                         WHEN tipo = 'venta' THEN -monto_total_minor ELSE 0 END)       AS saldo_minor,
+                SUM(CASE WHEN tipo IN ('compra', 'aporte') THEN cantidad
+                         WHEN tipo = 'venta' THEN -cantidad END)                       AS unidades,
+                SUM(CASE WHEN tipo = 'compra' AND cantidad IS NOT NULL AND precio_unitario_minor IS NOT NULL
+                         THEN cantidad * precio_unitario_minor END)                   AS costo_minor,
+                SUM(CASE WHEN tipo = 'compra' AND cantidad IS NOT NULL AND precio_unitario_minor IS NOT NULL
+                         THEN cantidad END)                                            AS unidades_costeadas
+            FROM movimientos_activo
+            {where}
+            GROUP BY activo_id;
+            """,
+            params,
+        )
+        return {fila["activo_id"]: dict(fila) for fila in filas}
+
+    def get_resumen_por_tipo(self) -> dict:
+        """
+        Los activos activos agrupados por tipo (en el orden de TIPOS_ACTIVO;
+        solo los tipos que tienen alguno), cada grupo por broker y nombre:
+        {tipo: [{activo_id, activo, tipo, broker_id, broker (nombre o None),
+        cuenta_id, moneda_id, moneda (código), simbolo, decimales,
+        por_unidades, cantidad, unidades, saldo_minor,
+        precio_promedio_minor, comision_compra_minor, comision_venta_minor,
+        objetivos: [{objetivo_id, nombre, porcentaje}]}]}.
+
+        cantidad: unidades en acciones / CEDEARs (TIPOS_POR_UNIDADES); en el
+        resto, el saldo en la moneda del activo (float: 285432.50).
+        precio_promedio_minor: de las compras con cantidad y precio, o None.
+        """
+        estadisticas = self._estadisticas_por_activo()
+        brokers = {b["id"]: b for b in self._brokers_repo.listar(solo_activos=False)}
+        monedas = {m["id"]: m for m in self._db.obtener_monedas()}
+        repartos: dict[str, list[dict]] = {}
+        for r in self._activo_objetivos_repo.listar():
+            repartos.setdefault(r["activo_id"], []).append(
+                {"objetivo_id": r["objetivo_id"], "nombre": r["objetivo_nombre"], "porcentaje": r["porcentaje"]}
+            )
+
+        grupos: dict[str, list[dict]] = {}
+        for activo in self._activos_repo.listar():
+            stats = estadisticas.get(activo["id"], {})
+            moneda = monedas.get(activo["moneda_id"])
+            decimales = moneda["decimales"] if moneda else 2
+            broker = brokers.get(activo["broker_id"]) if activo["broker_id"] else None
+            saldo = stats.get("saldo_minor") or 0
+            unidades = stats.get("unidades")
+            costeadas = stats.get("unidades_costeadas")
+            por_unidades = activo["tipo"] in TIPOS_POR_UNIDADES
+            grupos.setdefault(activo["tipo"], []).append({
+                "activo_id": activo["id"],
+                "activo": activo["nombre"],
+                "tipo": activo["tipo"],
+                "broker_id": activo["broker_id"],
+                "broker": broker["nombre"] if broker else None,
+                "cuenta_id": activo["cuenta_id"],
+                "moneda_id": activo["moneda_id"],
+                "moneda": moneda["codigo"] if moneda else "",
+                "simbolo": (moneda["simbolo"] or "") if moneda else "",
+                "decimales": decimales,
+                "por_unidades": por_unidades,
+                "cantidad": (unidades or 0) if por_unidades else saldo / 10 ** decimales,
+                "unidades": unidades,
+                "saldo_minor": saldo,
+                "precio_promedio_minor": round(stats["costo_minor"] / costeadas) if costeadas else None,
+                "comision_compra_minor": activo["comision_compra_minor"] or 0,
+                "comision_venta_minor": activo["comision_venta_minor"] or 0,
+                "objetivos": repartos.get(activo["id"], []),
+            })
+
+        orden = {tipo: indice for indice, tipo in enumerate(TIPOS_ACTIVO)}
+        return {
+            tipo: sorted(grupos[tipo], key=lambda e: ((e["broker"] or "").upper(), e["activo"].upper()))
+            for tipo in sorted(grupos, key=lambda t: orden.get(t, len(orden)))
+        }
+
+    @staticmethod
+    def _parte_de_activo(entrada: dict, porcentaje: float, objetivo_id: Optional[str]) -> dict:
+        """La parte `porcentaje` de una entrada de get_resumen_por_tipo() (para get_resumen_por_objetivo())."""
+        unidades = entrada["unidades"] * porcentaje / 100 if entrada["unidades"] is not None else None
+        saldo = round(entrada["saldo_minor"] * porcentaje / 100)
+        return {
+            "objetivo_id": objetivo_id,
+            "tipo": entrada["tipo"],
+            "activo": entrada["activo"],
+            "activo_id": entrada["activo_id"],
+            "broker": entrada["broker"],
+            "porcentaje": porcentaje,
+            "por_unidades": entrada["por_unidades"],
+            "cantidad": (unidades or 0) if entrada["por_unidades"] else saldo / 10 ** entrada["decimales"],
+            "unidades": unidades,
+            "saldo_minor": saldo,
+            "moneda": entrada["moneda"],
+            "simbolo": entrada["simbolo"],
+            "decimales": entrada["decimales"],
+        }
+
+    def get_resumen_por_objetivo(self) -> dict:
+        """
+        Lo de cada objetivo según el reparto vigente de los activos (saldo /
+        unidades del activo × porcentaje): {objetivo (nombre): [{objetivo_id,
+        tipo, activo, activo_id, broker, porcentaje, por_unidades, cantidad,
+        unidades, saldo_minor, moneda, simbolo, decimales}]}, por nombre de
+        objetivo. Al final, OBJETIVO_SIN_ASIGNAR con la parte no repartida
+        de los activos que tienen algo (no estaba en el pedido: sin esto,
+        esa plata no aparecería en esta vista).
+        """
+        por_objetivo: dict[str, list[dict]] = {}
+        for entradas in self.get_resumen_por_tipo().values():
+            for entrada in entradas:
+                asignado = 0.0
+                for objetivo in entrada["objetivos"]:
+                    por_objetivo.setdefault(objetivo["nombre"], []).append(
+                        self._parte_de_activo(entrada, objetivo["porcentaje"], objetivo["objetivo_id"])
+                    )
+                    asignado += objetivo["porcentaje"]
+                libre = 100 - asignado
+                if libre > TOLERANCIA_PORCENTAJE and (entrada["saldo_minor"] or entrada["unidades"]):
+                    por_objetivo.setdefault(OBJETIVO_SIN_ASIGNAR, []).append(self._parte_de_activo(entrada, libre, None))
+        claves = sorted((clave for clave in por_objetivo if clave != OBJETIVO_SIN_ASIGNAR), key=str.upper)
+        if OBJETIVO_SIN_ASIGNAR in por_objetivo:
+            claves.append(OBJETIVO_SIN_ASIGNAR)
+        return {clave: por_objetivo[clave] for clave in claves}
