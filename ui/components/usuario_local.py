@@ -70,6 +70,23 @@ async def obtener_usuario_local(page: ft.Page) -> Optional[str]:
     return leer_usuario_local()
 
 
+def ordenar_hogares(shared_expenses_service: SharedExpensesService, hogares: list[dict]) -> list[dict]:
+    """
+    Los hogares de list_my_hogares() con el que se usa por defecto PRIMERO:
+    el que tiene más miembros (fix: con dos hogares, list_my_hogares()
+    ordena por id y el primero podía ser uno donde el usuario está solo).
+    Lo usan la pantalla de Gastos compartidos y los diálogos de compartir
+    (compartir_gasto.py, compartir_compra.py, compartir_varios.py), así
+    todos eligen el mismo.
+
+    TODO: en un empate el pedido elegía el hogar más reciente, pero
+    list_my_hogares() no devuelve creada_en (y services/ no se tocó en ese
+    fix): por ahora, en empate queda el orden de list_my_hogares() (por id).
+    """
+    miembros = {h["hogar_id"]: len(shared_expenses_service.list_miembros(h["hogar_id"])) for h in hogares}
+    return sorted(hogares, key=lambda h: -miembros[h["hogar_id"]])  # sorted() es estable: el empate conserva el orden
+
+
 async def guardar_usuario_local(page: ft.Page, nombre: str) -> None:
     prefs = leer_prefs()
     prefs[CLAVE_USUARIO_LOCAL] = nombre

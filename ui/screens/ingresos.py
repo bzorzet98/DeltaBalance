@@ -414,6 +414,9 @@ def build(
         )
         sin_borde(campo.control)
         campo.control.text_align = ft.TextAlign.RIGHT
+        # Borrador en cada tecla, no solo al confirmar: si la pantalla se
+        # reconstruye antes del blur, el monto tipeado no se pierde.
+        campo.control.on_change = _on_cambio_borrador
         if valor:
             campo.control.value = valor
         return campo

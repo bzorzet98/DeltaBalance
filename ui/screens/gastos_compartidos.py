@@ -72,8 +72,9 @@ columnas), con la vista previa del adeudado al
 lado: % = porcentaje del otro miembro (precargado con su porcentaje
 default), 0.XX = coeficiente, $ = monto fijo en la moneda del movimiento
 (no puede superar al monto base). El adeudado lo calcula
-add_shared_expense() al confirmar. Un ingreso se registra como pago
-recibido: 100% y monto base negativo, igual que compartir_gasto.py. Las
+add_shared_expense() al confirmar. Un ingreso lleva monto base negativo y
+el reparto elegido, como un gasto (pedido explícito: no se presupone que
+se comparte el 100%), igual que compartir_gasto.py. Las
 compras en cuotas se siguen compartiendo desde su pantalla. Enter nunca
 guarda la fila salvo con el foco en el ✓: en Concepto elige el movimiento
 y pasa al valor; en el valor (último campo) lleva el foco al ✓ sin
@@ -136,7 +137,7 @@ from ui.components.tipo_valor import (
     CampoTipoValor,
     numero,
 )
-from ui.components.usuario_local import abrir_dialogo_sin_hogar, leer_usuario_local
+from ui.components.usuario_local import abrir_dialogo_sin_hogar, leer_usuario_local, ordenar_hogares
 from ui.theme.tabla_tokens import (
     BTN_REGISTRAR_PAGO,
     PESO_MONTO,
@@ -192,12 +193,10 @@ SIMBOLO_DEFAULT = "$"
 # Coeficiente tipeado (0.XX / %): 0.3 * 100 = 30.000000000000004 → se redondea.
 DECIMALES_COEFICIENTE = 4
 DECIMALES_COEFICIENTE_VISIBLES = 2
-COEFICIENTE_INGRESO = 100.0
 TIPOS_PAGO = [("transaccion", "TRANSACCIÓN"), ("compensacion", "COMPENSACIÓN"), ("ajuste", "AJUSTE")]
 TOOLTIP_SIN_SINCRONIZACION = "DISPONIBLE CUANDO SE ACTIVE LA SINCRONIZACIÓN"
 TOOLTIP_SIN_EDICION = "TODAVÍA NO SE PUEDE EDITAR DESDE LA APP"
 MOTIVO_SALDADO = "NO SE PUEDE MODIFICAR: EL GASTO YA FUE SALDADO."
-MOTIVO_INGRESO = "UN INGRESO SE REGISTRA COMO PAGO RECIBIDO (100%)."
 
 
 # ============================================================
@@ -285,7 +284,9 @@ def build(
 
     def _armar() -> None:
         usuario = leer_usuario_local()
-        hogares = shared_expenses_service.list_my_hogares(usuario) if usuario else []
+        # El hogar por defecto (el primero) es el de más miembros — mismo
+        # criterio que los diálogos de compartir, ver ordenar_hogares().
+        hogares = ordenar_hogares(shared_expenses_service, shared_expenses_service.list_my_hogares(usuario)) if usuario else []
         if not hogares:
             raiz.controls = [_pantalla_sin_hogar(usuario)]
             return
@@ -331,7 +332,10 @@ def build(
                 concepto = fila["concepto"] if fila else None
             elif origen_tipo == "cuota_credito" and origen_id in _mapa_cuotas():
                 compra, numero_cuota = _mapa_cuotas()[origen_id]
-                fila = compra
+                # La compra del mapa sale de list_purchases(), que NO trae
+                # currency_symbol (KeyError al abrir la pantalla con una
+                # compra prorrateada compartida): la moneda, de get_purchase().
+                fila = fees_service.get_purchase(compra["id"])
                 concepto = f"{compra['concepto']} — CUOTA {numero_cuota}/{compra['total_cuotas']}"
             if fila is None:
                 return {
@@ -652,7 +656,7 @@ def build(
             return t["tipo_movimiento"] == "ingreso"
 
         def _monto_base(t: dict) -> int:
-            # Ingreso = pago recibido: monto base negativo (compartir_gasto.py).
+            # Ingreso: monto base negativo (compartir_gasto.py).
             return -t["monto_minor"] if _es_ingreso(t) else t["monto_minor"]
 
         def _texto_movimiento(t: dict) -> str:
@@ -713,7 +717,9 @@ def build(
                     vista_previa.value = ""
                     return
                 base = _monto_base(t)
-                adeudado = base if _es_ingreso(t) else campo_valor.vista_previa_minor(abs(base))
+                adeudado = campo_valor.vista_previa_minor(abs(base))
+                if adeudado is not None and base < 0:
+                    adeudado = -adeudado  # hereda el signo del monto base (ingreso)
                 # Sin prefijo: en ANCHO_VISTA_PREVIA entra el monto; qué es, en el tooltip.
                 vista_previa.value = (
                     _texto_monto(adeudado, t["decimales"], t["currency_symbol"] or "") if adeudado is not None else "—"
@@ -735,10 +741,6 @@ def build(
                 texto_moneda.value = t["currency_code"] if t else ""
                 if t is not None:
                     campo_valor.cambiar_decimales(t["decimales"])
-                if t is not None and _es_ingreso(t):
-                    campo_valor.fijar(TIPO_PORCENTAJE, f"{COEFICIENTE_INGRESO:g}", motivo=MOTIVO_INGRESO)
-                else:
-                    campo_valor.fijar(None)
                 _actualizar_vista_previa()
 
             def _on_movimiento(id_: Optional[str]) -> None:
@@ -796,17 +798,15 @@ def build(
                 return
             base = _monto_base(t)
             campo_valor: CampoTipoValor = alta_refs["valor"]
-            if _es_ingreso(t):
-                coeficiente = COEFICIENTE_INGRESO
-            else:
-                try:
-                    coeficiente = campo_valor.porcentaje(base)
-                except ValueError as err:
-                    _mostrar_error(str(err))
-                    return
-                # Con $ el porcentaje va sin redondear: así el adeudado da el monto fijo exacto.
-                if campo_valor.tipo != TIPO_MONTO:
-                    coeficiente = round(coeficiente, DECIMALES_COEFICIENTE)
+            # Un ingreso también usa el reparto elegido (no se presupone el 100%).
+            try:
+                coeficiente = campo_valor.porcentaje(base)
+            except ValueError as err:
+                _mostrar_error(str(err))
+                return
+            # Con $ el porcentaje va sin redondear: así el adeudado da el monto fijo exacto.
+            if campo_valor.tipo != TIPO_MONTO:
+                coeficiente = round(coeficiente, DECIMALES_COEFICIENTE)
             try:
                 resultado = shared_expenses_service.add_shared_expense(
                     hogar_id=ui["hogar_id"],

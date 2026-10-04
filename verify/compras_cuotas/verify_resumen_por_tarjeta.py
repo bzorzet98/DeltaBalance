@@ -19,6 +19,12 @@ tarjeta de crédito, cuotas + cargos extra del resumen). Escenario:
   total (distinto de las cuotas 'pendiente'/'en_resumen'/'pagado', que sí
   cuentan).
 
+Montos: create_purchase() recibe total_amount en la unidad de la moneda
+(pesos, como lo tipea el usuario) y lo pasa a minor units — 3000.0 ARS son
+300000 minor, 3 cuotas de 100000. Los cargos extra, en cambio, ya van en
+minor (amount_minor). Antes este script pasaba 300000.0 esperando cuotas de
+100000: el ×100 era del dato de entrada, no de resumen_por_tarjeta().
+
 Correlo con:
     python verify/compras_cuotas/verify_resumen_por_tarjeta.py
 """
@@ -63,23 +69,23 @@ def main() -> None:
 
     print("--- Escenario: dos tarjetas con actividad en 2026-06, una sin actividad ese mes ---")
 
-    # Tarjeta A: compra en 3 cuotas arrancando en junio 2026 (100000 c/u).
+    # Tarjeta A: compra en 3 cuotas arrancando en junio 2026 ($3000 → 100000 minor c/u).
     compra_a = svc.create_purchase(
         date_str="2026-06-05", concept="Notebook", account_id=tarjeta_a,
-        category_id=cat_egreso, currency_code="ARS", total_amount=300000.0, total_fees=3,
+        category_id=cat_egreso, currency_code="ARS", total_amount=3000.0, total_fees=3,
     )
 
-    # Tarjeta B: compra en 1 cuota en junio 2026 (50000).
+    # Tarjeta B: compra en 1 cuota en junio 2026 ($500 → 50000 minor).
     svc.create_purchase(
         date_str="2026-06-10", concept="Zapatillas", account_id=tarjeta_b,
-        category_id=cat_egreso, currency_code="ARS", total_amount=50000.0, total_fees=1,
+        category_id=cat_egreso, currency_code="ARS", total_amount=500.0, total_fees=1,
     )
 
     # Tarjeta C: compra que vence en MAYO 2026, no en junio — no debe
     # aparecer en el resultado de 2026-06.
     svc.create_purchase(
         date_str="2026-05-01", concept="Compra de mayo", account_id=tarjeta_c,
-        category_id=cat_egreso, currency_code="ARS", total_amount=10000.0, total_fees=1,
+        category_id=cat_egreso, currency_code="ARS", total_amount=100.0, total_fees=1,
     )
 
     resumen_junio = svc.resumen_por_tarjeta(mes=6, anio=2026)
@@ -117,7 +123,7 @@ def main() -> None:
     print("\n--- Compra cancelada en Tarjeta A dentro del mismo mes: sus cuotas 'omitido' no cuentan ---")
     compra_cancelable = svc.create_purchase(
         date_str="2026-06-15", concept="Compra que se cancela", account_id=tarjeta_a,
-        category_id=cat_egreso, currency_code="ARS", total_amount=20000.0, total_fees=1,
+        category_id=cat_egreso, currency_code="ARS", total_amount=200.0, total_fees=1,  # 20000 minor
     )
     resumen_antes_cancelar = svc.resumen_por_tarjeta(mes=6, anio=2026)
     monto_antes = {r["cuenta_id"]: r["monto_cuotas_minor"] for r in resumen_antes_cancelar}[tarjeta_a]

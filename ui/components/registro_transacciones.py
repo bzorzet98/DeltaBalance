@@ -40,8 +40,11 @@ la fila salvo con el foco en el ✓: Concepto → Banco → Categoría → Tag �
 Monto → Fecha → Moneda (en Banco/Categoría Enter elige la sugerencia; en Monto
 resuelve la fórmula) y en Moneda, el último campo, Enter o Tab llevan el
 foco al ✓ sin activarlo; ahí Enter o un click confirman (TablaPlanilla.
-tab_a_confirmar()). Al guardar, la fila se reconstruye vacía con el foco en
-Concepto.
+tab_a_confirmar()). Al guardar (también tras los diálogos de deuda,
+autotransferencia y ahorro), la fila se reconstruye CON LOS MISMOS VALORES
+y el foco en Concepto — pedido explícito: para cargar varios movimientos
+seguidos editando solo algunos campos. Ojo: confirmar dos veces sin
+cambiar nada crea dos movimientos idénticos (no hay control de duplicados).
 
 Tag: etiqueta libre y opcional (vacía = None), solo en el guardado normal
 (TransactionService.create(tag=)) — la autotransferencia y el ahorro no la
@@ -95,12 +98,24 @@ de ahorro, el aviso lo dice ahí mismo
 seleccionadas tienen que ser de la misma moneda (si no, error inline en la
 barra). Con UNA fila, el flujo de siempre de compartir_gasto.py; con
 varias, ui/components/compartir_varios.py con los mismos campos (hogar +
-coeficiente de 0 a 1) — mismo hogar y mismo coeficiente para todas,
-salteando las ya compartidas; los ingresos se registran como pago
-recibido (coeficiente 100%, monto base negativo), igual que en el flujo de
+reparto [%] [0.XX] [$], arrancando en 0.XX) — mismo hogar y mismo reparto
+para todas, salteando las ya compartidas. Un ingreso lleva monto base
+negativo y el reparto elegido, como un gasto (pedido explícito: no se
+presupone que un ingreso se comparte al 100%), igual que en el flujo de
 una fila.
 La barra muestra además la suma (Σ) de los montos seleccionados, con el
 signo que se ve (− gasto, + ingreso) y una por moneda.
+
+--- Barra SALDO POR CUENTA ---
+
+El saldo de cada cuenta al ÚLTIMO DÍA del mes elegido (no el de hoy): es
+el "saldo al cierre del mes anterior" del mes siguiente,
+SnapshotsService.get_saldos_anteriores_cuentas(mes + 1) — el mismo
+cálculo que la fila SALDO ANTERIOR (saldo inicial + ingresos − egresos,
+snapshot o en vivo si falta; el mes en curso y los futuros siempre en
+vivo). Se recalcula al cambiar de mes (barra_titulo() → tabla.recargar()
+→ al_recargar) y con cada alta/edición/borrado. Un mes pasado usa su
+snapshot si existe: si quedó viejo, ↻ lo recalcula.
 
 --- Saldo anterior (snapshots de cierre de mes) ---
 
@@ -144,7 +159,7 @@ from ui.components import compartir_gasto, dialogo_compra_ahorro
 from ui.components.saldo_anterior import TEXTO_SALDO_ANTERIOR, TOOLTIP_SALDO_ANTERIOR, boton_recalcular
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
-from ui.components.compartir_varios import FORMATO_UNIDAD, abrir_compartir_varios
+from ui.components.compartir_varios import abrir_compartir_varios
 from ui.components.tipo_valor import TIPO_COEFICIENTE, TIPO_MONTO, TIPO_PORCENTAJE, CampoTipoValor
 from ui.components.tabla_planilla import (
     EXTRA_AJUSTE_DOT,
@@ -194,6 +209,8 @@ LIMITE_TRANSACCIONES_DEL_MES = 500
 ANCHO_TIPO_DEUDA = 160
 ANCHO_DIALOGO_ROUTING = 320
 MONEDA_DEFAULT = "ARS"
+# Barra de saldo: al último día del mes elegido (ver docstring, "Barra SALDO POR CUENTA").
+TITULO_BARRA_SALDOS = "SALDO POR CUENTA AL {fecha}"
 HINT_MONTO_ALTA = "± MONTO"
 MENSAJE_SIGNO_NO_EDITABLE = (
     "CAMBIAR UN GASTO A INGRESO (O AL REVÉS) TODAVÍA NO SE PUEDE DESDE LA TABLA: "
@@ -391,17 +408,27 @@ def build(
 
     contenedor_saldos = ft.Container()
 
+    def _saldos_al_cierre_del_mes() -> dict[tuple[str, str], dict]:
+        """
+        (cuenta_id, moneda_codigo) → {saldo_minor, moneda_simbolo, decimales, …}
+        al último día del mes elegido (ver docstring, "Barra SALDO POR CUENTA").
+        """
+        mes, anio = (1, ui["anio"] + 1) if ui["mes"] == 12 else (ui["mes"] + 1, ui["anio"])
+        return {
+            (e["cuenta_id"], e["moneda_codigo"]): e for e in snapshots_service.get_saldos_anteriores_cuentas(mes, anio)
+        }
+
     def _barra_saldos() -> ft.Control:
         codigo_sel = ui["moneda_saldo"]
-        moneda_sel = monedas_por_codigo.get(codigo_sel, {})
         cuentas = datos["cuentas_activas_todas"]
+        saldos = _saldos_al_cierre_del_mes()
         chips: list[ChipResumen] = []
         for cuenta in cuentas:
-            saldo = next((s for s in cuenta["saldos"] if s["moneda_codigo"] == codigo_sel), None)
+            saldo = saldos.get((cuenta["id"], codigo_sel))
             if saldo is None or saldo["saldo_minor"] == 0:
                 continue
             negativo = saldo["saldo_minor"] < 0
-            monto = amount_display(abs(saldo["saldo_minor"]), moneda_sel.get("decimales", 2), saldo["moneda_simbolo"] or "")
+            monto = amount_display(abs(saldo["saldo_minor"]), saldo["decimales"], saldo["moneda_simbolo"] or "")
             chips.append(ChipResumen(
                 color=color_cuenta(cuenta, cuenta["nombre"]),
                 nombre=cuenta["nombre"],
@@ -409,11 +436,13 @@ def build(
                 color_monto=TEXT_NEGATIVO if negativo else TEXT_POSITIVO,
                 moneda=codigo_sel,
             ))
-        # Monedas con algún saldo distinto de cero (+ la elegida, la agrega barra_resumen()).
-        monedas = [s["moneda_codigo"] for c in cuentas for s in c["saldos"] if s["saldo_minor"] != 0]
+        # Monedas con algún saldo distinto de cero en una cuenta activa (+ la elegida, la agrega barra_resumen()).
+        ids_activas = {c["id"] for c in cuentas}
+        monedas = [codigo for (cuenta_id, codigo), s in saldos.items() if s["saldo_minor"] != 0 and cuenta_id in ids_activas]
+        fin_de_mes = f"{ui['anio']:04d}-{ui['mes']:02d}-{calendar.monthrange(ui['anio'], ui['mes'])[1]:02d}"
         return barra_resumen(
-            "SALDO POR CUENTA", ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED, chips, monedas, codigo_sel,
-            on_moneda=_elegir_moneda_saldo, texto_vacio=f"SIN SALDOS EN {codigo_sel}",
+            TITULO_BARRA_SALDOS.format(fecha=fin_de_mes), ft.Icons.ACCOUNT_BALANCE_WALLET_OUTLINED, chips, monedas,
+            codigo_sel, on_moneda=_elegir_moneda_saldo, texto_vacio=f"SIN SALDOS EN {codigo_sel}",
             acciones=[boton_recalculo],
         )
 
@@ -553,6 +582,10 @@ def build(
         )
         sin_borde(campo_monto.control)
         campo_monto.control.text_align = ft.TextAlign.RIGHT
+        # Borrador en cada tecla, no solo al confirmar: si la pantalla se
+        # reconstruye (sync que bajó filas, volver con datos nuevos) antes del
+        # blur, el monto tipeado no se pierde. CampoMonto no usa on_change.
+        campo_monto.control.on_change = _on_cambio_borrador
         if borrador["monto"]:
             campo_monto.control.value = borrador["monto"]
 
@@ -594,8 +627,11 @@ def build(
         )
 
     def _alta_ok() -> None:
-        """Una alta terminó bien: la fila de alta vuelve a sus valores default."""
-        ui["alta"] = _alta_vacia()
+        """
+        Una alta terminó bien: la fila se reconstruye CON LOS MISMOS VALORES
+        (pedido explícito: carga en serie editando solo algunos campos).
+        """
+        _guardar_borrador_alta()
         tabla.alta_ok()
 
     # --- Guardado de la fila de alta ---
@@ -1125,17 +1161,21 @@ def build(
         # Mismo criterio que compartir_gasto.py.
         return t["tipo_movimiento"] == "ingreso"
 
+    def _monto_base_compartido(t: dict) -> int:
+        # Ingreso: monto base negativo, igual que el flujo de una fila (compartir_gasto.py).
+        return -t["monto_minor"] if _es_ingreso(t) else t["monto_minor"]
+
     def _compartir_una(t: dict, hogar_id: str, pagador: str, coeficiente: float) -> None:
-        # Ingreso = pago recibido: coeficiente 100% y monto base negativo,
-        # igual que el flujo de una fila (compartir_gasto.py).
+        # El coeficiente es el elegido para todas, también para un ingreso
+        # (pedido explícito: no se presupone el 100%).
         shared_expenses_service.add_shared_expense(
             hogar_id=hogar_id,
             pagador=pagador,
             origen_tipo="transaccion",
             origen_id=t["id"],
             categoria_id=t["categoria_id"],
-            monto_base_minor=-t["monto_minor"] if _es_ingreso(t) else t["monto_minor"],
-            coeficiente_deuda=100.0 if _es_ingreso(t) else coeficiente,
+            monto_base_minor=_monto_base_compartido(t),
+            coeficiente_deuda=coeficiente,
             fecha=t["fecha"],
         )
 
@@ -1160,13 +1200,10 @@ def build(
         ya_compartidos = len(filas) - len(pendientes)
         if ya_compartidos:
             avisos.append(f"{ya_compartidos} YA ESTABA(N) COMPARTIDO(S) Y SE SALTEA(N).")
-        ingresos = sum(1 for t in pendientes if _es_ingreso(t))
-        if ingresos:
-            avisos.append(f"{ingresos} ES/SON INGRESO(S): SE REGISTRA(N) COMO PAGO RECIBIDO (COEFICIENTE 100%).")
         page.run_task(
             abrir_compartir_varios, page, shared_expenses_service,
             f"COMPARTIR {len(pendientes)} MOVIMIENTOS", pendientes, _compartir_una, avisos, tabla.recargar,
-            (), FORMATO_UNIDAD, ingresos < len(pendientes),  # coeficiente 0-1, como compartir_gasto.py
+            _monto_base_compartido, (), TIPO_COEFICIENTE,  # arranca en 0.XX, como compartir_gasto.py
         )
 
     # ------------------------------------------------------------

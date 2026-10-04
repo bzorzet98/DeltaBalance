@@ -173,6 +173,10 @@ CREATE TABLE IF NOT EXISTS autotransferencias (
 -- =============================================================
 -- RESUMENES TARJETA
 -- =============================================================
+-- Las fechas reales de cierre / vencimiento de un resumen, cuando no son
+-- las que dan los días de tarjetas_config, van en tarjetas_resumenes (las
+-- dos tablas se crean en db/schema_migrations.py MIGRACIONES_TABLA —
+-- docs/DATA_MODEL_DECISIONS.md secciones 23 y 29).
 CREATE TABLE IF NOT EXISTS resumenes_tarjeta (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -255,6 +259,12 @@ CREATE TABLE IF NOT EXISTS compras_cuotas (
 -- alterar. Cualquier columna nueva sobre una tabla existente va ahí, nunca
 -- como ALTER TABLE suelto en este archivo; las tablas nuevas sí siguen
 -- yendo acá con CREATE TABLE IF NOT EXISTS como siempre.
+--
+-- compras_cuotas.es_cargo_extra (mismo mecanismo): 1 = cargo/reintegro del
+-- resumen de la tarjeta (impuesto, recargo, ajuste) cargado con una
+-- categoría especial de TARJETA DE CRÉDITO — una "compra" de 1 cuota cuya
+-- cuota ya está en el resumen de su mes. Ver docs/DATA_MODEL_DECISIONS.md
+-- sección 28.
 
 -- =============================================================
 -- CUOTAS CREDITO
@@ -300,6 +310,13 @@ CREATE TABLE IF NOT EXISTS cuotas_credito (
 -- Cargos que componen monto_impuestos_minor de un resumen al cerrarlo
 -- (impuestos, recargos, ajustes). Ver docs/DATA_MODEL_DECISIONS.md sobre el
 -- rediseño de cómo se calculan los totales de resumenes_tarjeta.
+--
+-- DEPRECADA (docs/DATA_MODEL_DECISIONS.md sección 28): los cargos extra se
+-- guardan en compras_cuotas con es_cargo_extra = 1 (esta tabla no se
+-- sincroniza). db/schema_migrations.py migrar_cargos_extra_a_compras() mueve
+-- las filas existentes; solo quedan acá las que no se pudieron mover (tipo
+-- 'otro', sin categoría especial). Se sigue creando para no romper bases ni
+-- scripts que todavía la leen.
 CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -485,8 +502,29 @@ CREATE TABLE IF NOT EXISTS tipos_cambio (
 );
 
 -- =============================================================
+-- BROKERS
+-- =============================================================
+-- Dónde se opera un activo financiero (COCOS, BULL MARKET, IOL…). Los
+-- iniciales los siembra db/schema_migrations.py (BROKERS_INICIALES) en toda
+-- base, nueva o existente — no db/seed.sql, que solo corre en bases nuevas.
+CREATE TABLE IF NOT EXISTS brokers (
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+
+    nombre                          TEXT NOT NULL UNIQUE,
+    tipo                            TEXT,
+
+    activo                          INTEGER NOT NULL DEFAULT 1,
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================
 -- ACTIVOS FINANCIEROS
 -- =============================================================
+-- broker_id, comision_compra_minor, comision_venta_minor y cuenta_id se
+-- agregan vía db/schema_migrations.py. Una base que ya tenía la tabla con
+-- el CHECK de `tipo` anterior (sin cedear/plazo_flex) la reconstruye
+-- ampliar_tipos_ahorro() de ese mismo módulo.
 CREATE TABLE IF NOT EXISTS activos_financieros (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -498,7 +536,9 @@ CREATE TABLE IF NOT EXISTS activos_financieros (
                                         'fci',
                                         'plazo_fijo',
                                         'cripto',
-                                        'otro'
+                                        'otro',
+                                        'cedear',
+                                        'plazo_flex'
                                     )),
 
     moneda_id                       INTEGER NOT NULL REFERENCES monedas(id),
@@ -512,6 +552,9 @@ CREATE TABLE IF NOT EXISTS activos_financieros (
 -- =============================================================
 -- MOVIMIENTOS DE ACTIVO
 -- =============================================================
+-- transaccion_id y comision_minor se agregan vía db/schema_migrations.py.
+-- 'aporte' (plata que entra a un FCI / plazo, sin cantidad de unidades):
+-- una base con el CHECK anterior la reconstruye ampliar_tipos_ahorro().
 CREATE TABLE IF NOT EXISTS movimientos_activo (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -521,7 +564,8 @@ CREATE TABLE IF NOT EXISTS movimientos_activo (
                                     CHECK(tipo IN (
                                         'compra',
                                         'venta',
-                                        'rendimiento'
+                                        'rendimiento',
+                                        'aporte'
                                     )),
 
     fecha                           TEXT NOT NULL
@@ -584,6 +628,27 @@ CREATE TABLE IF NOT EXISTS asignaciones (
     monto_asignado_minor            INTEGER NOT NULL,
 
     UNIQUE(movimiento_id, objetivo_id)
+);
+
+-- =============================================================
+-- ACTIVO OBJETIVOS (reparto vigente de un activo entre objetivos)
+-- =============================================================
+-- Qué porcentaje de un activo es de cada objetivo de ahorro. Cada
+-- movimiento nuevo del activo genera sus `asignaciones` con estos
+-- porcentajes (SavingsService). Misma limitación que asignaciones: la suma
+-- por activo_id (<= 100) no entra en un CHECK — la valida el service.
+CREATE TABLE IF NOT EXISTS activo_objetivos (
+    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+
+    activo_id                       TEXT NOT NULL REFERENCES activos_financieros(id),
+    objetivo_id                     TEXT NOT NULL REFERENCES objetivos_ahorro(id),
+
+    porcentaje                      REAL NOT NULL
+                                    CHECK(porcentaje > 0 AND porcentaje <= 100),
+
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE(activo_id, objetivo_id)
 );
 
 -- =============================================================
@@ -869,6 +934,9 @@ ON asignaciones(movimiento_id);
 
 CREATE INDEX IF NOT EXISTS idx_asignaciones_objetivo
 ON asignaciones(objetivo_id);
+
+CREATE INDEX IF NOT EXISTS idx_activo_objetivos_objetivo
+ON activo_objetivos(objetivo_id);
 
 CREATE INDEX IF NOT EXISTS idx_gastos_compartidos_hogar
 ON gastos_compartidos(hogar_id);

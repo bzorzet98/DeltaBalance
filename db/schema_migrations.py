@@ -48,6 +48,18 @@ db/schema.sql, que sigue creando las tablas con su estructura anterior en
 una base nueva: esta migración las convierte enseguida). Mismo mecanismo
 que deudas: tabla nueva al lado, copia, borrado de la vieja y rename, todo
 en una transacción y con backup previo si hay datos.
+
+Rediseño de Ahorros e Inversiones (más abajo): ampliar_tipos_ahorro()
+reconstruye activos_financieros y movimientos_activo cuando su CHECK de
+`tipo` todavía es el anterior (sin 'cedear'/'plazo_flex' y sin 'aporte'), y
+_sembrar_brokers() carga los brokers iniciales (BROKERS_INICIALES) en toda
+base — las tablas nuevas brokers / activo_objetivos van en db/schema.sql.
+
+Cargos extra de tarjeta (más abajo, migrar_cargos_extra_a_compras(),
+docs/DATA_MODEL_DECISIONS.md sección 28): mueve una sola vez las filas de
+resumen_cargos_extra a compras_cuotas (es_cargo_extra = 1) + cuotas_credito,
+con backup previo. tarjetas_resumenes (fechas reales de cierre/vencimiento
+de un resumen, sección 29) va en MIGRACIONES_TABLA, junto a tarjetas_config.
 """
 
 from __future__ import annotations
@@ -124,6 +136,29 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         columna="cuenta_id",
         ddl_columna="cuenta_id TEXT REFERENCES cuentas(id)",
     ),
+    # Rediseño de Ahorros e Inversiones: broker y comisiones por defecto
+    # del activo, y comisión de cada movimiento. (El dólar del momento ya
+    # existía como movimientos_activo.dolar_oficial_momento_minor.)
+    MigracionColumna(
+        tabla="activos_financieros",
+        columna="broker_id",
+        ddl_columna="broker_id TEXT REFERENCES brokers(id)",
+    ),
+    MigracionColumna(
+        tabla="activos_financieros",
+        columna="comision_compra_minor",
+        ddl_columna="comision_compra_minor INTEGER DEFAULT 0",
+    ),
+    MigracionColumna(
+        tabla="activos_financieros",
+        columna="comision_venta_minor",
+        ddl_columna="comision_venta_minor INTEGER DEFAULT 0",
+    ),
+    MigracionColumna(
+        tabla="movimientos_activo",
+        columna="comision_minor",
+        ddl_columna="comision_minor INTEGER DEFAULT 0",
+    ),
     MigracionColumna(
         tabla="gastos_compartidos",
         columna="monto_pendiente_minor",
@@ -143,6 +178,29 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         tabla="compras_cuotas",
         columna="tag",
         ddl_columna="tag TEXT",
+    ),
+    # Moneda y fecha de cada cargo extra (docs/DATA_MODEL_DECISIONS.md
+    # sección 28): las pide la fila de alta de Compras en cuotas y antes se
+    # descartaban. NULL en los cargos anteriores — FeesService deduce su
+    # moneda como antes (sección 15) y no tienen fecha propia.
+    MigracionColumna(
+        tabla="resumen_cargos_extra",
+        columna="moneda_id",
+        ddl_columna="moneda_id INTEGER REFERENCES monedas(id)",
+    ),
+    MigracionColumna(
+        tabla="resumen_cargos_extra",
+        columna="fecha",
+        ddl_columna="fecha TEXT CHECK(fecha IS NULL OR fecha GLOB '????-??-??')",
+    ),
+    MigracionColumna(
+        # 1 = cargo/reintegro del resumen de la tarjeta (impuesto, recargo,
+        # ajuste), no una compra real. Los cargos extra viven acá y no en
+        # resumen_cargos_extra (migrar_cargos_extra_a_compras(),
+        # docs/DATA_MODEL_DECISIONS.md sección 28).
+        tabla="compras_cuotas",
+        columna="es_cargo_extra",
+        ddl_columna="es_cargo_extra INTEGER NOT NULL DEFAULT 0",
     ),
 ]
 
@@ -225,6 +283,27 @@ MIGRACIONES_TABLA: list[str] = [
         updated_en          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
     """,
+    # Fecha real de cierre / vencimiento de UN resumen, cuando no es la que
+    # dan los días de tarjetas_config (feriados, cambios del banco). Una
+    # fila por (tarjeta, mes, anio) — el mes del cierre calculado con el día
+    # default, el mismo que identifica cada resumen en
+    # FeesService.card_cycle_dates(). Cada fecha es opcional: NULL = la
+    # calculada. Se sincroniza (TABLAS_SINCRONIZADAS, más abajo: su
+    # sincronizado_en y sus triggers los agrega preparar_sync()). Ver
+    # docs/DATA_MODEL_DECISIONS.md sección 29.
+    f"""
+    CREATE TABLE IF NOT EXISTS tarjetas_resumenes (
+        id                  TEXT PRIMARY KEY NOT NULL DEFAULT {UUID_V4_SQL},
+        cuenta_id           TEXT NOT NULL REFERENCES cuentas(id),
+        mes                 INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+        anio                INTEGER NOT NULL,
+        fecha_cierre        TEXT CHECK(fecha_cierre IS NULL OR fecha_cierre GLOB '????-??-??'),
+        fecha_vence         TEXT CHECK(fecha_vence IS NULL OR fecha_vence GLOB '????-??-??'),
+        creada_en           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_en          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(cuenta_id, mes, anio)
+    );
+    """,
 ]
 
 
@@ -237,9 +316,13 @@ def aplicar_migraciones_tabla(conn: sqlite3.Connection) -> None:
     estaba), las columnas de MIGRACIONES_COLUMNA_DEUDAS y recrea
     deudas_mensuales si todavía no tiene `tab` (_deudas_mensuales_con_tab())
     y convierte presupuestos / ingresos_proyectados a su estructura final
-    (reestructurar_presupuestos_ingresos()); ninguna hace nada si ya se
-    hizo. Por último, preparar_sync(): columna sincronizado_en, tablas de
-    control y triggers de la sincronización con Supabase (idempotente).
+    (reestructurar_presupuestos_ingresos()) y los CHECK de tipo de ahorros
+    (ampliar_tipos_ahorro()); ninguna hace nada si ya se hizo. Siembra los
+    brokers iniciales (_sembrar_brokers(), INSERT OR IGNORE) y mueve los
+    cargos extra de resumen_cargos_extra a compras_cuotas
+    (migrar_cargos_extra_a_compras(), no hace nada si ya no quedan). Por
+    último, preparar_sync(): columna sincronizado_en, tablas de control y
+    triggers de la sincronización con Supabase (idempotente).
     """
     for ddl in MIGRACIONES_TABLA:
         conn.execute(ddl)
@@ -247,6 +330,9 @@ def aplicar_migraciones_tabla(conn: sqlite3.Connection) -> None:
     _aplicar_columnas(conn, MIGRACIONES_COLUMNA_DEUDAS)
     _deudas_mensuales_con_tab(conn)
     reestructurar_presupuestos_ingresos(conn)
+    ampliar_tipos_ahorro(conn)
+    _sembrar_brokers(conn)
+    migrar_cargos_extra_a_compras(conn)
     # Al final: necesita que todas las tablas sincronizadas ya existan con
     # su estructura definitiva (deudas, presupuestos e ingresos_proyectados
     # recién reestructuradas, tarjetas_config). Sus triggers se fueron con
@@ -712,6 +798,312 @@ def reestructurar_presupuestos_ingresos(conn: sqlite3.Connection) -> None:
         raise
 
 
+# =============================================================
+# AHORROS E INVERSIONES: CHECK de tipo ampliados + brokers iniciales
+# =============================================================
+# Pedido explícito (tarea "Rediseño de Ahorros e Inversiones"):
+#
+# activos_financieros.tipo acepta además 'cedear' y 'plazo_flex' (se
+#   conservan 'cripto' y 'otro': 'otro' es el "Efectivo reservado en
+#   <cuenta>" que crea el Registro — SavingsService.get_or_create_reserved_
+#   cash_asset()). 'cedear' y no el 'cedeard' del pedido: decisión del
+#   usuario.
+# movimientos_activo.tipo acepta además 'aporte'. El pedido agregaba una
+#   columna tipo_movimiento con esos valores al lado de `tipo`; se amplió
+#   `tipo` en su lugar (decisión del usuario: una sola columna).
+#
+# SQLite no altera un CHECK: se reconstruye la tabla (nueva al lado, copia,
+# borrado, rename), en UNA transacción y con backup previo si hay datos.
+# Se copian las columnas que tengan las dos tablas, así las que agregaron
+# antes las migraciones de columna (cuenta_id, broker_id, comisiones,
+# transaccion_id) viajan solas. Los índices y triggers de la tabla vieja
+# (trg_activos_financieros_updated, idx_movimientos_activo_activo) se
+# leen de sqlite_master y se vuelven a crear sobre la nueva.
+#
+# Las dos tablas tienen hijas con FK (movimientos_activo → activos;
+# asignaciones / activo_objetivos → movimientos / activos): con
+# foreign_keys = ON, el DROP de la vieja fallaría por esas filas. Se apagan
+# las FK mientras dura (procedimiento de 12 pasos de la documentación de
+# SQLite, "Making Other Kinds Of Table Schema Changes"): PRAGMA
+# foreign_keys = OFF fuera de la transacción, PRAGMA foreign_key_check
+# antes del COMMIT, y se vuelven a prender pase lo que pase.
+
+TIPOS_ACTIVO_FINANCIERO = ("accion", "fci", "plazo_fijo", "cripto", "otro", "cedear", "plazo_flex")
+TIPOS_MOVIMIENTO_ACTIVO = ("compra", "venta", "rendimiento", "aporte")
+
+BROKERS_INICIALES = ("COCOS", "BULL MARKET", "IOL", "MERCADO PAGO", "NACION", "BALANZ")
+
+
+def _valores_sql(valores: tuple[str, ...]) -> str:
+    return ", ".join(f"'{valor}'" for valor in valores)
+
+
+DDL_ACTIVOS_FINAL = f"""
+CREATE TABLE activos_financieros_final (
+    id                    TEXT PRIMARY KEY NOT NULL DEFAULT {UUID_V4_SQL},
+    nombre                TEXT NOT NULL,
+    tipo                  TEXT NOT NULL CHECK(tipo IN ({_valores_sql(TIPOS_ACTIVO_FINANCIERO)})),
+    moneda_id             INTEGER NOT NULL REFERENCES monedas(id),
+    activa                INTEGER NOT NULL DEFAULT 1,
+    creada_en             TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cuenta_id             TEXT REFERENCES cuentas(id),
+    broker_id             TEXT REFERENCES brokers(id),
+    comision_compra_minor INTEGER DEFAULT 0,
+    comision_venta_minor  INTEGER DEFAULT 0
+);
+"""
+
+DDL_MOVIMIENTOS_FINAL = f"""
+CREATE TABLE movimientos_activo_final (
+    id                          TEXT PRIMARY KEY NOT NULL DEFAULT {UUID_V4_SQL},
+    activo_id                   TEXT NOT NULL REFERENCES activos_financieros(id),
+    tipo                        TEXT NOT NULL CHECK(tipo IN ({_valores_sql(TIPOS_MOVIMIENTO_ACTIVO)})),
+    fecha                       TEXT NOT NULL CHECK(fecha GLOB '????-??-??'),
+    cantidad                    REAL,
+    precio_unitario_minor       INTEGER,
+    monto_total_minor           INTEGER NOT NULL,
+    dolar_oficial_momento_minor INTEGER,
+    notas                       TEXT,
+    creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    transaccion_id              TEXT REFERENCES transacciones(id),
+    comision_minor              INTEGER DEFAULT 0
+);
+"""
+
+
+@dataclass(frozen=True)
+class _AmpliacionCheck:
+    tabla: str
+    tabla_nueva: str
+    marca: str  # valor del CHECK nuevo: si el CREATE TABLE ya lo tiene, no hay nada que hacer
+    ddl: str
+
+
+AMPLIACIONES_AHORRO: list[_AmpliacionCheck] = [
+    _AmpliacionCheck("activos_financieros", "activos_financieros_final", "'plazo_flex'", DDL_ACTIVOS_FINAL),
+    _AmpliacionCheck("movimientos_activo", "movimientos_activo_final", "'aporte'", DDL_MOVIMIENTOS_FINAL),
+]
+
+
+def _sql_tabla(conn: sqlite3.Connection, tabla: str) -> str:
+    fila = conn.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?;", (tabla,)).fetchone()
+    return (fila[0] or "") if fila else ""
+
+
+def _columnas_en_orden(conn: sqlite3.Connection, tabla: str) -> list[str]:
+    return [fila[1] for fila in conn.execute(f"PRAGMA table_info({tabla});")]
+
+
+def ampliar_tipos_ahorro(conn: sqlite3.Connection) -> None:
+    """
+    Reconstruye activos_financieros / movimientos_activo si su CHECK de
+    `tipo` todavía es el anterior (ver el bloque de arriba). No hace nada si
+    ya están ampliados (siempre, en una base nueva: db/schema.sql ya los
+    crea así). Todo en UNA transacción; si algo falla, rollback completo y
+    la excepción sube.
+
+    Raises:
+        RuntimeError si al terminar PRAGMA foreign_key_check encuentra
+        alguna fila huérfana (no debería: se copian los mismos ids).
+    """
+    pendientes = [
+        r for r in AMPLIACIONES_AHORRO if _existe_tabla(conn, r.tabla) and r.marca not in _sql_tabla(conn, r.tabla)
+    ]
+    if not pendientes:
+        return
+
+    # Mismo motivo que en reestructurar_deudas(): se cierra una transacción
+    # implícita antes del backup, del PRAGMA (no tiene efecto dentro de una
+    # transacción) y del BEGIN.
+    conn.commit()
+    if any(conn.execute(f"SELECT 1 FROM {r.tabla} LIMIT 1;").fetchone() for r in pendientes):
+        _backup_antes_de_reestructurar(conn, "ahorros")
+
+    conn.execute("PRAGMA foreign_keys = OFF;")
+    try:
+        conn.execute("BEGIN;")
+        try:
+            for r in pendientes:
+                # Índices y triggers propios (sqlite_master ya los guarda sin IF NOT EXISTS).
+                anexos = [
+                    fila[0] for fila in conn.execute(
+                        "SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL;",
+                        (r.tabla,),
+                    )
+                ]
+                conn.execute(f"DROP TABLE IF EXISTS {r.tabla_nueva};")  # un resto de un intento anterior, si lo hubiera
+                conn.execute(r.ddl)
+                viejas = set(_columnas_en_orden(conn, r.tabla))
+                columnas = ", ".join(c for c in _columnas_en_orden(conn, r.tabla_nueva) if c in viejas)
+                conn.execute(f"INSERT INTO {r.tabla_nueva} ({columnas}) SELECT {columnas} FROM {r.tabla};")
+                conn.execute(f"DROP TABLE {r.tabla};")
+                conn.execute(f"ALTER TABLE {r.tabla_nueva} RENAME TO {r.tabla};")
+                for ddl in anexos:
+                    conn.execute(ddl)
+            huerfana = conn.execute("PRAGMA foreign_key_check;").fetchone()
+            if huerfana is not None:
+                raise RuntimeError(
+                    f"Ampliación de tipos de ahorro: fila huérfana en {huerfana[0]} (rowid {huerfana[1]}) "
+                    f"hacia {huerfana[2]}. No se aplicó nada."
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON;")
+
+
+def _sembrar_brokers(conn: sqlite3.Connection) -> None:
+    """Brokers iniciales (INSERT OR IGNORE por el UNIQUE de nombre: no duplica ni reactiva nada)."""
+    if not _existe_tabla(conn, "brokers"):
+        return
+    conn.executemany("INSERT OR IGNORE INTO brokers (nombre) VALUES (?);", [(nombre,) for nombre in BROKERS_INICIALES])
+    conn.commit()
+
+
+# =============================================================
+# CARGOS EXTRA → compras_cuotas (docs/DATA_MODEL_DECISIONS.md sección 28)
+# =============================================================
+# Los cargos extra de un resumen (impuestos, recargos, ajustes/reintegros)
+# pasan de resumen_cargos_extra — que no se sincroniza — a compras_cuotas
+# con es_cargo_extra = 1: una compra de 1 cuota con la categoría especial de
+# su tipo, y su cuota en cuotas_credito en el mes del resumen, ya incluida
+# en él. compras_cuotas y cuotas_credito sí se sincronizan.
+#
+# Copia CONGELADA de services/fees_service.py CATEGORIAS_CARGO_EXTRA (tipo →
+# categoría especial): db/ no importa services/ (es al revés), y una
+# migración de datos no tiene que cambiar si después cambia el código vivo.
+CATEGORIA_DE_CARGO_MIGRACION: dict[str, tuple[str, str]] = {
+    "impuesto": ("TARJETA DE CRÉDITO", "Impuesto tarjeta"),
+    "recargo": ("TARJETA DE CRÉDITO", "Recargo tarjeta"),
+    "ajuste": ("TARJETA DE CRÉDITO", "Ajuste/Reintegro tarjeta"),
+}
+# compras_cuotas.moneda_id es NOT NULL: la moneda de un cargo viejo que no
+# se puede deducir (ver _moneda_cargo_viejo()).
+MONEDA_CARGO_POR_DEFECTO = "ARS"
+
+
+def _moneda_cargo_viejo(conn: sqlite3.Connection, cuenta_id: str, mes: int, anio: int) -> int:
+    """
+    Moneda de un cargo guardado sin moneda (los anteriores a la columna
+    moneda_id): la única de las compras de esa tarjeta con cuotas ese mes
+    (la misma regla con que se sumaban, sección 15); sin cuotas ese mes, la
+    única en que opera la tarjeta (cuentas_saldos); si no,
+    MONEDA_CARGO_POR_DEFECTO — los impuestos de una tarjeta se cobran en pesos.
+    """
+    de_cuotas = conn.execute(
+        """
+        SELECT DISTINCT pc.moneda_id
+        FROM cuotas_credito qc
+        JOIN compras_cuotas pc ON pc.id = qc.compra_id
+        WHERE pc.cuenta_id = ? AND qc.mes_proyectado = ? AND qc.anio_proyectado = ?
+          AND qc.estado != 'omitido' AND pc.es_cargo_extra = 0;
+        """,
+        (cuenta_id, mes, anio),
+    ).fetchall()
+    if len(de_cuotas) == 1:
+        return de_cuotas[0][0]
+    if not de_cuotas:
+        de_cuenta = conn.execute("SELECT moneda_id FROM cuentas_saldos WHERE cuenta_id = ?;", (cuenta_id,)).fetchall()
+        if len(de_cuenta) == 1:
+            return de_cuenta[0][0]
+    return conn.execute("SELECT id FROM monedas WHERE codigo = ?;", (MONEDA_CARGO_POR_DEFECTO,)).fetchone()[0]
+
+
+def migrar_cargos_extra_a_compras(conn: sqlite3.Connection) -> None:
+    """
+    Mueve cada fila de resumen_cargos_extra a compras_cuotas (es_cargo_extra
+    = 1, total_cuotas = 1) más su cuota en cuotas_credito, todo en UNA
+    transacción (rollback completo si algo falla; la excepción sube) y con
+    backup previo del archivo. Idempotente: lo movido se borra de
+    resumen_cargos_extra, así que la corrida siguiente no encuentra nada.
+
+    - id de la compra = id del cargo (no cambia su identidad); la cuota
+      toma el DEFAULT (UUID nuevo).
+    - Categoría: la especial de su tipo (CATEGORIA_DE_CARGO_MIGRACION). Un
+      cargo de tipo 'otro' (sin categoría especial — la pantalla nunca los
+      creó) o cuya categoría especial no está en la base NO se mueve: queda
+      en resumen_cargos_extra y se avisa por consola.
+    - Moneda: la del cargo; sin ella, _moneda_cargo_viejo().
+    - fecha_compra: la del cargo; sin ella, el día 1 del mes del resumen.
+    - Cuota: mes/año del resumen, monto = el del cargo (con su signo),
+      resumen_id = su resumen, y estado 'pagado' si el resumen ya se pagó o
+      'en_resumen' si no (el cargo ya es parte de ese resumen).
+    - Sin columna sincronizado_en en el INSERT: queda NULL, pendiente de
+      subir (y los triggers de sync lo anotan en sync_cambios).
+
+    No hace nada con ids enteros (migration/migrar_a_uuid_pk.py corre las
+    migraciones sobre una copia así antes de convertirla): el id es UUID.
+    """
+    if not _existe_tabla(conn, "resumen_cargos_extra") or "es_cargo_extra" not in _columnas(conn, "compras_cuotas"):
+        return
+    if not usa_ids_uuid(conn):
+        return
+    cargos = conn.execute(
+        """
+        SELECT ce.id, ce.concepto, ce.tipo, ce.monto_minor, ce.moneda_id, ce.fecha, ce.creada_en,
+               r.id, r.cuenta_id, r.mes, r.anio, r.estado
+        FROM resumen_cargos_extra ce
+        JOIN resumenes_tarjeta r ON r.id = ce.resumen_id
+        ORDER BY ce.rowid;
+        """
+    ).fetchall()
+    if not cargos:
+        return
+    categorias: dict[str, str] = {}
+    for tipo, (principal, subcategoria) in CATEGORIA_DE_CARGO_MIGRACION.items():
+        fila = conn.execute(
+            "SELECT id FROM categorias WHERE categoria_principal = ? AND subcategoria = ?;", (principal, subcategoria),
+        ).fetchone()
+        if fila is not None:
+            categorias[tipo] = fila[0]
+    movibles = [cargo for cargo in cargos if cargo[2] in categorias]
+    if len(movibles) < len(cargos):
+        print(
+            f"[DeltaBalance] {len(cargos) - len(movibles)} cargo(s) extra sin categoría especial (tipo 'otro' o "
+            f"categoría borrada): quedan en resumen_cargos_extra, sin migrar."
+        )
+    if not movibles:
+        return
+
+    # Mismo motivo que en reestructurar_deudas(): se cierra una transacción
+    # implícita que pudiera haber quedado abierta antes del backup y del BEGIN.
+    conn.commit()
+    _backup_antes_de_reestructurar(conn, "cargos_extra")
+    conn.execute("BEGIN;")
+    try:
+        for (cargo_id, concepto, tipo, monto_minor, moneda_id, fecha, creada_en,
+             resumen_id, cuenta_id, mes, anio, estado_resumen) in movibles:
+            if moneda_id is None:
+                moneda_id = _moneda_cargo_viejo(conn, cuenta_id, mes, anio)
+            conn.execute(
+                """
+                INSERT INTO compras_cuotas
+                    (id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id, monto_total_minor,
+                     total_cuotas, monto_por_cuota_minor, es_cargo_extra, creada_en)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 1, ?);
+                """,
+                (cargo_id, fecha or f"{anio:04d}-{mes:02d}-01", concepto, cuenta_id, categorias[tipo], moneda_id,
+                 monto_minor, monto_minor, creada_en),
+            )
+            conn.execute(
+                """
+                INSERT INTO cuotas_credito
+                    (compra_id, resumen_id, numero_cuota, mes_proyectado, anio_proyectado, monto_cuota_minor, estado)
+                VALUES (?, ?, 1, ?, ?, ?, ?);
+                """,
+                (cargo_id, resumen_id, mes, anio, monto_minor, "pagado" if estado_resumen == "pagado" else "en_resumen"),
+            )
+            conn.execute("DELETE FROM resumen_cargos_extra WHERE id = ?;", (cargo_id,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    print(f"[DeltaBalance] {len(movibles)} cargo(s) extra movido(s) de resumen_cargos_extra a compras_cuotas.")
+
+
 def _aplicar_columnas(conn: sqlite3.Connection, migraciones: list[MigracionColumna]) -> None:
     """Agrega cada columna que todavía no exista en su tabla (idempotente)."""
     for migracion in migraciones:
@@ -772,11 +1164,12 @@ def aplicar_migraciones_columna(conn: sqlite3.Connection, exigir_uuid: bool = Tr
 # 1. La columna sincronizado_en (cuándo se subió o bajó la fila por última
 #    vez) en cada tabla de TABLAS_SINCRONIZADAS — las 10 del pedido más las
 #    que dependen de ellas (cuentas_saldos, cuotas_credito,
-#    resumenes_tarjeta, tarjetas_config, gasto_compartido_pagos: sin ellas,
-#    en Supabase una compra quedaría sin sus cuotas y una cuenta sin sus
-#    saldos). Va en MIGRACIONES_COLUMNA_SYNC y no en MIGRACIONES_COLUMNA
-#    porque tarjetas_config la crea MIGRACIONES_TABLA y deudas la rearma
-#    reestructurar_deudas(): la columna se agrega después de las dos.
+#    resumenes_tarjeta, tarjetas_config, tarjetas_resumenes,
+#    gasto_compartido_pagos: sin ellas, en Supabase una compra quedaría sin
+#    sus cuotas y una cuenta sin sus saldos). Va en MIGRACIONES_COLUMNA_SYNC
+#    y no en MIGRACIONES_COLUMNA porque tarjetas_config / tarjetas_resumenes
+#    las crea MIGRACIONES_TABLA y deudas la rearma reestructurar_deudas(): la
+#    columna se agrega después.
 # 2. sync_cambios: qué filas cambiaron desde la última sincronización —
 #    (tabla, clave, 'guardado' | 'borrado', modificado_en). La llenan
 #    triggers AFTER INSERT / UPDATE / DELETE sobre cada tabla sincronizada,
@@ -802,6 +1195,7 @@ TABLAS_SINCRONIZADAS: list[str] = [
     "cuentas",
     "cuentas_saldos",
     "tarjetas_config",
+    "tarjetas_resumenes",  # fechas reales de un resumen (sección 29)
     "transacciones",
     "deudas",
     "compras_cuotas",

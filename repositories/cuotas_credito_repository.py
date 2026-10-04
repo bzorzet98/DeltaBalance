@@ -142,6 +142,12 @@ class CuotasCreditoRepository:
             (compra_id,),
         )
 
+    def listar_por_resumen(self, resumen_id: str) -> list[sqlite3.Row]:
+        """Las cuotas incluidas en un resumen (resumen_id), en orden de alta."""
+        return self._db.fetchall(
+            "SELECT * FROM cuotas_credito WHERE resumen_id = ? ORDER BY rowid ASC;", (resumen_id,),
+        )
+
     def listar_por_mes(
         self,
         mes: int,

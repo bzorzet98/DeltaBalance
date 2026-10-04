@@ -276,12 +276,21 @@ class ResumenesTarjetaRepository:
         releer el resumen.
         """
         conexion = conn if conn is not None else self._db.conn
-        fila_consumos = conexion.execute(
-            "SELECT COALESCE(SUM(monto_cuota_minor), 0) AS total FROM cuotas_credito WHERE resumen_id = ?;",
+        # Las cuotas de un cargo extra (compras_cuotas.es_cargo_extra = 1,
+        # docs/DATA_MODEL_DECISIONS.md sección 28) son impuestos, no
+        # consumos; más los cargos que quedaron en resumen_cargos_extra.
+        fila = conexion.execute(
+            """
+            SELECT COALESCE(SUM(CASE WHEN pc.es_cargo_extra = 1 THEN 0 ELSE qc.monto_cuota_minor END), 0) AS consumos,
+                   COALESCE(SUM(CASE WHEN pc.es_cargo_extra = 1 THEN qc.monto_cuota_minor ELSE 0 END), 0) AS cargos
+            FROM cuotas_credito qc
+            JOIN compras_cuotas pc ON pc.id = qc.compra_id
+            WHERE qc.resumen_id = ?;
+            """,
             (resumen_id,),
         ).fetchone()
-        monto_consumos_minor = fila_consumos["total"]
-        monto_impuestos_minor = self._cargos_repo.suma_por_resumen(resumen_id, conn=conn)
+        monto_consumos_minor = fila["consumos"]
+        monto_impuestos_minor = fila["cargos"] + self._cargos_repo.suma_por_resumen(resumen_id, conn=conn)
         if monto_consumos_minor > 0:
             porcentaje_impuesto_bp = (monto_impuestos_minor * 10000) // monto_consumos_minor
         else:

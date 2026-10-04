@@ -1,155 +1,69 @@
 """
 DeltaBalance — ui/screens/ahorros.py
 
-Pantalla de Ahorros — rediseño Tarea 6d (docs/PROXIMOS_PASOS.md): de
-"organizada por activo" (una tarjeta por activo, tres íconos de acción cada
-una) a formato Registro — dashboard resumen arriba (tres bloques) + tabla
-de movimientos abajo, mismo patrón que ui/components/registro_
-transacciones.py y ui/screens/compras_cuotas.py. Sección de Activos
-financieros se mantiene pero se reduce a alta/listado simple (Parte E).
+Ahorros e inversiones (services/savings_service.py), rediseño por
+pestañas: RESUMEN · FCI · ACCIONES · CEDEARS · PLAZO FIJO · PLAZO FLEX ·
+OTROS. Mismo fondo y paleta que las pantallas estilo planilla
+(pantalla_planilla(), ui/theme/tabla_tokens.py).
 
---- Dashboard (Parte C), tres bloques, mismo estilo visual que "Patrimonio
-total" de ui/screens/dashboard.py (Row [título, Row-de-chips-wrap, acción],
-alignment=SPACE_BETWEEN) ---
-
-- "Por objetivo": una tile por objetivo (get_objetivo_balance(), saldo
-  neto). Un ícono por tile expande/colapsa un panel ÚNICO debajo del
-  dashboard (contenedor_detalle_objetivo, singleton — mismo patrón que
-  detalle_abierto en ui/screens/compras_cuotas.py) con el desglose por
-  cuenta (get_balance_por_cuenta()) del objetivo expandido. La barra de
-  progreso hacia monto_meta_minor que tenía la Sección 2 de la versión
-  anterior NO se trasladó a esta tile — Parte C la pide explícitamente
-  compacta ("una tile por objetivo con su saldo neto"), mismo criterio
-  terso que "Patrimonio total"; si se necesita ver el progreso hacia la
-  meta, queda para agregarlo en una tarea aparte, no se asumió acá.
-- "Por tipo de ahorro": una tile por (tipo, moneda) con
-  get_balance_por_tipo() (Parte A, nuevo) — NO pasa por asignaciones,
-  es el total real de movimientos_activo agrupado por tipo de activo.
-- "Por activo": una tile por activo con get_balance_por_activo() (Parte A,
-  nuevo) — cantidad neta (si aplica) + saldo neto, sin segregar por
-  objetivo — el número que coincide con la app del broker.
-
---- Registro de movimientos (Parte D) ---
-
-Necesitó un método de servicio NUEVO no pedido explícitamente en la
-consigna: SavingsService.list_movimientos() — ni el repositorio
-(MovimientosActivoRepository solo tiene listar_por_activo()/
-listar_por_tipo(), ambos exigen un activo_id puntual) ni el service tenían
-antes una forma de listar movimientos de TODOS los activos a la vez, que
-es exactamente lo que esta tabla necesita. Agregado en services/
-savings_service.py con su propio verify (ver verify/ahorros/
-verify_savings_service.py) — ver ese método para el detalle completo
-(filtros, por qué cada movimiento ya trae sus asignaciones resueltas con
-nombre de objetivo).
-
-Barra de herramientas: período navegable (selector_periodo.build(), mismo
-control que el Registro de transacciones) + filtro Objetivo + filtro Tipo
-de activo + filtro Tipo de movimiento + búsqueda (Enter, client-side sobre
-nombre de activo/objetivo — list_movimientos() no soporta texto libre,
-mismo criterio que TransaccionesRepository). NO se reusa
-ui/components/barra_filtros.py: ese componente está hardcodeado a
-filtros Banco/Categoría (ver su docstring), acá los filtros son
-conceptualmente distintos (Objetivo/Tipo de activo/Tipo de movimiento) —
-se arma un toolbar propio con la misma estructura (selector_periodo +
-Dropdowns + spacer + búsqueda), no una copia del componente.
-
-Columna "Objetivo(s)": varias asignaciones del mismo movimiento se
-muestran como etiquetas apiladas (ft.Row(wrap=True) de chips) en UNA sola
-fila — nunca fragmentado en filas separadas por asignación. "Sin asignar"
-en gris si list_movimientos() devolvió una lista de asignaciones vacía.
-
-Botón "+" único (Parte D, punto 3) — ft.PopupMenuButton con tres
-ft.PopupMenuItem (Compra/Rendimiento/Egreso general). PopupMenuButton no
-se había usado antes en este proyecto — es un control estándar y antiguo
-de Flet (no de la lista de cambios de 0.80+ de docs/FLET_API_NOTES.md),
-pero como cualquier patrón nuevo para este proyecto, no está confirmado
-corriendo la app.
-
-- **Compra**: dialogo_compra_ahorro.construir(activo_fijo=None) — el
-  formulario completo ya unificado con el popup "Ahorro/Inversión" del
-  Registro de transacciones (tarea anterior), con su propio selector de
-  activo + "crear nuevo" (no hay activo de contexto acá, a diferencia del
-  viejo ícono por fila). Sin pre-carga (cuenta_id_inicial/monto_inicial/
-  fecha_inicial/notas_inicial todos None).
-- **Rendimiento**: mismo register_return() y mismo texto informativo de
-  siempre ("se reparte automático, sin selección manual") — la única
-  diferencia real respecto a la versión anterior es que ahora el diálogo
-  necesita su PROPIO selector de activo (CampoFiltrable, activos
-  existentes, sin "crear nuevo": un rendimiento sin compras previas no
-  tiene nada que repartir) porque ya no llega con un activo de contexto
-  desde un ícono de fila — antes ese contexto lo daba la fila sobre la
-  que se hacía click, ahora el botón "+" es único y global. El Monto se
-  reconstruye (mismo mecanismo de dialogo_compra_ahorro.py) cada vez que
-  cambia el activo elegido, porque sus decimales dependen de la moneda de
-  ese activo.
-- **Egreso general** (reemplaza el viejo ícono de "Venta" de una fila
-  puntual): selector de activo (CampoFiltrable, SOLO activos con
-  get_balance_por_activo().saldo_neto_minor > 0 — no tiene sentido ofrecer
-  un egreso de algo sin saldo), CampoMonto (decimales de la moneda de
-  referencia del activo elegido, mismo mecanismo de reconstrucción),
-  fecha, y el editor de asignaciones — ver más abajo. Llama a
-  register_sale() con la lista de asignaciones (Parte B). Sin campos de
-  cuenta/categoría/cantidad/precio_unitario/dólar oficial — la consigna de
-  esta tarea solo pidió activo+monto+fecha+asignaciones para este diálogo
-  (a diferencia de Compra, que sí los tiene todos); register_sale() los
-  acepta igual como opcionales si una tarea futura los agrega acá. Campo
-  de moneda NO editable (fijo a la moneda de referencia del activo, texto
-  informativo en el label) — pedido explícito, hasta que la Tarea 6c
-  implemente moneda por movimiento.
-
---- Editor de asignaciones compartido (pregunta (c) de la tarea) ---
-
-Egreso general REUSA LITERALMENTE (no una copia adaptada)
-dialogo_compra_ahorro.construir_editor_asignaciones() — la misma función
-que ahora usa también el formulario de Compra (extraída de ese módulo en
-esta misma tarea, ver su docstring). Antes de esta extracción, el
-mecanismo de filas dinámicas (Objetivo + %, agregar/quitar) vivía inline
-dentro de dialogo_compra_ahorro.construir(), atado a register_purchase();
-esta pantalla necesitaba el mismo mecanismo pero atado a register_sale(),
-así que se sacó a una función aparte que devuelve (contenido, resolver())
-— cualquiera de los dos callers arma su propio Column con `contenido` y
-llama a `resolver()` al confirmar. Sin esa extracción hubiera hecho falta
-duplicar ~60 líneas de lógica de filas/validación.
-
---- Sección de Activos financieros (Parte E) ---
-
-Lista simple (nombre, tipo, moneda) con "+ Nuevo activo" — SIN los tres
-íconos de acción por fila de la versión anterior (Compra/Rendimiento/
-Venta ahora viven todos detrás del botón "+" único del Registro de
-movimientos, no por activo puntual). Desde la Tarea 6g, "+ Nuevo activo"
-suma un selector de Cuenta asociada (opcional) — vincula el activo a una
-cuenta real para que register_purchase()/register_sale() resuelvan solos
-esa cuenta en cada movimiento futuro, sin tener que elegirla de nuevo cada
-vez.
-
---- Cuenta/categoría de un movimiento (Tarea 6g) ---
-
-Ningún diálogo de movimiento (Compra, Rendimiento, Egreso general) pide
-Cuenta ni Categoría — SavingsService las resuelve solas: cuenta_id sale de
-activo["cuenta_id"] (vinculada al crear el activo, ver arriba) y
-categoria_id siempre es la categoría protegida 'Ahorro/Inversión'. El
-CampoFiltrable de activo, en Rendimiento y en Egreso general, muestra la
-cuenta asociada en el label de cada opción ("NVDA — Bull Market") para
-desambiguar activos con el mismo nombre en cuentas distintas — ver
-_label_activo() (mismo helper que ui/components/dialogo_compra_ahorro.py).
-
---- General ---
-
-Todo campo de monto vía CampoMonto (CLAUDE.md §9), persistir_formula=False
-en todos los casos (cargas de hechos puntuales, no estimaciones). objetivos_
-ahorro sigue sin columna moneda_id (limitación conocida ya documentada en
-tareas anteriores) — get_objetivo_balance() se sigue mostrando sin símbolo
-de moneda, asumiendo DECIMALES_SIN_MONEDA_DEFAULT. get_balance_por_tipo()/
-get_balance_por_activo() SÍ tienen moneda real (agrupan por moneda_id o
-heredan la del activo), así que esas dos tiles muestran símbolo correcto.
+Las pestañas son pills (el mismo switch que ME DEBEN / DEBO de Deudas), no
+ft.Tabs: la API de tabs cambió en Flet 0.80+ y no está confirmada en este
+proyecto (docs/FLET_API_NOTES.md); las pills ya se usan y se ven igual que
+el resto de la app.
 
 Reglas de arquitectura: solo SavingsService/AccountsService — nunca
-repositories/ ni db/ directo (CLAUDE.md §2/§3). CategoriasService dejó de
-hacer falta acá (Tarea 6g: ningún diálogo de esta pantalla elige
-categoría).
+repositories/ ni db/ directo (CLAUDE.md §2/§3). Los formularios viven en
+ui/components/dialogo_compra_ahorro.py (construir_nuevo_activo(),
+construir_movimiento(), construir_objetivos_activo()); acá se arma el
+AlertDialog alrededor de cada uno.
+
+--- Estado propio ---
+
+Pestaña y vista del RESUMEN en un almacén por página (_ESTADOS_UI): se
+conservan cuando ui/app.py reconstruye la pantalla. Los datos se piden de
+nuevo en cada redibujo (SavingsService.get_resumen_por_tipo()).
+
+--- RESUMEN ---
+
+[POR INSTRUMENTO]: una sección por tipo de activo, cada activo con su
+broker, su saldo (o sus unidades, en acciones / CEDEARs) y debajo su
+reparto entre objetivos. [POR OBJETIVO]: una sección por objetivo con la
+parte que le toca de cada activo (SavingsService.get_resumen_por_objetivo(),
+saldo / unidades × porcentaje); al final, SIN ASIGNAR con lo que ningún
+objetivo tiene.
+
+--- Pestañas por tipo ---
+
+Una tarjeta por activo. FCI, PLAZO FIJO, PLAZO FLEX y OTROS se cuentan en
+plata: SALDO (CAPITAL en los plazos) — el pedido decía "Cuotapartes" para
+los FCI, pero sus movimientos se cargan en pesos, así que lo que se conoce
+es el saldo. Botones: + RENDIMIENTO, + APORTE, − RETIRO. ACCIONES y
+CEDEARS se cuentan en unidades: CANTIDAD y PRECIO PROMEDIO (de las
+compras), botones + COMPRA, + VENTA, + RENDIMIENTO (dividendos). Todas
+tienen además OBJETIVOS (editar el reparto) y VER MOVIMIENTOS (lista del
+activo, con borrar). PLAZO FIJO sin vencimiento: decisión del usuario (el
+schema no lo guarda).
+
+"+ NUEVO …" de cada pestaña crea un activo de ese tipo; en ACCIONES,
+CEDEARS y los plazos, enseguida abre su primer movimiento (la compra / el
+aporte del capital: MOVIMIENTO_TRAS_ALTA).
+
+OTROS (no estaba en el pedido): los activos 'cripto' y 'otro' de antes del
+rediseño — entre ellos el "Efectivo reservado en <cuenta>" que crea el
+Registro con la categoría Ahorro/Inversión —, que si no solo se verían en
+el RESUMEN. No tiene "+ NUEVO": esos nacen en el Registro.
+
+"+ NUEVO OBJETIVO" (barra de título) crea un objetivo de ahorro (no estaba
+en el pedido, pero sin objetivos no hay a qué repartir).
+
+--- Borrar un movimiento ---
+
+SavingsService.delete_movement(): si el movimiento generó una transacción
+real vinculada, pregunta si se borra también (mismo flujo que la pantalla
+anterior).
 """
 
-from datetime import date, datetime
+from datetime import datetime
 from typing import Callable, Optional
 
 import flet as ft
@@ -157,76 +71,183 @@ import flet as ft
 from services.accounts_service import AccountsService
 from services.savings_service import SavingsError, SavingsResult, SavingsService
 from ui.components import dialogo_compra_ahorro
-from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
-from ui.components.color_chip import color_chip
-from ui.components.selector_periodo import build as construir_selector_periodo
+from ui.components.tabla_planilla import (
+    ANCHO_BORDE,
+    ESPACIO_DOT,
+    PILL_ALTURA,
+    PILL_PADDING_H,
+    PILL_RADIO,
+    mostrar_mensaje,
+    pantalla_planilla,
+    sin_auto_update,
+)
+from ui.components.tipo_valor import numero
+from ui.theme.tabla_tokens import (
+    BG_SUPERFICIE,
+    BORDER_DEFAULT,
+    BTN_COMPARTIR,
+    PESO_HEADER,
+    PESO_MONTO,
+    TEXT_ACCENT,
+    TEXT_MUTED,
+    TEXT_NEGATIVO,
+    TEXT_POSITIVO,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    TEXT_SOBRE_BOTON,
+)
 from ui.theme.tokens import TypographyTokens
 from utils.money import amount_display, amount_to_minor
 
 # --- Configuración de layout ---
+
+TABS = (
+    ("resumen", "RESUMEN"), ("fci", "FCI"), ("accion", "ACCIONES"), ("cedear", "CEDEARS"),
+    ("plazo_fijo", "PLAZO FIJO"), ("plazo_flex", "PLAZO FLEX"), ("otros", "OTROS"),
+)
+# Tipos de activo de cada pestaña (ver docstring, "OTROS").
+TIPOS_POR_TAB = {
+    "fci": ("fci",), "accion": ("accion",), "cedear": ("cedear",),
+    "plazo_fijo": ("plazo_fijo",), "plazo_flex": ("plazo_flex",), "otros": ("cripto", "otro"),
+}
+VISTAS_RESUMEN = (("instrumento", "POR INSTRUMENTO"), ("objetivo", "POR OBJETIVO"))
+TAB_DEFAULT = "resumen"
+VISTA_DEFAULT = "instrumento"
+
+NOMBRE_TIPO = {
+    "fci": "FCI", "accion": "ACCIÓN", "cedear": "CEDEAR", "plazo_fijo": "PLAZO FIJO",
+    "plazo_flex": "PLAZO FLEX", "cripto": "CRIPTO", "otro": "OTRO",
+}
+TITULO_TIPO = {
+    "fci": "FCI", "accion": "ACCIONES", "cedear": "CEDEARS", "plazo_fijo": "PLAZO FIJO",
+    "plazo_flex": "PLAZO FLEX", "cripto": "CRIPTO", "otro": "OTROS",
+}
+UNIDADES_TIPO = {"accion": "ACCIONES", "cedear": "CEDEARS"}
+UNIDADES_DEFAULT = "UNIDADES"
+ETIQUETA_SALDO = {"plazo_fijo": "CAPITAL", "plazo_flex": "CAPITAL"}
+ETIQUETA_SALDO_DEFAULT = "SALDO"
+BOTON_NUEVO = {
+    "fci": "+ NUEVO FCI", "accion": "+ NUEVA COMPRA", "cedear": "+ NUEVA COMPRA",
+    "plazo_fijo": "+ NUEVO PLAZO FIJO", "plazo_flex": "+ NUEVO PLAZO FLEX",
+}
+# Movimiento que se abre enseguida al crear un activo desde su pestaña.
+MOVIMIENTO_TRAS_ALTA = {"accion": "compra", "cedear": "compra", "plazo_fijo": "aporte", "plazo_flex": "aporte"}
+TEXTO_MOVIMIENTO = {"compra": "COMPRA", "venta": "VENTA", "rendimiento": "RENDIMIENTO", "aporte": "APORTE"}
+TEXTO_RETIRO = "RETIRO"  # una venta sin cantidad (FCI, plazos)
+COLOR_MOVIMIENTO = {"venta": TEXT_NEGATIVO, "rendimiento": TEXT_POSITIVO}
+TEXTO_SIN_OBJETIVOS = "SIN OBJETIVOS"
+SEPARADOR_OBJETIVOS = " · "
+PREFIJO_SUBLINEA = "└ "
+
+TAMANIO_PILLS = TypographyTokens.REGISTRO_FONT_SALDO_BAR
+ESPACIO_PILLS = ESPACIO_DOT
+ESPACIADO = 12
+ESPACIADO_LINEAS = 4
+PADDING_TARJETA = 12
+RADIO_TARJETA = 8
+SANGRIA_RESUMEN = 16
+ANCHO_LINEA_TITULO_SECCION = 24
 ANCHO_DIALOGO = 380
-ESPACIADO_FILA = 8
-ESPACIADO_DIALOGO = 12
-ANCHO_NOMBRE_CUENTA_DESGLOSE = 160
-ESPACIADO_CHIPS_DASHBOARD = 20
-
-# Barra de herramientas del Registro de movimientos
-ANCHO_TOOLBAR_FILTRO_OBJETIVO = 160
-ANCHO_TOOLBAR_FILTRO_TIPO_ACTIVO = 140
-ANCHO_TOOLBAR_FILTRO_TIPO_MOVIMIENTO = 140
-ANCHO_TOOLBAR_BUSQUEDA = 200
-
-# Columnas de la tabla de movimientos
-ANCHO_COL_FECHA = 100
-ANCHO_COL_ACTIVO = 170
-ANCHO_COL_TIPO_MOVIMIENTO = 110
-ANCHO_COL_CANTIDAD = 90
-ANCHO_COL_MONTO = 120
-ANCHO_COL_MONEDA = 90
-ANCHO_COL_OBJETIVOS = 240
-ANCHO_COL_ELIMINAR = 40
-DIA_TOPE_RANGO_MES = 31  # cota superior de fecha_hasta del período — comparación lexicográfica de strings ISO, no una fecha real (ver _cargar_movimientos())
-
-TIPOS_ACTIVO = ("accion", "fci", "plazo_fijo", "cripto", "otro")
-_TIPOS_MOVIMIENTO_DISPLAY = {"compra": "Compra", "venta": "Venta", "rendimiento": "Rendimiento"}
-_COLOR_TIPO_MOVIMIENTO = {"venta": ft.Colors.RED, "rendimiento": ft.Colors.GREEN}  # compra: sin color (neutral)
-
-# objetivos_ahorro no tiene columna moneda_id — ver docstring del módulo.
-DECIMALES_SIN_MONEDA_DEFAULT = 2
+ANCHO_DIALOGO_MOVIMIENTOS = 680
+ALTO_LISTA_MOVIMIENTOS = 360
+ANCHO_COL_FECHA = 90
+ANCHO_COL_TIPO = 100
+ANCHO_COL_CANTIDAD = 70
+ANCHO_COL_MONTO = 130
+ANCHO_COL_COMISION = 100
+ANCHO_COL_OBJETIVOS = 140
+ICONO_BORRAR = 16
+# objetivos_ahorro no tiene moneda: la meta se carga con estos decimales (como antes del rediseño).
+DECIMALES_META = 2
 
 
-def _tipo_activo_display(tipo: str) -> str:
-    return {
-        "accion": "Acción",
-        "fci": "FCI",
-        "plazo_fijo": "Plazo fijo",
-        "cripto": "Cripto",
-        "otro": "Otro",
-    }.get(tipo, tipo)
+# ============================================================
+# ESTADO PROPIO POR PÁGINA
+# ============================================================
+
+_ESTADOS_UI: dict[int, dict] = {}
 
 
-def _label_activo(activo: dict, cuentas_por_id: dict) -> str:
-    """
-    Label de una opción de activo existente en un CampoFiltrable: "nombre —
-    cuenta" si el activo tiene cuenta_id vinculada, solo "nombre" si no
-    (Tarea 6g, docs/PROXIMOS_PASOS.md) — mismo helper que
-    ui/components/dialogo_compra_ahorro.py (sin extraer a un módulo
-    compartido: es una línea, no vale la pena la indirección).
-    """
-    cuenta = cuentas_por_id.get(activo["cuenta_id"]) if activo["cuenta_id"] is not None else None
-    return f"{activo['nombre']} — {cuenta['nombre']}" if cuenta else activo["nombre"]
+def _estado_ui(page: ft.Page) -> dict:
+    ui = _ESTADOS_UI.get(id(page))
+    if ui is None:
+        ui = {"tab": TAB_DEFAULT, "vista": VISTA_DEFAULT}
+        _ESTADOS_UI[id(page)] = ui
+    return ui
 
 
-def _texto_a_minor(texto: Optional[str], decimales: int) -> Optional[int]:
-    """Reconvierte un texto ya confirmado (de un CampoMonto que se va a reconstruir) a minor units con decimales nuevos — mismo helper que dialogo_compra_ahorro.py."""
-    if not texto:
-        return None
-    try:
-        return amount_to_minor(float(texto.replace(",", ".")), decimales)
-    except ValueError:
-        return None
+# ============================================================
+# HELPERS
+# ============================================================
 
+def _fmt_unidades(unidades: Optional[float]) -> str:
+    """10 → '10'; 7.5 → '7.50' (las acciones / CEDEARs son enteras; la parte de un objetivo puede no serlo)."""
+    valor = unidades or 0
+    return f"{int(valor):,}" if float(valor).is_integer() else f"{valor:,.2f}"
+
+
+def _texto_tenencia(entrada: dict, unidades: str = UNIDADES_DEFAULT) -> str:
+    """'285,432.50 ARS' en plata, '10 UNIDADES' en acciones / CEDEARs."""
+    if entrada["por_unidades"]:
+        return f"{_fmt_unidades(entrada['unidades'])} {unidades}"
+    return f"{amount_display(entrada['saldo_minor'], entrada['decimales'], '')} {entrada['moneda']}"
+
+
+def _texto_objetivos(objetivos: list[dict]) -> str:
+    return SEPARADOR_OBJETIVOS.join(f"{o['nombre'].upper()} {o['porcentaje']:g}%" for o in objetivos) or TEXTO_SIN_OBJETIVOS
+
+
+def _pill(texto: str, activa: bool, on_click: Callable[[], None], tooltip: Optional[str] = None) -> ft.Control:
+    """Pill de selección (mismo estilo que el switch de Deudas): la activa, rellena."""
+    return ft.Container(
+        height=PILL_ALTURA,
+        padding=ft.Padding.symmetric(horizontal=PILL_PADDING_H),
+        border_radius=PILL_RADIO,
+        bgcolor=BTN_COMPARTIR if activa else None,
+        border=None if activa else ft.Border.all(ANCHO_BORDE, BORDER_DEFAULT),
+        alignment=ft.Alignment.CENTER,
+        tooltip=tooltip,
+        on_click=lambda e: on_click(),
+        content=ft.Text(texto, size=TAMANIO_PILLS, weight=PESO_HEADER, color=TEXT_SOBRE_BOTON if activa else TEXT_SECONDARY),
+    )
+
+
+def _titulo_seccion(texto: str) -> ft.Control:
+    """'── FCI ─────────'."""
+    return ft.Row(
+        [
+            ft.Container(width=ANCHO_LINEA_TITULO_SECCION, height=ANCHO_BORDE, bgcolor=BORDER_DEFAULT),
+            ft.Text(
+                texto, size=TypographyTokens.SECTION_TITLE_SIZE, weight=TypographyTokens.SECTION_TITLE_WEIGHT,
+                color=TEXT_SECONDARY,
+            ),
+            ft.Container(expand=True, height=ANCHO_BORDE, bgcolor=BORDER_DEFAULT),
+        ],
+        spacing=ESPACIADO,
+        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+    )
+
+
+def _boton(texto: str, on_click: Callable[[], None], color: str = TEXT_ACCENT) -> ft.Control:
+    return ft.TextButton(
+        content=ft.Text(texto, size=TypographyTokens.LABEL_SIZE, weight=PESO_HEADER, color=color),
+        on_click=lambda e: on_click(),
+    )
+
+
+def _texto(texto: str, color: str = TEXT_PRIMARY, weight=None, size: int = TypographyTokens.METADATA_SIZE,
+           width: Optional[int] = None, expand: bool = False) -> ft.Control:
+    control = ft.Text(
+        texto, color=color, weight=weight, size=size, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS,
+        tooltip=texto or None, expand=expand,
+    )
+    return ft.Container(width=width, content=control) if width is not None else control
+
+
+# ============================================================
+# PANTALLA
+# ============================================================
 
 def build(
     page: ft.Page,
@@ -234,1020 +255,374 @@ def build(
     accounts_service: AccountsService,
     on_volver: Optional[Callable[[], None]] = None,
 ) -> ft.Control:
-    def _mostrar_mensaje(mensaje: str, es_error: bool = False) -> None:
-        snack = ft.SnackBar(
-            content=ft.Text(mensaje),
-            bgcolor=ft.Colors.ERROR_CONTAINER if es_error else None,
-        )
-        page.overlay.append(snack)
-        snack.open = True
-        page.update()
+    ui = _estado_ui(page)
+    raiz = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
+    datos: dict = {"resumen": {}}
 
-    def _mostrar_ok(mensaje: str) -> None:
-        _mostrar_mensaje(mensaje, es_error=False)
+    def _ok(mensaje: str) -> None:
+        mostrar_mensaje(page, mensaje)
 
-    def _mostrar_error(mensaje: str) -> None:
-        _mostrar_mensaje(mensaje, es_error=True)
+    def _error(mensaje: str) -> None:
+        mostrar_mensaje(page, mensaje.upper(), es_error=True)
 
     def _cerrar_dialogo(e=None) -> None:
         page.pop_dialog()
 
-    hoy = date.today()
-    estado = {
-        "mes": hoy.month, "anio": hoy.year,
-        "filtro_objetivo": None, "filtro_tipo_activo": None, "filtro_tipo_movimiento": None,
-        "busqueda": "",
-        # objetivo_expandido_id: qué tile de "Por objetivo" tiene el
-        # desglose por cuenta abierto — estado de UI, no un filtro (mismo
-        # patrón que detalle_abierto en ui/screens/compras_cuotas.py).
-        "objetivo_expandido_id": None,
-    }
+    def _abrir_formulario(titulo: str, formulario, texto_confirmar: str = "CONFIRMAR") -> None:
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text(titulo),
+            content=formulario.contenido,
+            actions=[
+                ft.TextButton(content=ft.Text("CANCELAR"), on_click=_cerrar_dialogo),
+                ft.ElevatedButton(content=ft.Text(texto_confirmar), on_click=lambda e: formulario.confirmar()),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
 
-    monedas = accounts_service.list_currencies()
-    monedas_por_id = {m["id"]: m for m in monedas}
-    cuentas_por_id = {c["id"]: c for c in accounts_service.list_accounts(solo_activas=False)}
+    def _tras_guardar(mensaje: str) -> None:
+        _cerrar_dialogo()
+        _ok(mensaje)
+        _redibujar()
 
-    def _fmt_sin_moneda(monto_minor: int) -> str:
-        """Ver docstring del módulo — get_objetivo_balance() no expone moneda."""
-        return amount_display(monto_minor, DECIMALES_SIN_MONEDA_DEFAULT, "")
-
-    contenedor_dashboard = ft.Column(spacing=ESPACIADO_FILA)
-    contenedor_detalle_objetivo = ft.Container()
-    contenedor_toolbar = ft.Container()
-    tabla_body = ft.Column(spacing=4)
-    contenedor_activos = ft.Column(spacing=ESPACIADO_FILA)
+    def _entrada(activo_id: str) -> Optional[dict]:
+        return next((e for entradas in datos["resumen"].values() for e in entradas if e["activo_id"] == activo_id), None)
 
     # ------------------------------------------------------------
-    # DASHBOARD (Parte C) — tres bloques + panel de detalle expandible
+    # ACCIONES (formularios de dialogo_compra_ahorro.py)
     # ------------------------------------------------------------
 
-    def _tile_objetivo(objetivo: dict) -> ft.Control:
-        balance = savings_service.get_objetivo_balance(objetivo["id"])
-        color_saldo = ft.Colors.GREEN if balance["saldo_neto_minor"] >= 0 else ft.Colors.RED
-        expandido = estado["objetivo_expandido_id"] == objetivo["id"]
-        return ft.Container(
-            padding=ft.Padding.symmetric(horizontal=8, vertical=4),
-            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-            border_radius=6,
-            content=ft.Row(
-                [
-                    ft.Column(
-                        [
-                            ft.Text(objetivo["nombre"], size=TypographyTokens.LABEL_SIZE, color=ft.Colors.OUTLINE),
-                            ft.Text(_fmt_sin_moneda(balance["saldo_neto_minor"]), weight=ft.FontWeight.BOLD, color=color_saldo),
-                        ],
-                        spacing=2,
-                    ),
-                    ft.IconButton(
-                        icon=ft.Icons.EXPAND_LESS if expandido else ft.Icons.EXPAND_MORE,
-                        icon_size=16,
-                        tooltip="Ocultar desglose por cuenta" if expandido else "Ver desglose por cuenta",
-                        on_click=lambda e, oid=objetivo["id"]: _toggle_objetivo(oid),
-                    ),
-                ],
-                spacing=4, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+    def _nuevo_activo(tipo: str) -> None:
+        def _on_exito(resultado: SavingsResult) -> None:
+            _tras_guardar(resultado.message)
+            movimiento = MOVIMIENTO_TRAS_ALTA.get(tipo)
+            entrada = _entrada(resultado.entity_id)
+            if movimiento and entrada is not None:
+                _movimiento(entrada, movimiento)
+
+        formulario = dialogo_compra_ahorro.construir_nuevo_activo(
+            page, savings_service, accounts_service, _on_exito, tipo_inicial=tipo,
         )
+        _abrir_formulario(f"NUEVO ACTIVO — {NOMBRE_TIPO[tipo]}", formulario, "CREAR")
 
-    def _tarjeta_por_objetivo() -> ft.Control:
-        objetivos = savings_service.list_objetivos()
-        if not objetivos:
-            contenido = ft.Text(
-                "Todavía no cargaste ningún objetivo de ahorro.",
-                italic=True, color=ft.Colors.OUTLINE, size=TypographyTokens.TABLE_CONTENT_SIZE,
-            )
-        else:
-            contenido = ft.Row([_tile_objetivo(o) for o in objetivos], spacing=ESPACIADO_CHIPS_DASHBOARD, wrap=True)
-        return ft.Container(
-            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
-            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-            border_radius=8,
-            content=ft.Row(
-                [
-                    ft.Text("Por objetivo", size=TypographyTokens.SECTION_TITLE_SIZE, weight=TypographyTokens.SECTION_TITLE_WEIGHT),
-                    contenido,
-                    ft.ElevatedButton(content=ft.Text("+ Nuevo objetivo"), icon=ft.Icons.ADD, on_click=_abrir_dialogo_nuevo_objetivo),
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
+    def _movimiento(entrada: dict, tipo: Optional[str] = None) -> None:
+        formulario = dialogo_compra_ahorro.construir_movimiento(
+            page, savings_service, accounts_service, entrada, lambda resultado: _tras_guardar(resultado.message),
+            tipo_inicial=tipo,
         )
+        _abrir_formulario(f"{entrada['activo'].upper()} — MOVIMIENTO", formulario)
 
-    def _tarjeta_por_tipo() -> ft.Control:
-        balances = savings_service.get_balance_por_tipo()
-        if not balances:
-            contenido = ft.Text(
-                "Sin actividad todavía.", italic=True, color=ft.Colors.OUTLINE, size=TypographyTokens.TABLE_CONTENT_SIZE,
-            )
-        else:
-            partes = []
-            for b in balances:
-                moneda = monedas_por_id.get(b["moneda_id"])
-                decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-                simbolo = (moneda["simbolo"] if moneda else "") or ""
-                color = ft.Colors.GREEN if b["saldo_neto_minor"] >= 0 else ft.Colors.RED
-                partes.append(
-                    ft.Row(
-                        [
-                            ft.Text(_tipo_activo_display(b["tipo"]), size=TypographyTokens.LABEL_SIZE, color=ft.Colors.OUTLINE),
-                            ft.Text(
-                                amount_display(b["saldo_neto_minor"], decimales, simbolo),
-                                size=TypographyTokens.SECTION_TITLE_SIZE, weight=ft.FontWeight.BOLD, color=color,
-                            ),
-                        ],
-                        spacing=6,
-                    )
-                )
-            contenido = ft.Row(partes, spacing=ESPACIADO_CHIPS_DASHBOARD, wrap=True)
-        return ft.Container(
-            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
-            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-            border_radius=8,
-            content=ft.Row(
-                [
-                    ft.Text("Por tipo de ahorro", size=TypographyTokens.SECTION_TITLE_SIZE, weight=TypographyTokens.SECTION_TITLE_WEIGHT),
-                    contenido,
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
+    def _objetivos(entrada: dict) -> None:
+        formulario = dialogo_compra_ahorro.construir_objetivos_activo(page, savings_service, entrada, _tras_guardar)
+        _abrir_formulario(f"{entrada['activo'].upper()} — OBJETIVOS", formulario, "GUARDAR")
 
-    def _tarjeta_por_activo() -> ft.Control:
-        balances = savings_service.get_balance_por_activo()
-        activos_por_id_local = {a["id"]: a for a in savings_service.list_activos()}
-        if not balances:
-            contenido = ft.Text(
-                "Sin actividad todavía.", italic=True, color=ft.Colors.OUTLINE, size=TypographyTokens.TABLE_CONTENT_SIZE,
-            )
-        else:
-            partes = []
-            for b in balances:
-                activo = activos_por_id_local.get(b["activo_id"])
-                nombre = activo["nombre"] if activo else f"Activo #{b['activo_id']}"
-                moneda = monedas_por_id.get(activo["moneda_id"]) if activo else None
-                decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-                simbolo = (moneda["simbolo"] if moneda else "") or ""
-                color = ft.Colors.GREEN if b["saldo_neto_minor"] >= 0 else ft.Colors.RED
-                prefijo_cantidad = f"{b['cantidad_neta']:g} u. · " if b["cantidad_neta"] is not None else ""
-                partes.append(
-                    ft.Row(
-                        [
-                            ft.Text(nombre, size=TypographyTokens.LABEL_SIZE, color=ft.Colors.OUTLINE),
-                            ft.Text(
-                                f"{prefijo_cantidad}{amount_display(b['saldo_neto_minor'], decimales, simbolo)}",
-                                size=TypographyTokens.SECTION_TITLE_SIZE, weight=ft.FontWeight.BOLD, color=color,
-                            ),
-                        ],
-                        spacing=6,
-                    )
-                )
-            contenido = ft.Row(partes, spacing=ESPACIADO_CHIPS_DASHBOARD, wrap=True)
-        return ft.Container(
-            padding=ft.Padding.symmetric(horizontal=16, vertical=12),
-            border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT),
-            border_radius=8,
-            content=ft.Row(
-                [
-                    ft.Text("Por activo", size=TypographyTokens.SECTION_TITLE_SIZE, weight=TypographyTokens.SECTION_TITLE_WEIGHT),
-                    contenido,
-                ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-        )
-
-    def _panel_detalle_objetivo(objetivo: dict) -> ft.Control:
-        filas = savings_service.get_balance_por_cuenta(objetivo["id"])
-        if not filas:
-            contenido = ft.Text(
-                "Sin movimientos vinculados a una cuenta real todavía.",
-                italic=True, size=TypographyTokens.LABEL_SIZE, color=ft.Colors.OUTLINE,
-            )
-        else:
-            filas_control = []
-            for f in filas:
-                moneda = monedas_por_id.get(f["moneda_id"])
-                decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-                simbolo = (moneda["simbolo"] if moneda else "") or ""
-                cuenta = cuentas_por_id.get(f["cuenta_id"])
-                filas_control.append(
-                    ft.Row(
-                        [
-                            color_chip(cuenta["color_hex"] if cuenta else None),
-                            ft.Text(f["cuenta_nombre"], size=TypographyTokens.TABLE_CONTENT_SIZE, width=ANCHO_NOMBRE_CUENTA_DESGLOSE),
-                            ft.Text(
-                                amount_display(f["saldo_minor"], decimales, simbolo),
-                                size=TypographyTokens.TABLE_CONTENT_SIZE, weight=TypographyTokens.TABLE_CONTENT_WEIGHT,
-                            ),
-                        ],
-                        spacing=ESPACIADO_FILA,
-                    )
-                )
-            contenido = ft.Column(filas_control, spacing=4)
-        return ft.Container(
-            padding=12, border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT), border_radius=8,
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Text(
-                                f"Desglose por cuenta — {objetivo['nombre']}",
-                                size=TypographyTokens.SECTION_TITLE_SIZE, weight=TypographyTokens.SECTION_TITLE_WEIGHT,
-                            ),
-                            ft.IconButton(icon=ft.Icons.CLOSE, icon_size=18, tooltip="Cerrar", on_click=lambda e: _toggle_objetivo(objetivo["id"])),
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    ),
-                    contenido,
-                ],
-                spacing=8,
-            ),
-        )
-
-    def _toggle_objetivo(objetivo_id: str) -> None:
-        estado["objetivo_expandido_id"] = None if estado["objetivo_expandido_id"] == objetivo_id else objetivo_id
-        _actualizar_dashboard()
-
-    def _actualizar_dashboard() -> None:
-        contenedor_dashboard.controls = [_tarjeta_por_objetivo(), _tarjeta_por_tipo(), _tarjeta_por_activo()]
-        if estado["objetivo_expandido_id"] is not None:
-            objetivo = next(
-                (o for o in savings_service.list_objetivos() if o["id"] == estado["objetivo_expandido_id"]), None,
-            )
-            contenedor_detalle_objetivo.content = _panel_detalle_objetivo(objetivo) if objetivo is not None else None
-        else:
-            contenedor_detalle_objetivo.content = None
-        page.update()
-
-    # ------------------------------------------------------------
-    # DIÁLOGO: Nuevo objetivo (sin cambios respecto a la versión anterior)
-    # ------------------------------------------------------------
-
-    def _abrir_dialogo_nuevo_objetivo(e=None) -> None:
-        campo_nombre = ft.TextField(label="Nombre", autofocus=True)
+    def _nuevo_objetivo() -> None:
+        campo_nombre = ft.TextField(label="NOMBRE", autofocus=True)
         campo_meta = CampoMonto(
-            page, on_confirmar=lambda m: None, decimales=DECIMALES_SIN_MONEDA_DEFAULT, dense=False,
-            label="Meta (opcional)",
+            page, on_confirmar=lambda m: None, decimales=DECIMALES_META, dense=False, label="META (OPCIONAL)",
         )
-        campo_fecha_meta = ft.TextField(label="Fecha meta AAAA-MM-DD (opcional)")
+        campo_fecha_meta = ft.TextField(label="FECHA META AAAA-MM-DD (OPCIONAL)")
         texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
 
-        def _confirmar(e=None) -> None:
-            texto_error.value = ""
-            nombre = (campo_nombre.value or "").strip()
-            if not nombre:
-                texto_error.value = "El nombre no puede estar vacío."
+        def _confirmar() -> None:
+            def _falla(mensaje: str) -> None:
+                texto_error.value = mensaje
                 page.update()
+
+            nombre = (campo_nombre.value or "").strip().upper()
+            if not nombre:
+                _falla("EL NOMBRE NO PUEDE ESTAR VACÍO.")
                 return
             monto_meta_minor = None
-            if (campo_meta.texto or "").strip():
-                try:
-                    monto_meta_minor = amount_to_minor(
-                        float(campo_meta.texto.strip().replace(",", ".")), DECIMALES_SIN_MONEDA_DEFAULT,
-                    )
-                except ValueError:
-                    texto_error.value = "La meta no es un número válido."
-                    page.update()
+            if campo_meta.confirmar() and (campo_meta.texto or "").strip():
+                meta = numero(campo_meta.texto)
+                if meta is None or meta <= 0:
+                    _falla("LA META TIENE QUE SER UN NÚMERO MAYOR A 0.")
                     return
+                monto_meta_minor = amount_to_minor(meta, DECIMALES_META)
             fecha_meta = (campo_fecha_meta.value or "").strip() or None
             if fecha_meta is not None:
                 try:
                     datetime.strptime(fecha_meta, "%Y-%m-%d")
                 except ValueError:
-                    texto_error.value = "La fecha meta debe tener el formato AAAA-MM-DD."
-                    page.update()
+                    _falla("LA FECHA META DEBE TENER EL FORMATO AAAA-MM-DD.")
                     return
             try:
                 savings_service.create_objetivo(nombre=nombre, monto_meta_minor=monto_meta_minor, fecha_meta=fecha_meta)
             except SavingsError as err:
-                texto_error.value = str(err)
-                page.update()
+                _falla(str(err).upper())
                 return
-            _cerrar_dialogo()
-            _mostrar_ok(f"Objetivo '{nombre}' creado.")
-            _refrescar()
+            _tras_guardar(f"OBJETIVO '{nombre}' CREADO.")
 
-        dialogo = ft.AlertDialog(
+        page.show_dialog(ft.AlertDialog(
             modal=True,
-            title=ft.Text("Nuevo objetivo de ahorro"),
+            title=ft.Text("NUEVO OBJETIVO DE AHORRO"),
             content=ft.Container(
                 width=ANCHO_DIALOGO,
                 content=ft.Column(
-                    [campo_nombre, campo_meta.control, campo_fecha_meta, texto_error],
-                    tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO,
+                    [campo_nombre, campo_meta.control, campo_fecha_meta, texto_error], tight=True, spacing=ESPACIADO,
                 ),
             ),
             actions=[
-                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Crear"), on_click=_confirmar),
+                ft.TextButton(content=ft.Text("CANCELAR"), on_click=_cerrar_dialogo),
+                ft.ElevatedButton(content=ft.Text("CREAR"), on_click=lambda e: _confirmar()),
             ],
             actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.show_dialog(dialogo)
+        ))
 
-    # ------------------------------------------------------------
-    # SECCIÓN: ACTIVOS FINANCIEROS (Parte E — simplificada)
-    # ------------------------------------------------------------
+    # --- VER MOVIMIENTOS / borrar ---
 
-    def _fila_activo(activo: dict) -> ft.Control:
-        moneda = monedas_por_id.get(activo["moneda_id"])
-        codigo_moneda = moneda["codigo"] if moneda else "?"
-        return ft.Container(
-            padding=12, border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT), border_radius=8,
-            content=ft.Column(
-                [
-                    ft.Text(activo["nombre"], weight=ft.FontWeight.BOLD),
-                    ft.Text(
-                        f"{_tipo_activo_display(activo['tipo'])} · {codigo_moneda}",
-                        size=TypographyTokens.METADATA_SIZE, color=ft.Colors.OUTLINE,
-                    ),
-                ],
-                spacing=2,
-            ),
-        )
+    def _eliminar_movimiento(movimiento: dict) -> None:
+        """Ver docstring del módulo, "Borrar un movimiento"."""
+        _cerrar_dialogo()  # la lista de movimientos
 
-    def _actualizar_activos() -> None:
-        activos = savings_service.list_activos()
-        if activos:
-            contenedor_activos.controls = [_fila_activo(a) for a in activos]
-        else:
-            contenedor_activos.controls = [
-                ft.Text("Todavía no cargaste ningún activo financiero.", italic=True, color=ft.Colors.OUTLINE)
-            ]
-        page.update()
-
-    def _abrir_dialogo_nuevo_activo(e=None) -> None:
-        # Cuenta asociada (Tarea 6g): opcional, se elige acá al crear el
-        # activo — no en cada movimiento posterior. Sin tarjetas de
-        # crédito (un ahorro no se origina desde una) ni cuentas
-        # archivadas, mismo filtro que dialogo_compra_ahorro.py.
-        cuentas_activas_no_credito = [
-            c for c in cuentas_por_id.values() if c["activa"] and c["tipo"] != "credito"
-        ]
-
-        campo_nombre = ft.TextField(label="Nombre", autofocus=True)
-        dropdown_tipo = ft.Dropdown(
-            label="Tipo",
-            options=[ft.dropdown.Option(key=t, text=_tipo_activo_display(t)) for t in TIPOS_ACTIVO],
-            value=TIPOS_ACTIVO[0],
-        )
-        campo_moneda = CampoFiltrable(
-            page, [(str(m["id"]), m["codigo"]) for m in monedas],
-            on_seleccionar=lambda id_: None, placeholder="Moneda", width=ANCHO_DIALOGO, dense=False,
-        )
-        campo_cuenta = CampoFiltrable(
-            page, [(str(c["id"]), c["nombre"]) for c in cuentas_activas_no_credito],
-            on_seleccionar=lambda id_: None, placeholder="Cuenta asociada (opcional)",
-            width=ANCHO_DIALOGO, dense=False,
-        )
-        texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
-
-        def _confirmar(e=None) -> None:
-            texto_error.value = ""
-            nombre = (campo_nombre.value or "").strip()
-            if not nombre:
-                texto_error.value = "El nombre no puede estar vacío."
-                page.update()
-                return
-            if not campo_moneda.id_seleccionado:
-                texto_error.value = "Seleccioná una moneda de la lista de sugerencias."
-                page.update()
-                return
+        def _borrar(eliminar_transaccion: bool) -> None:
+            _cerrar_dialogo()
             try:
-                savings_service.create_activo(
-                    nombre=nombre, tipo=dropdown_tipo.value, moneda_id=int(campo_moneda.id_seleccionado),
-                    cuenta_id=campo_cuenta.id_seleccionado or None,
+                resultado = savings_service.delete_movement(
+                    movimiento["id"], eliminar_transaccion_vinculada=eliminar_transaccion,
                 )
             except SavingsError as err:
-                texto_error.value = str(err)
-                page.update()
+                _error(str(err))
                 return
-            _cerrar_dialogo()
-            _mostrar_ok(f"Activo '{nombre}' creado.")
-            _refrescar()
+            _ok(resultado.message.upper())
+            _redibujar()
 
-        dialogo = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Nuevo activo financiero"),
-            content=ft.Container(
-                width=ANCHO_DIALOGO,
-                content=ft.Column(
-                    [campo_nombre, dropdown_tipo, campo_moneda.control, campo_cuenta.control, texto_error],
-                    tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO,
-                ),
-            ),
-            actions=[
-                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                ft.ElevatedButton(content=ft.Text("Crear"), on_click=_confirmar),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.show_dialog(dialogo)
-
-    # ------------------------------------------------------------
-    # BOTÓN "+" — Compra / Rendimiento / Egreso general (Parte D, punto 3)
-    # ------------------------------------------------------------
-
-    def _abrir_dialogo_compra_menu(e=None) -> None:
-        def _on_exito(resultado: SavingsResult) -> None:
-            _cerrar_dialogo()
-            _mostrar_ok(f"Compra registrada (movimiento #{resultado.entity_id}).")
-            _refrescar()
-
-        # activo_fijo=None: el formulario muestra su propio selector de
-        # activo + "crear nuevo" — acá no hay ninguna fila de contexto que
-        # ya traiga un activo elegido (a diferencia de la versión anterior
-        # de esta pantalla). Sin pre-carga, pedido explícito.
-        formulario = dialogo_compra_ahorro.construir(
-            page, savings_service, accounts_service, on_exito=_on_exito,
-        )
-
-        # Deshabilita el botón de confirmar ANTES de llamar a
-        # formulario.confirmar() — evita que un doble-click dispare dos
-        # guardados antes de que el primero vuelva (ver docstring del
-        # módulo, Parte A). formulario.confirmar() no distingue éxito/error
-        # con un valor de retorno propio (ver dialogo_compra_ahorro.py): en
-        # éxito _on_exito() ya cierra el diálogo (boton_confirmar_compra
-        # queda huérfano, re-habilitarlo después es inofensivo); en error
-        # el diálogo sigue abierto con el mensaje mostrado adentro, así que
-        # SÍ hace falta re-habilitar para poder reintentar.
-        def _click_confirmar_compra(e=None) -> None:
-            boton_confirmar_compra.disabled = True
-            page.update()
-            try:
-                formulario.confirmar()
-            finally:
-                boton_confirmar_compra.disabled = False
-                page.update()
-
-        boton_confirmar_compra = ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_click_confirmar_compra)
-        dialogo = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Compra"),
-            content=formulario.contenido,
-            actions=[
-                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                boton_confirmar_compra,
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.show_dialog(dialogo)
-
-    def _abrir_dialogo_rendimiento_menu(e=None) -> None:
-        activos_lista = savings_service.list_activos()
-        if not activos_lista:
-            _mostrar_ok("Todavía no cargaste ningún activo financiero.")
-            return
-
-        ref_monto: dict = {"campo": None}
-        contenedor_monto = ft.Column(spacing=ESPACIADO_DIALOGO)
-
-        def _reconstruir_monto() -> None:
-            activo = None
-            if campo_activo.id_seleccionado:
-                activo = next((a for a in activos_lista if a["id"] == campo_activo.id_seleccionado), None)
-            moneda = monedas_por_id.get(activo["moneda_id"]) if activo else None
-            decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-            codigo = moneda["codigo"] if moneda else ""
-            texto_previo = ref_monto["campo"].texto if ref_monto["campo"] is not None else None
-            campo_monto = CampoMonto(
-                page, on_confirmar=lambda m: None, decimales=decimales, dense=False,
-                valor_inicial_minor=_texto_a_minor(texto_previo, decimales),
-                label="Monto del rendimiento" + (f" ({codigo})" if codigo else ""),
+        if movimiento["transaccion_id"] is not None:
+            contenido = ft.Text(
+                "ESTE MOVIMIENTO GENERÓ (O ESTÁ VINCULADO A) UNA TRANSACCIÓN DEL REGISTRO. ¿BORRAR TAMBIÉN ESA TRANSACCIÓN?"
             )
-            ref_monto["campo"] = campo_monto
-            contenedor_monto.controls = [campo_monto.control]
-            page.update()
-
-        campo_activo = CampoFiltrable(
-            page, [(str(a["id"]), _label_activo(a, cuentas_por_id)) for a in activos_lista],
-            on_seleccionar=lambda id_: _reconstruir_monto(), placeholder="Activo", dense=False, autofocus=True,
-        )
-        campo_fecha = ft.TextField(label="Fecha", value=date.today().isoformat())
-        _reconstruir_monto()
-
-        texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
-
-        def _procesar_confirmar(e=None) -> None:
-            texto_error.value = ""
-            if not campo_activo.id_seleccionado:
-                texto_error.value = "Seleccioná el activo del rendimiento."
-                page.update()
-                return
-            activo_id = campo_activo.id_seleccionado
-            activo = next((a for a in activos_lista if a["id"] == activo_id), None)
-            moneda = monedas_por_id.get(activo["moneda_id"]) if activo else None
-            decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-            try:
-                datetime.strptime((campo_fecha.value or "").strip(), "%Y-%m-%d")
-            except ValueError:
-                texto_error.value = "La fecha debe tener el formato AAAA-MM-DD."
-                page.update()
-                return
-            try:
-                monto = float((ref_monto["campo"].texto or "").strip().replace(",", "."))
-            except ValueError:
-                texto_error.value = "El monto no es un número válido."
-                page.update()
-                return
-            if monto <= 0:
-                texto_error.value = "El monto debe ser mayor a 0."
-                page.update()
-                return
-            try:
-                resultado = savings_service.register_return(
-                    activo_id=activo_id, fecha=campo_fecha.value.strip(),
-                    monto_total_minor=amount_to_minor(monto, decimales),
-                )
-            except (SavingsError, ValueError) as err:
-                texto_error.value = str(err)
-                page.update()
-                return
-            _cerrar_dialogo()
-            aviso = (
-                " (repartido entre los objetivos ya asignados)"
-                if resultado.data.get("repartido")
-                else " (sin repartir: este activo todavía no tiene asignaciones)"
-            )
-            _mostrar_ok(f"Rendimiento registrado{aviso}.")
-            _refrescar()
-
-        # Deshabilita el botón de confirmar ANTES de procesar — ver
-        # docstring del módulo, Parte A. Re-habilitar tras un error es
-        # inofensivo tras un éxito también (el diálogo ya se cerró).
-        def _confirmar(e=None) -> None:
-            boton_confirmar.disabled = True
-            page.update()
-            try:
-                _procesar_confirmar()
-            finally:
-                boton_confirmar.disabled = False
-                page.update()
-
-        boton_confirmar = ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar)
-        dialogo = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Rendimiento"),
-            content=ft.Container(
-                width=ANCHO_DIALOGO,
-                content=ft.Column(
-                    [
-                        ft.Text(
-                            "El rendimiento se reparte automáticamente entre los objetivos "
-                            "ya asignados a este activo, en proporción a lo invertido — no se elige a mano.",
-                            size=TypographyTokens.LABEL_SIZE, color=ft.Colors.OUTLINE,
-                        ),
-                        campo_activo.control,
-                        campo_fecha,
-                        contenedor_monto,
-                        texto_error,
-                    ],
-                    tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO,
-                ),
-            ),
-            actions=[
-                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                boton_confirmar,
-            ],
+            acciones = [
+                ft.TextButton(content=ft.Text("CANCELAR"), on_click=_cerrar_dialogo),
+                ft.TextButton(content=ft.Text("NO, SOLO EL MOVIMIENTO"), on_click=lambda e: _borrar(False)),
+                ft.ElevatedButton(content=ft.Text("SÍ, BORRAR LOS DOS"), on_click=lambda e: _borrar(True)),
+            ]
+        else:
+            contenido = ft.Text("¿ELIMINAR ESTE MOVIMIENTO? NO SE PUEDE DESHACER.")
+            acciones = [
+                ft.TextButton(content=ft.Text("CANCELAR"), on_click=_cerrar_dialogo),
+                ft.ElevatedButton(content=ft.Text("ELIMINAR"), on_click=lambda e: _borrar(False)),
+            ]
+        page.show_dialog(ft.AlertDialog(
+            modal=True, title=ft.Text("ELIMINAR MOVIMIENTO"), content=contenido, actions=acciones,
             actions_alignment=ft.MainAxisAlignment.END,
+        ))
+
+    def _fila_movimiento(movimiento: dict, entrada: dict) -> ft.Control:
+        tipo = movimiento["tipo"]
+        texto_tipo = TEXTO_RETIRO if tipo == "venta" and movimiento["cantidad"] is None else TEXTO_MOVIMIENTO.get(tipo, tipo.upper())
+        monto = amount_display(movimiento["monto_total_minor"], entrada["decimales"], entrada["simbolo"])
+        comision = movimiento["comision_minor"] or 0
+        objetivos = SEPARADOR_OBJETIVOS.join(
+            f"{a['objetivo_nombre'].upper()} {a['porcentaje']:g}%" for a in movimiento["asignaciones"]
         )
-        page.show_dialog(dialogo)
-
-    def _abrir_dialogo_egreso_general(e=None) -> None:
-        balances_por_activo = {b["activo_id"]: b for b in savings_service.get_balance_por_activo()}
-        activos_con_saldo = [
-            a for a in savings_service.list_activos()
-            if balances_por_activo.get(a["id"], {}).get("saldo_neto_minor", 0) > 0
-        ]
-        if not activos_con_saldo:
-            _mostrar_ok("No hay ningún activo con saldo positivo del que registrar un egreso todavía.")
-            return
-
-        objetivos_disponibles = savings_service.list_objetivos()
-        ref_monto: dict = {"campo": None}
-        contenedor_monto = ft.Column(spacing=ESPACIADO_DIALOGO)
-
-        def _activo_seleccionado() -> Optional[dict]:
-            if not campo_activo.id_seleccionado:
-                return None
-            return next((a for a in activos_con_saldo if a["id"] == campo_activo.id_seleccionado), None)
-
-        def _reconstruir_monto() -> None:
-            activo = _activo_seleccionado()
-            moneda = monedas_por_id.get(activo["moneda_id"]) if activo else None
-            decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-            codigo = moneda["codigo"] if moneda else ""
-            texto_previo = ref_monto["campo"].texto if ref_monto["campo"] is not None else None
-            # Moneda NO editable — fija a la de referencia del activo
-            # elegido, pedido explícito hasta la Tarea 6c (ver docstring
-            # del módulo).
-            campo_monto = CampoMonto(
-                page, on_confirmar=lambda m: None, decimales=decimales, dense=False,
-                valor_inicial_minor=_texto_a_minor(texto_previo, decimales),
-                label="Monto del egreso" + (f" ({codigo}, moneda del activo)" if codigo else ""),
-            )
-            ref_monto["campo"] = campo_monto
-            contenedor_monto.controls = [campo_monto.control]
-            page.update()
-
-        campo_activo = CampoFiltrable(
-            page, [(str(a["id"]), _label_activo(a, cuentas_por_id)) for a in activos_con_saldo],
-            on_seleccionar=lambda id_: _reconstruir_monto(), placeholder="Activo (con saldo positivo)",
-            dense=False, autofocus=True,
-        )
-        campo_fecha = ft.TextField(label="Fecha", value=date.today().isoformat())
-        _reconstruir_monto()
-
-        editor_asignaciones = dialogo_compra_ahorro.construir_editor_asignaciones(page, objetivos_disponibles)
-        texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
-
-        def _procesar_confirmar(e=None) -> None:
-            texto_error.value = ""
-            activo = _activo_seleccionado()
-            if activo is None:
-                texto_error.value = "Seleccioná el activo del que sale este egreso."
-                page.update()
-                return
-            try:
-                datetime.strptime((campo_fecha.value or "").strip(), "%Y-%m-%d")
-            except ValueError:
-                texto_error.value = "La fecha debe tener el formato AAAA-MM-DD."
-                page.update()
-                return
-            moneda = monedas_por_id.get(activo["moneda_id"])
-            decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-            try:
-                monto = float((ref_monto["campo"].texto or "").strip().replace(",", "."))
-            except ValueError:
-                texto_error.value = "El monto no es un número válido."
-                page.update()
-                return
-            if monto <= 0:
-                texto_error.value = "El monto debe ser mayor a 0."
-                page.update()
-                return
-
-            asignaciones, error_asignaciones = editor_asignaciones.resolver()
-            if error_asignaciones is not None:
-                texto_error.value = error_asignaciones
-                page.update()
-                return
-            if not asignaciones:
-                texto_error.value = "Agregá al menos una fila de objetivo — un egreso siempre sale de algún objetivo."
-                page.update()
-                return
-
-            try:
-                resultado = savings_service.register_sale(
-                    activo_id=activo["id"], fecha=campo_fecha.value.strip(),
-                    monto_total_minor=amount_to_minor(monto, decimales),
-                    asignaciones=asignaciones,
-                )
-            except (SavingsError, ValueError) as err:
-                texto_error.value = str(err)
-                page.update()
-                return
-            _cerrar_dialogo()
-            _mostrar_ok(f"Egreso registrado para '{activo['nombre']}' (movimiento #{resultado.entity_id}).")
-            _refrescar()
-
-        # Deshabilita el botón de confirmar ANTES de procesar — ver
-        # docstring del módulo, Parte A.
-        def _confirmar(e=None) -> None:
-            boton_confirmar.disabled = True
-            page.update()
-            try:
-                _procesar_confirmar()
-            finally:
-                boton_confirmar.disabled = False
-                page.update()
-
-        boton_confirmar = ft.ElevatedButton(content=ft.Text("Confirmar"), on_click=_confirmar)
-        dialogo = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Egreso general"),
-            content=ft.Container(
-                width=ANCHO_DIALOGO,
-                content=ft.Column(
-                    [
-                        campo_activo.control,
-                        campo_fecha,
-                        contenedor_monto,
-                        ft.Divider(height=1),
-                        ft.Text("Asignación a objetivos", size=TypographyTokens.LABEL_SIZE, weight=ft.FontWeight.BOLD),
-                        editor_asignaciones.contenido,
-                        texto_error,
-                    ],
-                    tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO,
-                ),
-            ),
-            actions=[
-                ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                boton_confirmar,
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.show_dialog(dialogo)
-
-    boton_agregar_movimiento = ft.PopupMenuButton(
-        icon=ft.Icons.ADD,
-        tooltip="Agregar movimiento",
-        items=[
-            ft.PopupMenuItem(content="Compra", icon=ft.Icons.ADD_SHOPPING_CART, on_click=_abrir_dialogo_compra_menu),
-            ft.PopupMenuItem(content="Rendimiento", icon=ft.Icons.TRENDING_UP, on_click=_abrir_dialogo_rendimiento_menu),
-            ft.PopupMenuItem(content="Egreso general", icon=ft.Icons.REMOVE_SHOPPING_CART, on_click=_abrir_dialogo_egreso_general),
-        ],
-    )
-
-    # ------------------------------------------------------------
-    # REGISTRO DE MOVIMIENTOS (Parte D) — toolbar + tabla
-    # ------------------------------------------------------------
-
-    def _construir_toolbar() -> ft.Control:
-        control_periodo = construir_selector_periodo(estado, _refrescar, text_size=TypographyTokens.FILTER_SIZE)
-
-        def _on_select_filtro_objetivo(e: ft.ControlEvent) -> None:
-            valor = dropdown_filtro_objetivo.value
-            estado["filtro_objetivo"] = int(valor) if valor else None
-            _refrescar()
-
-        def _on_select_filtro_tipo_activo(e: ft.ControlEvent) -> None:
-            estado["filtro_tipo_activo"] = dropdown_filtro_tipo_activo.value or None
-            _refrescar()
-
-        def _on_select_filtro_tipo_movimiento(e: ft.ControlEvent) -> None:
-            estado["filtro_tipo_movimiento"] = dropdown_filtro_tipo_movimiento.value or None
-            _refrescar()
-
-        def _on_submit_busqueda(e: ft.ControlEvent) -> None:
-            estado["busqueda"] = campo_busqueda.value or ""
-            _refrescar()
-
-        dropdown_filtro_objetivo = ft.Dropdown(
-            label="Objetivo", width=ANCHO_TOOLBAR_FILTRO_OBJETIVO, dense=True, text_size=TypographyTokens.FILTER_SIZE,
-            options=[ft.dropdown.Option(key="", text="Todos")] + [
-                ft.dropdown.Option(key=str(o["id"]), text=o["nombre"]) for o in savings_service.list_objetivos()
-            ],
-            value=str(estado["filtro_objetivo"]) if estado["filtro_objetivo"] is not None else "",
-            on_select=_on_select_filtro_objetivo,
-        )
-        dropdown_filtro_tipo_activo = ft.Dropdown(
-            label="Tipo de activo", width=ANCHO_TOOLBAR_FILTRO_TIPO_ACTIVO, dense=True, text_size=TypographyTokens.FILTER_SIZE,
-            options=[ft.dropdown.Option(key="", text="Todos")] + [
-                ft.dropdown.Option(key=t, text=_tipo_activo_display(t)) for t in TIPOS_ACTIVO
-            ],
-            value=estado["filtro_tipo_activo"] or "",
-            on_select=_on_select_filtro_tipo_activo,
-        )
-        dropdown_filtro_tipo_movimiento = ft.Dropdown(
-            label="Movimiento", width=ANCHO_TOOLBAR_FILTRO_TIPO_MOVIMIENTO, dense=True, text_size=TypographyTokens.FILTER_SIZE,
-            options=[ft.dropdown.Option(key="", text="Todos")] + [
-                ft.dropdown.Option(key=t, text=d) for t, d in _TIPOS_MOVIMIENTO_DISPLAY.items()
-            ],
-            value=estado["filtro_tipo_movimiento"] or "",
-            on_select=_on_select_filtro_tipo_movimiento,
-        )
-        campo_busqueda = ft.TextField(
-            width=ANCHO_TOOLBAR_BUSQUEDA, label="Buscar", hint_text="Activo/objetivo... (Enter)", dense=True,
-            text_size=TypographyTokens.FILTER_SIZE, prefix_icon=ft.Icons.SEARCH,
-            value=estado["busqueda"], on_submit=_on_submit_busqueda,
-        )
-
         return ft.Row(
             [
-                control_periodo, dropdown_filtro_objetivo, dropdown_filtro_tipo_activo,
-                dropdown_filtro_tipo_movimiento, ft.Container(expand=True), campo_busqueda,
-            ],
-            spacing=ESPACIADO_FILA,
-        )
-
-    def _texto_celda(texto: str, color: Optional[str] = None, weight=None) -> ft.Text:
-        return ft.Text(
-            texto, color=color, weight=weight or TypographyTokens.TABLE_CONTENT_WEIGHT_REGULAR,
-            size=TypographyTokens.TABLE_CONTENT_SIZE, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS, tooltip=texto,
-        )
-
-    def _eliminar_movimiento(m: dict) -> None:
-        """
-        Borrado por fila del Registro de movimientos (nuevo). Si el
-        movimiento tiene transaccion_id vinculado (Tarea 6b), pregunta
-        explícitamente si también hay que borrar esa transacción real —
-        Sí llama con eliminar_transaccion_vinculada=True, No con False (el
-        movimiento se borra igual en ambos casos). Si no tiene vínculo,
-        confirmación simple.
-        """
-        def _procesar(eliminar_transaccion: bool):
-            def _handler(e=None) -> None:
-                _cerrar_dialogo()
-                try:
-                    resultado = savings_service.delete_movement(
-                        m["id"], eliminar_transaccion_vinculada=eliminar_transaccion,
-                    )
-                except SavingsError as err:
-                    _mostrar_error(str(err))
-                    return
-                _mostrar_ok(resultado.message)
-                _refrescar()
-            return _handler
-
-        if m["transaccion_id"] is not None:
-            dialogo = ft.AlertDialog(
-                modal=True,
-                title=ft.Text("Eliminar movimiento"),
-                content=ft.Text(
-                    "Este movimiento generó una transacción real vinculada "
-                    "(descontó/acreditó una cuenta). ¿Borrar también esa transacción?"
+                _texto(movimiento["fecha"], width=ANCHO_COL_FECHA),
+                _texto(texto_tipo, color=COLOR_MOVIMIENTO.get(tipo, TEXT_PRIMARY), weight=PESO_MONTO, width=ANCHO_COL_TIPO),
+                _texto(_fmt_unidades(movimiento["cantidad"]) if movimiento["cantidad"] is not None else "—", width=ANCHO_COL_CANTIDAD),
+                _texto(monto, weight=PESO_MONTO, width=ANCHO_COL_MONTO),
+                _texto(amount_display(comision, entrada["decimales"], entrada["simbolo"]) if comision else "—", width=ANCHO_COL_COMISION),
+                _texto(objetivos or TEXTO_SIN_OBJETIVOS, color=TEXT_SECONDARY, width=ANCHO_COL_OBJETIVOS),
+                ft.IconButton(
+                    icon=ft.Icons.DELETE_OUTLINE, icon_size=ICONO_BORRAR, icon_color=TEXT_NEGATIVO, tooltip="ELIMINAR",
+                    on_click=lambda e: _eliminar_movimiento(movimiento),
                 ),
-                actions=[
-                    ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                    ft.TextButton(content=ft.Text("No, solo el movimiento"), on_click=_procesar(False)),
-                    ft.ElevatedButton(content=ft.Text("Sí, borrar ambos"), on_click=_procesar(True)),
-                ],
-                actions_alignment=ft.MainAxisAlignment.END,
-            )
-        else:
-            dialogo = ft.AlertDialog(
-                modal=True,
-                title=ft.Text("Eliminar movimiento"),
-                content=ft.Text("¿Eliminar este movimiento? Esta acción no se puede deshacer."),
-                actions=[
-                    ft.TextButton(content=ft.Text("Cancelar"), on_click=_cerrar_dialogo),
-                    ft.ElevatedButton(content=ft.Text("Eliminar"), on_click=_procesar(False)),
-                ],
-                actions_alignment=ft.MainAxisAlignment.END,
-            )
-        page.show_dialog(dialogo)
-
-    def _fila_movimiento(m: dict) -> ft.Control:
-        color_tipo = _COLOR_TIPO_MOVIMIENTO.get(m["tipo"])
-        texto_tipo = _TIPOS_MOVIMIENTO_DISPLAY.get(m["tipo"], m["tipo"])
-        moneda = monedas_por_id.get(m["moneda_id"])
-        decimales = moneda["decimales"] if moneda else DECIMALES_SIN_MONEDA_DEFAULT
-        simbolo = (moneda["simbolo"] if moneda else "") or ""
-        codigo_moneda = moneda["codigo"] if moneda else "?"
-        texto_cantidad = f"{m['cantidad']:g}" if m["cantidad"] is not None else "—"
-
-        if m["asignaciones"]:
-            contenido_objetivos: ft.Control = ft.Row(
-                [
-                    ft.Container(
-                        padding=ft.Padding.symmetric(horizontal=6, vertical=2),
-                        bgcolor=ft.Colors.SURFACE_CONTAINER_HIGHEST, border_radius=10,
-                        content=ft.Text(a["objetivo_nombre"], size=TypographyTokens.LABEL_SIZE),
-                    )
-                    for a in m["asignaciones"]
-                ],
-                spacing=4, wrap=True,
-            )
-        else:
-            contenido_objetivos = ft.Text("Sin asignar", size=TypographyTokens.LABEL_SIZE, italic=True, color=ft.Colors.OUTLINE)
-
-        boton_eliminar = ft.IconButton(
-            icon=ft.Icons.DELETE_OUTLINE,
-            icon_color=ft.Colors.ERROR,
-            icon_size=18,
-            tooltip="Eliminar",
-            on_click=lambda e, m=m: _eliminar_movimiento(m),
+            ],
+            spacing=ESPACIADO_LINEAS,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
-        celda_eliminar = ft.Container(width=ANCHO_COL_ELIMINAR, content=boton_eliminar, opacity=0.0)
 
-        fila_contenido = ft.Row(
+    def _ver_movimientos(entrada: dict) -> None:
+        movimientos = savings_service.list_movimientos(activo_id=entrada["activo_id"])
+        encabezado = ft.Row(
             [
-                ft.Container(width=ANCHO_COL_FECHA, padding=4, content=_texto_celda(m["fecha"])),
-                ft.Container(width=ANCHO_COL_ACTIVO, padding=4, content=_texto_celda(m["activo_nombre"])),
-                ft.Container(
-                    width=ANCHO_COL_TIPO_MOVIMIENTO, padding=4,
-                    content=_texto_celda(texto_tipo, color=color_tipo, weight=TypographyTokens.TABLE_CONTENT_WEIGHT),
-                ),
-                ft.Container(width=ANCHO_COL_CANTIDAD, padding=4, content=_texto_celda(texto_cantidad)),
-                ft.Container(
-                    width=ANCHO_COL_MONTO, padding=4,
-                    content=_texto_celda(
-                        amount_display(m["monto_total_minor"], decimales, simbolo), weight=TypographyTokens.TABLE_CONTENT_WEIGHT,
-                    ),
-                ),
-                ft.Container(width=ANCHO_COL_MONEDA, padding=4, content=_texto_celda(codigo_moneda)),
-                ft.Container(width=ANCHO_COL_OBJETIVOS, padding=4, content=contenido_objetivos),
-                celda_eliminar,
+                _texto("FECHA", TEXT_SECONDARY, PESO_HEADER, width=ANCHO_COL_FECHA),
+                _texto("TIPO", TEXT_SECONDARY, PESO_HEADER, width=ANCHO_COL_TIPO),
+                _texto("CANT.", TEXT_SECONDARY, PESO_HEADER, width=ANCHO_COL_CANTIDAD),
+                _texto("MONTO", TEXT_SECONDARY, PESO_HEADER, width=ANCHO_COL_MONTO),
+                _texto("COMISIÓN", TEXT_SECONDARY, PESO_HEADER, width=ANCHO_COL_COMISION),
+                _texto("OBJETIVOS", TEXT_SECONDARY, PESO_HEADER, width=ANCHO_COL_OBJETIVOS),
             ],
-            spacing=ESPACIADO_FILA,
+            spacing=ESPACIADO_LINEAS,
+        )
+        filas = [_fila_movimiento(m, entrada) for m in movimientos] or [
+            ft.Text("TODAVÍA NO HAY MOVIMIENTOS.", italic=True, color=TEXT_MUTED)
+        ]
+        page.show_dialog(ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"{entrada['activo'].upper()} — MOVIMIENTOS"),
+            content=ft.Container(
+                width=ANCHO_DIALOGO_MOVIMIENTOS, height=ALTO_LISTA_MOVIMIENTOS,
+                content=ft.Column([encabezado, ft.Divider(height=1), *filas], spacing=ESPACIADO_LINEAS, scroll=ft.ScrollMode.AUTO),
+            ),
+            actions=[ft.TextButton(content=ft.Text("CERRAR"), on_click=_cerrar_dialogo)],
+            actions_alignment=ft.MainAxisAlignment.END,
+        ))
+
+    # ------------------------------------------------------------
+    # RESUMEN
+    # ------------------------------------------------------------
+
+    def _fila_resumen(texto: str, valor: str) -> ft.Control:
+        return ft.Container(
+            padding=ft.Padding.only(left=SANGRIA_RESUMEN),
+            content=ft.Row(
+                [_texto(texto, expand=True), _texto(valor, weight=PESO_MONTO)],
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
         )
 
-        def _on_hover_fila(e: ft.ControlEvent) -> None:
-            # Normalizado defensivamente — mismo patrón sin confirmar que
-            # ui/components/registro_transacciones.py (ver su docstring).
-            celda_eliminar.opacity = 1.0 if str(e.data).lower() == "true" else 0.0
-            page.update()
-
-        return ft.Container(content=fila_contenido, on_hover=_on_hover_fila)
-
-    def _cargar_movimientos() -> list[dict]:
-        fecha_desde = f"{estado['anio']:04d}-{estado['mes']:02d}-01"
-        fecha_hasta = f"{estado['anio']:04d}-{estado['mes']:02d}-{DIA_TOPE_RANGO_MES}"
-        movimientos = savings_service.list_movimientos(
-            fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
-            objetivo_id=estado["filtro_objetivo"], tipo_activo=estado["filtro_tipo_activo"],
-            tipo_movimiento=estado["filtro_tipo_movimiento"],
+    def _sublinea(texto: str) -> ft.Control:
+        return ft.Container(
+            padding=ft.Padding.only(left=2 * SANGRIA_RESUMEN),
+            content=_texto(PREFIJO_SUBLINEA + texto, color=TEXT_SECONDARY, size=TypographyTokens.LABEL_SIZE),
         )
-        texto_busqueda = (estado["busqueda"] or "").strip().lower()
-        if texto_busqueda:
-            def _coincide(m: dict) -> bool:
-                if texto_busqueda in m["activo_nombre"].lower():
-                    return True
-                return any(texto_busqueda in a["objetivo_nombre"].lower() for a in m["asignaciones"])
-            movimientos = [m for m in movimientos if _coincide(m)]
-        return movimientos
 
-    def _actualizar_tabla() -> None:
-        movimientos = _cargar_movimientos()
-        if movimientos:
-            filas: list[ft.Control] = []
-            for i, m in enumerate(movimientos):
-                if i > 0:
-                    filas.append(ft.Divider(height=1))
-                filas.append(_fila_movimiento(m))
-            tabla_body.controls = filas
+    def _contenido_resumen() -> list[ft.Control]:
+        pills_vista = ft.Row(
+            [
+                ft.Text("VISTA:", size=TAMANIO_PILLS, color=TEXT_SECONDARY),
+                *[_pill(texto, clave == ui["vista"], lambda c=clave: _cambiar_vista(c)) for clave, texto in VISTAS_RESUMEN],
+            ],
+            spacing=ESPACIO_PILLS,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        controles: list[ft.Control] = [pills_vista]
+        if ui["vista"] == "instrumento":
+            for tipo, entradas in datos["resumen"].items():
+                controles.append(_titulo_seccion(TITULO_TIPO.get(tipo, tipo.upper())))
+                for e in entradas:
+                    nombre = f"{e['broker'].upper()} · {e['activo'].upper()}" if e["broker"] else e["activo"].upper()
+                    controles += [_fila_resumen(nombre, _texto_tenencia(e)), _sublinea(_texto_objetivos(e["objetivos"]))]
+            if not datos["resumen"]:
+                controles.append(ft.Text("TODAVÍA NO HAY ACTIVOS — CREALOS DESDE SU PESTAÑA.", italic=True, color=TEXT_MUTED))
         else:
-            tabla_body.controls = [
-                ft.Text("No hay movimientos para este período/filtro.", italic=True, color=ft.Colors.OUTLINE)
-            ]
-        page.update()
-
-    def _header(texto: str, width: int) -> ft.Text:
-        return ft.Text(texto, size=TypographyTokens.TABLE_HEADER_SIZE, weight=TypographyTokens.TABLE_HEADER_WEIGHT, width=width)
-
-    encabezado_columnas = ft.Row(
-        [
-            _header("Fecha", ANCHO_COL_FECHA),
-            _header("Activo", ANCHO_COL_ACTIVO),
-            _header("Tipo", ANCHO_COL_TIPO_MOVIMIENTO),
-            _header("Cantidad", ANCHO_COL_CANTIDAD),
-            _header("Monto", ANCHO_COL_MONTO),
-            _header("Moneda", ANCHO_COL_MONEDA),
-            _header("Objetivo(s)", ANCHO_COL_OBJETIVOS),
-            _header("", ANCHO_COL_ELIMINAR),
-        ],
-        spacing=ESPACIADO_FILA,
-    )
+            por_objetivo = savings_service.get_resumen_por_objetivo()
+            for objetivo, partes in por_objetivo.items():
+                controles.append(_titulo_seccion(objetivo.upper()))
+                for p in partes:
+                    controles.append(_fila_resumen(f"{NOMBRE_TIPO.get(p['tipo'], '')} {p['activo'].upper()}", _texto_tenencia(p)))
+            if not por_objetivo:
+                controles.append(ft.Text("NINGÚN ACTIVO TIENE OBJETIVOS NI SALDO TODAVÍA.", italic=True, color=TEXT_MUTED))
+        return controles
 
     # ------------------------------------------------------------
-    # REFRESCO + LAYOUT GENERAL
+    # PESTAÑAS POR TIPO
     # ------------------------------------------------------------
 
-    def _refrescar() -> None:
-        _actualizar_dashboard()
-        _actualizar_activos()
-        contenedor_toolbar.content = _construir_toolbar()
-        _actualizar_tabla()
-        page.update()
-
-    _refrescar()
-
-    fila_titulo = [ft.Text("Ahorros", size=TypographyTokens.PAGE_TITLE_SIZE, weight=TypographyTokens.PAGE_TITLE_WEIGHT)]
-    if on_volver is not None:
-        fila_titulo.insert(
-            0, ft.IconButton(icon=ft.Icons.ARROW_BACK, tooltip="Volver", on_click=lambda e: on_volver()),
+    def _linea(etiqueta: str, valor: str) -> ft.Control:
+        return ft.Row(
+            [_texto(f"{etiqueta}:", color=TEXT_SECONDARY), _texto(valor, weight=PESO_MONTO, expand=True)],
+            spacing=ESPACIADO_LINEAS,
         )
 
-    return ft.Column(
-        [
-            ft.Row(fila_titulo, alignment=ft.MainAxisAlignment.START),
-            ft.Container(height=8),
-            contenedor_dashboard,
-            contenedor_detalle_objetivo,
-            ft.Container(height=16),
-            ft.Container(
-                padding=16, border=ft.Border.all(1, ft.Colors.OUTLINE_VARIANT), border_radius=8,
-                content=ft.Column(
-                    [
-                        ft.Row(
-                            [
-                                ft.Text(
-                                    "Registro de movimientos",
-                                    size=TypographyTokens.SECTION_TITLE_SIZE, weight=TypographyTokens.SECTION_TITLE_WEIGHT,
-                                ),
-                                boton_agregar_movimiento,
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        ),
-                        contenedor_toolbar,
-                        ft.Divider(height=1),
-                        encabezado_columnas,
-                        ft.Divider(height=1),
-                        tabla_body,
-                    ],
-                    spacing=4,
-                ),
-            ),
-            ft.Container(height=16),
-            ft.Row(
+    def _tarjeta(entrada: dict) -> ft.Control:
+        tipo = entrada["tipo"]
+        titulo = entrada["activo"].upper() + (f" ({entrada['broker'].upper()})" if entrada["broker"] else "")
+        if entrada["por_unidades"]:
+            lineas = [_linea("CANTIDAD", _texto_tenencia(entrada, UNIDADES_TIPO.get(tipo, UNIDADES_DEFAULT)))]
+            if entrada["precio_promedio_minor"] is not None:
+                lineas.append(_linea(
+                    "PRECIO PROMEDIO", amount_display(entrada["precio_promedio_minor"], entrada["decimales"], entrada["simbolo"]),
+                ))
+            botones = [
+                _boton("+ COMPRA", lambda: _movimiento(entrada, "compra")),
+                _boton("+ VENTA", lambda: _movimiento(entrada, "venta")),
+                _boton("+ RENDIMIENTO", lambda: _movimiento(entrada, "rendimiento")),
+            ]
+        else:
+            saldo = amount_display(entrada["saldo_minor"], entrada["decimales"], entrada["simbolo"])
+            lineas = [_linea(ETIQUETA_SALDO.get(tipo, ETIQUETA_SALDO_DEFAULT), saldo)]
+            botones = [
+                _boton("+ RENDIMIENTO", lambda: _movimiento(entrada, "rendimiento")),
+                _boton("+ APORTE", lambda: _movimiento(entrada, "aporte")),
+                _boton("− RETIRO", lambda: _movimiento(entrada, "retiro")),
+            ]
+        lineas.append(_linea("OBJETIVOS", _texto_objetivos(entrada["objetivos"])))
+        botones += [
+            _boton("OBJETIVOS", lambda: _objetivos(entrada), TEXT_SECONDARY),
+            _boton("VER MOVIMIENTOS", lambda: _ver_movimientos(entrada), TEXT_SECONDARY),
+        ]
+        return ft.Container(
+            bgcolor=BG_SUPERFICIE,
+            border=ft.Border.all(ANCHO_BORDE, BORDER_DEFAULT),
+            border_radius=RADIO_TARJETA,
+            padding=PADDING_TARJETA,
+            content=ft.Column(
                 [
-                    ft.Text("Activos financieros", size=TypographyTokens.SECTION_TITLE_SIZE, weight=TypographyTokens.SECTION_TITLE_WEIGHT),
-                    ft.ElevatedButton(content=ft.Text("+ Nuevo activo"), icon=ft.Icons.ADD, on_click=_abrir_dialogo_nuevo_activo),
+                    ft.Row(
+                        [
+                            _texto(titulo, weight=TypographyTokens.SECTION_TITLE_WEIGHT, size=TypographyTokens.SECTION_TITLE_SIZE, expand=True),
+                            _texto(entrada["moneda"], color=TEXT_SECONDARY),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    *lineas,
+                    ft.Row(botones, spacing=0, wrap=True),
                 ],
-                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                spacing=ESPACIADO_LINEAS,
             ),
-            contenedor_activos,
-        ],
-        spacing=8,
-        expand=True,
-        scroll=ft.ScrollMode.AUTO,
-    )
+        )
+
+    def _contenido_tipo(tab: str) -> list[ft.Control]:
+        tipos = TIPOS_POR_TAB[tab]
+        controles: list[ft.Control] = []
+        if tab in BOTON_NUEVO:
+            controles.append(ft.Row([_boton(BOTON_NUEVO[tab], lambda: _nuevo_activo(tipos[0]))]))
+        entradas = [e for tipo in tipos for e in datos["resumen"].get(tipo, [])]
+        controles += [_tarjeta(e) for e in entradas] or [
+            ft.Text(f"NO HAY ACTIVOS EN {dict(TABS)[tab]} TODAVÍA.", italic=True, color=TEXT_MUTED)
+        ]
+        return controles
+
+    # ------------------------------------------------------------
+    # ARMADO
+    # ------------------------------------------------------------
+
+    def _cambiar_tab(tab: str) -> None:
+        if tab == ui["tab"]:
+            sin_auto_update()
+            return
+        ui["tab"] = tab
+        _redibujar()
+
+    def _cambiar_vista(vista: str) -> None:
+        if vista == ui["vista"]:
+            sin_auto_update()
+            return
+        ui["vista"] = vista
+        _redibujar()
+
+    def _cabecera() -> ft.Control:
+        controles: list[ft.Control] = []
+        if on_volver is not None:
+            controles.append(ft.IconButton(
+                icon=ft.Icons.ARROW_BACK, icon_color=TEXT_SECONDARY, tooltip="VOLVER", on_click=lambda e: on_volver(),
+            ))
+        controles += [
+            ft.Text(
+                "AHORROS E INVERSIONES", size=TypographyTokens.PAGE_TITLE_SIZE,
+                weight=TypographyTokens.PAGE_TITLE_WEIGHT, color=TEXT_PRIMARY,
+            ),
+            ft.Container(expand=True),
+            _boton("+ NUEVO OBJETIVO", _nuevo_objetivo),
+        ]
+        return ft.Row(controles, vertical_alignment=ft.CrossAxisAlignment.CENTER)
+
+    def _redibujar() -> None:
+        try:
+            datos["resumen"] = savings_service.get_resumen_por_tipo()
+        except SavingsError as err:
+            _error(str(err))
+        tabs = ft.Row(
+            [_pill(texto, clave == ui["tab"], lambda c=clave: _cambiar_tab(c)) for clave, texto in TABS],
+            spacing=ESPACIO_PILLS,
+            wrap=True,
+        )
+        contenido = _contenido_resumen() if ui["tab"] == "resumen" else _contenido_tipo(ui["tab"])
+        raiz.controls = [pantalla_planilla([_cabecera(), tabs, *contenido])]
+        page.update()
+
+    _redibujar()
+    return raiz

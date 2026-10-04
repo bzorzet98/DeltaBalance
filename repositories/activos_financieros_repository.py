@@ -20,6 +20,11 @@ hardcodeado, mismo motivo que en los repositorios anteriores sin esa
 columna. SÍ tiene `activa` (como `cuentas`/`categorias`), así que el
 soft-delete sigue el mismo patrón: desactivar()/activar() son métodos
 dedicados, separados de actualizar() — actualizar() NUNCA toca `activa`.
+
+Rediseño de Ahorros e Inversiones: crear()/actualizar() reciben broker_id
+(brokers) y las comisiones por defecto del activo (comision_compra_minor /
+comision_venta_minor, columnas de db/schema_migrations.py);
+listar_por_tipo()/listar_por_broker() para las pestañas de la pantalla.
 """
 
 import sqlite3
@@ -39,7 +44,16 @@ class ActivosFinancierosRepository:
     # CREATE
     # ----------------------------------------------------------
 
-    def crear(self, nombre: str, tipo: str, moneda_id: int, cuenta_id: Optional[str] = None) -> str:
+    def crear(
+        self,
+        nombre: str,
+        tipo: str,
+        moneda_id: int,
+        cuenta_id: Optional[str] = None,
+        broker_id: Optional[str] = None,
+        comision_compra_minor: int = 0,
+        comision_venta_minor: int = 0,
+    ) -> str:
         """
         Inserta un activo financiero y devuelve su id (UUID,
         repositories/_ids.py). activa arranca en 1 (default de
@@ -47,12 +61,17 @@ class ActivosFinancierosRepository:
         activo a una cuenta real — opcional, nullable en schema — usado
         por SavingsService.register_purchase()/register_sale() para
         resolver sola la cuenta a descontar/acreditar sin que el caller
-        tenga que pasarla en cada movimiento.
+        tenga que pasarla en cada movimiento. broker_id: dónde se opera
+        (opcional); comisiones: las de compra/venta por defecto del activo.
         """
         activo_id = nuevo_id()
         self._db.execute(
-            "INSERT INTO activos_financieros (id, nombre, tipo, moneda_id, cuenta_id) VALUES (?, ?, ?, ?, ?);",
-            (activo_id, nombre, tipo, moneda_id, cuenta_id),
+            """
+            INSERT INTO activos_financieros
+                (id, nombre, tipo, moneda_id, cuenta_id, broker_id, comision_compra_minor, comision_venta_minor)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+            """,
+            (activo_id, nombre, tipo, moneda_id, cuenta_id, broker_id, comision_compra_minor, comision_venta_minor),
         )
         return activo_id
 
@@ -74,6 +93,20 @@ class ActivosFinancierosRepository:
             builder = builder.where("activa", 1)
         return builder.order("nombre").ejecutar(self._db.conn)
 
+    def listar_por_tipo(self, tipo: str) -> list[sqlite3.Row]:
+        """Los activos activos de ese tipo, por nombre."""
+        return self.listar(tipo=tipo)
+
+    def listar_por_broker(self, broker_id: str) -> list[sqlite3.Row]:
+        """Los activos activos operados en ese broker, por nombre."""
+        return (
+            QueryBuilder("activos_financieros", include_deleted=True)
+            .where("broker_id", broker_id)
+            .where("activa", 1)
+            .order("nombre")
+            .ejecutar(self._db.conn)
+        )
+
     # ----------------------------------------------------------
     # UPDATE
     # ----------------------------------------------------------
@@ -84,18 +117,29 @@ class ActivosFinancierosRepository:
         nombre: Any = NO_CAMBIAR,
         tipo: Any = NO_CAMBIAR,
         moneda_id: Any = NO_CAMBIAR,
+        broker_id: Any = NO_CAMBIAR,
+        comision_compra_minor: Any = NO_CAMBIAR,
+        comision_venta_minor: Any = NO_CAMBIAR,
         conn: Optional[sqlite3.Connection] = None,
     ) -> bool:
         """
-        Update parcial de nombre/tipo/moneda_id. Default NO_CAMBIAR = no
-        tocar ese campo. NO incluye `activa` a propósito — eso es
-        transición exclusiva de desactivar()/activar(), mismo patrón que
+        Update parcial de nombre/tipo/moneda_id/broker_id/comisiones.
+        Default NO_CAMBIAR = no tocar ese campo (None en broker_id lo
+        desvincula). NO incluye `activa` a propósito — eso es transición
+        exclusiva de desactivar()/activar(), mismo patrón que
         CategoriasRepository.
         """
         campos, valores = [], []
         if nombre    is not NO_CAMBIAR: campos.append("nombre = ?");    valores.append(nombre)
         if tipo      is not NO_CAMBIAR: campos.append("tipo = ?");      valores.append(tipo)
         if moneda_id is not NO_CAMBIAR: campos.append("moneda_id = ?"); valores.append(moneda_id)
+        if broker_id is not NO_CAMBIAR: campos.append("broker_id = ?"); valores.append(broker_id)
+        if comision_compra_minor is not NO_CAMBIAR:
+            campos.append("comision_compra_minor = ?")
+            valores.append(comision_compra_minor)
+        if comision_venta_minor is not NO_CAMBIAR:
+            campos.append("comision_venta_minor = ?")
+            valores.append(comision_venta_minor)
         if not campos:
             return False
         valores.append(activo_id)
