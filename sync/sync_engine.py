@@ -45,9 +45,22 @@ la subida hasta tocar Supabase a mano.
   no bajaba nunca el suyo): depende de que la política SELECT de
   deltabalance_compartidos filtre por membresía. Sin ningún hogar acá, las
   compartidas se bajan desde el principio y no desde la marca
-  (_bajar_tablas()). Una fila del otro miembro que apunta a algo que solo existe
-  en su base (ej. gasto_compartido_pagos.transaccion_id) falla por FK y se
-  cuenta como error.
+  (_bajar_tablas()). Una fila del otro miembro que apunta a algo que solo
+  existe en su base (categoria_id, transaccion_id) se traduce a esta base
+  antes de guardarla — ver REFERENCIAS, abajo.
+- REFERENCIAS de una fila compartida a filas privadas (sync/referencias.py,
+  docs/DATA_MODEL_DECISIONS.md sección 27): al subir viajan en forma
+  portable dentro de `datos` (MARCA_REFERENCIAS); al bajar se traducen a ids
+  de esta base (_aplicar(); _debe_aplicarse() compara ya traducido, así una
+  fila traducida no cuenta como cambiada en cada bajada). Las filas que ya
+  estaban en Supabase sin la marca se reparan UNA vez por base, en la
+  primera sync completa con esta versión (clave REPARACION_REFERENCIAS de
+  sync_estado): _reparar_referencias() completa la marca de las que esta
+  base puede describir — las que apuntan a filas suyas — y las compartidas
+  se bajan desde el principio, así lo que antes falló por FK y quedó atrás
+  de la marca de bajada se vuelve a intentar. Da igual qué miembro
+  actualice primero: la reparación cambia el updated_at de la fila, y el
+  otro la baja en su próxima sync.
 - Restaurar sobre una base nueva: el seed ya trae categorías y "Caja
   Efectivo" con UUIDs propios. SyncRepository.guardar_fila() las reconoce
   por clave natural (CLAVES_NATURALES) y les pone el id remoto, en vez de
@@ -110,6 +123,7 @@ from db.database import DatabaseManager
 from db.schema_migrations import CLAVES_SYNC, TABLAS_SINCRONIZADAS, claves_primarias
 from repositories.sync_repository import COLUMNAS_LOCALES, SyncRepository
 from sync.auth import AuthService
+from sync.referencias import MARCA_REFERENCIAS, ReferenciasCompartidas
 from sync.supabase_client import get_client
 from ui.utils.prefs import escribir_pref, leer_pref
 
@@ -146,6 +160,10 @@ NAMESPACE_CLAVE_COMPUESTA = uuid.NAMESPACE_URL
 PREF_ULTIMA_BAJADA = "sync_ultima_bajada"
 # Marca de "ya sincronizó" cuando no se vio ninguna fila remota todavía.
 EPOCA = "1970-01-01T00:00:00+00:00"
+# Clave de sync_estado: cuándo esta base terminó la reparación de
+# referencias (ver docstring del módulo, REFERENCIAS). Sin ella, la próxima
+# sync completa la hace.
+REPARACION_REFERENCIAS = "referencias_portables"
 
 ESTADO_SINCRONIZADO = "sincronizado"
 ESTADO_SINCRONIZANDO = "sincronizando"
@@ -307,6 +325,7 @@ class SyncEngine:
         self._client = cliente
         self._usuario_fijo = usuario_id
         self._marcas = marcas if marcas is not None else MarcasEnPrefs()
+        self._referencias = ReferenciasCompartidas(TABLAS_COMPARTIDAS)
         self._lock = threading.Lock()
         self._oyentes: dict[str, Callable[["SyncEngine"], None]] = {}
         self.estado = ESTADO_SIN_SESION if not self.hay_sesion() else ESTADO_SINCRONIZANDO
@@ -497,6 +516,7 @@ class SyncEngine:
         clave_marca = self._clave_marca(usuario_id)
         desde = self._marcas.leer(clave_marca)
         primera = self._es_primera(repo)
+        reparar = repo.estado(REPARACION_REFERENCIAS) is None  # una vez por base (docstring, REFERENCIAS)
         if primera:
             print(f"{PREFIJO_LOG} usuario {usuario_id}: PRIMERA sincronización de esta base — se baja TODO (gana lo remoto)")
             desde = None  # una marca suelta no vale para una base que nunca sincronizó
@@ -514,8 +534,13 @@ class SyncEngine:
             else:
                 print(f"{PREFIJO_LOG} usuario {usuario_id}: se bajan los cambios posteriores a {desde}")
             self._subir_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, c)
-            bajada_completa = self._bajar_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, desde, c)
+            bajada_completa = self._bajar_tablas(
+                repo, TABLAS_SINCRONIZADAS, usuario_id, desde, c, compartidas_desde_cero=reparar,
+            )
             self._aplicar_borrados(repo, c)
+        if reparar and bajada_completa and self._reparar_referencias(repo, usuario_id, c):
+            with repo.escritura_sync() as conn:
+                repo.guardar_estado(conn, REPARACION_REFERENCIAS, _ahora_local())
         if not bajada_completa:
             # Una compartida quedó sin bajar (ver docstring del módulo): la
             # marca no se mueve. Volver a bajar lo demás no cambia nada
@@ -540,9 +565,14 @@ class SyncEngine:
 
     def _bajar_tablas(
         self, repo: SyncRepository, tablas: list[str], usuario_id: str, desde: Optional[str], c: _Contadores,
-        primera: bool = False,
+        primera: bool = False, compartidas_desde_cero: bool = False,
     ) -> bool:
-        """Baja los cambios de esas tablas, en ese orden. False si alguna compartida fue rechazada (quedó sin bajar)."""
+        """
+        Baja los cambios de esas tablas, en ese orden. False si alguna
+        compartida fue rechazada (quedó sin bajar). compartidas_desde_cero:
+        las compartidas se bajan todas, no desde la marca (reparación de
+        referencias, ver docstring del módulo).
+        """
         completa = True
         # Sin ningún hogar acá, las compartidas se bajan desde el principio:
         # la marca pudo avanzar con las privadas mientras las compartidas no
@@ -550,7 +580,7 @@ class SyncEngine:
         # marca se saltearía lo subido antes desde otra computadora. Se decide
         # una vez, antes de bajar `hogares`: si no, las que siguen
         # (gastos_compartidos…) ya verían el hogar recién bajado.
-        desde_compartidas = desde if self._mis_hogares(repo) else None
+        desde_compartidas = desde if self._mis_hogares(repo) and not compartidas_desde_cero else None
         for tabla in tablas:
             desde_tabla = desde_compartidas if tabla in TABLAS_COMPARTIDAS else desde
             try:
@@ -621,6 +651,7 @@ class SyncEngine:
                         repo.quitar_cambio(conn, tabla, entrada["clave"])  # nunca llegó a subir: no hay nada que borrar
                         continue
                     entrada["hogar_uuid_remoto"] = (remoto or {}).get("hogar_uuid")
+                    entrada["datos_remotos"] = (remoto or {}).get("datos")  # para ReferenciasCompartidas.para_subir()
                     a_subir.append(entrada)
             subidas += self._subir_entradas(repo, tabla, usuario_id, a_subir, leido_en, c)
         if pendientes:
@@ -667,6 +698,8 @@ class SyncEngine:
             datos[MARCA_BORRADO] = True
         else:
             datos = {col: _valor_json(v) for col, v in fila.items() if col not in COLUMNAS_LOCALES}
+            # FK a filas privadas (solo tablas compartidas): en forma portable (sync/referencias.py).
+            self._referencias.para_subir(repo, tabla, datos, entrada.get("datos_remotos"))
         marca = self._marca_local(entrada)
         if marca:
             datos[MARCA_MODIFICADO] = marca
@@ -783,10 +816,15 @@ class SyncEngine:
         cambio = repo.cambio(tabla, remota["clave_local"])
         pendiente = cambio is not None or (local is not None and local.get("sincronizado_en") is None)
         if not pendiente:
-            return not self._iguales(local, remota)
+            return not self._iguales(local, self._traducida(repo, tabla, remota))
         c.conflictos += 1
         entrada = {"modificado_en": (cambio or {}).get("modificado_en"), "fila": local}
         return self._resolver_conflicto(entrada, remota, primera) is remota
+
+    def _traducida(self, repo: SyncRepository, tabla: str, remota: dict) -> dict:
+        """La fila bajada con sus FK privadas ya en ids de esta base, sin crear nada: para compararla con la local."""
+        datos, _ = self._referencias.a_local(repo, tabla, remota["datos"])
+        return {**remota, "datos": datos}
 
     @staticmethod
     def _iguales(local: Optional[dict], remota: dict) -> bool:
@@ -798,7 +836,12 @@ class SyncEngine:
         )
 
     def _aplicar(self, repo: SyncRepository, conn: sqlite3.Connection, tabla: str, remota: dict, c: _Contadores) -> bool:
-        """Escribe acá la versión remota (o la borra). False si no se pudo (ej. una FK): se cuenta como error."""
+        """
+        Escribe acá la versión remota (o la borra), con sus FK a filas
+        privadas de otro miembro traducidas a esta base (sync/referencias.py).
+        False si no se pudo (una referencia sin traducir, otra FK…): se
+        cuenta como error.
+        """
         clave = remota["clave_local"]
         if clave is None:
             c.error(f"{tabla} {remota.get('uuid')}: `datos` sin clave primaria")
@@ -807,12 +850,57 @@ class SyncEngine:
             if _es_borrado(remota):
                 repo.borrar_fila(conn, tabla, clave)
             else:
-                repo.guardar_fila(conn, tabla, remota["datos"], _ahora_local())
+                datos, sin_traducir = self._referencias.a_local(repo, tabla, remota["datos"], conn)
+                if sin_traducir:
+                    c.error(
+                        f"{tabla} {clave}: {', '.join(sin_traducir)} apunta a una fila de otra base "
+                        f"que acá no existe y no se puede crear (¿subida sin {MARCA_REFERENCIAS}?)"
+                    )
+                    return False
+                repo.guardar_fila(conn, tabla, datos, _ahora_local())
         except sqlite3.Error as err:
             c.error(f"{tabla} {clave}: {err}")
             return False
         repo.quitar_cambio(conn, tabla, clave)
         return True
+
+    # ----------------------------------------------------------
+    # REPARACIÓN DE REFERENCIAS (una vez por base, ver docstring del módulo)
+    # ----------------------------------------------------------
+
+    def _reparar_referencias(self, repo: SyncRepository, usuario_id: str, c: _Contadores) -> bool:
+        """
+        Completa MARCA_REFERENCIAS en las filas compartidas que ya estaban
+        en Supabase sin ella (subidas antes de sync/referencias.py, o por
+        migration/subir_a_supabase.py). Solo las que esta base puede
+        describir — las que apuntan a filas suyas —, y sin tocar nada más
+        de `datos`: ni las columnas ni _modificado_en, así no cambia quién
+        gana un conflicto. El upsert sí cambia el updated_at: por eso los
+        otros miembros la vuelven a bajar. False si Supabase rechazó alguna
+        tabla (la próxima sync completa reintenta).
+        """
+        completa = True
+        for tabla in TABLAS_COMPARTIDAS:
+            if not self._referencias.privadas(repo, tabla):
+                continue
+            parches: list[dict] = []
+            try:
+                for remota in self._filas_remotas(tabla, usuario_id, None):
+                    datos = remota["datos"]
+                    if _es_borrado(remota) or not self._referencias.completar(repo, tabla, datos):
+                        continue
+                    parches.append({
+                        "uuid": remota["uuid"], "tabla": tabla, "hogar_uuid": remota.get("hogar_uuid"),
+                        "datos": json.dumps(datos),
+                    })
+                for lote in _lotes(parches, LOTE):
+                    self._cliente().table(TABLA_COMPARTIDA_REMOTA).upsert(lote, on_conflict=CONFLICTO_REMOTO).execute()
+            except APIError as err:
+                self._rechazo_compartida(tabla, "reparar", err, c)
+                completa = False
+                continue
+            print(f"{PREFIJO_LOG} {tabla}: {len(parches)} fila(s) completada(s) con {MARCA_REFERENCIAS}")
+        return completa
 
     # ----------------------------------------------------------
     # CONFLICTOS
