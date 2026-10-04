@@ -826,7 +826,8 @@ Pendiente de subir = lo que está en `sync_cambios`, más las filas con
 - Usar una sola computadora por usuario a la vez: dos bases del mismo usuario
   generan ids que chocan.
 - Una fila bajada que referencia algo que acá no existe (una FK) se cuenta como
-  error y se saltea.
+  error y se saltea. Excepción: las FK de una tabla compartida a filas privadas
+  de otro miembro (`categoria_id`, `transaccion_id`) se traducen — sección 27.
 - Renombrar la clave primaria de una fila (ej. `usuario_local` en `hogar_miembros`)
   deja la versión vieja en Supabase.
 - `sync_fila()` existe pero todavía no la llama nadie. Las ediciones privadas suben
@@ -902,3 +903,90 @@ etiqueta). Las tres pantallas la muestran como columna TAG, editable inline.
   tocar Supabase.
 - Los cargos extra de un resumen (`resumen_cargos_extra`) no tienen tag: en
   Compras en cuotas, el tag del alta solo se usa con una categoría normal.
+
+## 27. Referencias de filas compartidas a filas privadas — ✅ implementado (`sync/referencias.py`, sin cambio de schema)
+
+**Problema.** Cada miembro del hogar tiene su propia base, y las categorías y
+transacciones son privadas: cada base tiene las suyas, con sus propios UUID
+(las del seed también: el mismo "Supermercado" tiene un UUID distinto en cada
+base). Pero dos tablas compartidas apuntan a ellas:
+
+- `gastos_compartidos.categoria_id` → `categorias` (NOT NULL).
+- `gasto_compartido_pagos.transaccion_id` → `transacciones` (acepta NULL).
+
+Una fila de NOELIA con su `categoria_id` no se podía guardar en la base de
+BRUNO: `FOREIGN KEY constraint failed`, y como la marca de bajada seguía de
+largo, no se volvía a intentar.
+
+**Decisión: traducir en la frontera de la sync, sin tocar el schema.**
+
+- En la base de quien carga el gasto, `categoria_id` sigue siendo una FK
+  normal: ahí el UUID es correcto y la integridad se mantiene. Lo que no vale
+  es mandar ese UUID solo a otra base, donde no significa nada.
+- Al subir una fila compartida, dentro de `datos` viaja `_referencias`: por
+  cada FK a una tabla privada, la fila apuntada descripta por su clave natural
+  (`CLAVES_NATURALES`) más las columnas sin las que no se puede insertar. Ej.
+  `{"categoria_id": {"categoria_principal": "EGRESOS VARIABLES",
+  "subcategoria": "Supermercado", "tipo": "egreso"}}`. Es una marca como
+  `_borrado` y `_modificado_en`: no es una columna local, y Supabase no cambia.
+- Al bajar, cada base traduce por su cuenta, en este orden: la fila local con
+  la misma clave natural → si no hay, se crea (UUID propio, **inactiva**:
+  `activa = 0`) → si no se puede crear y la columna acepta NULL, NULL → si no,
+  error con un mensaje que dice qué columna no se pudo traducir.
+- Qué FK son "privadas" sale del schema (`PRAGMA foreign_key_list`): toda FK de
+  una tabla de `TABLAS_COMPARTIDAS` a una tabla sincronizada que no es
+  compartida. Una FK nueva de ese tipo queda cubierta sin tocar código.
+- Lo que una base no ve, no lo pisa: si esta base guardó NULL porque no pudo
+  traducir (ej. la transacción con la que pagó el otro) y vuelve a subir la
+  fila, se conserva el valor de Supabase. Si no, se perdería el vínculo en la
+  base del autor.
+
+**Por qué esto y no otra cosa:**
+
+- *Sincronizar el catálogo de categorías del hogar*: no. Las categorías son de
+  cada uno. Unificarlas obligaría a cambiar UUIDs de categorías ya usadas en
+  transacciones, presupuestos y compras privadas (como hace la adopción por
+  clave natural al restaurar), y esas filas quedarían distintas de sus copias en
+  Supabase. Además, haría que todos tengan las mismas categorías, justo lo que
+  no se quería.
+- *Guardar el nombre en una columna nueva de `gastos_compartidos` y hacer
+  `categoria_id` nullable*: resuelve lo mismo, pero SQLite no cambia una FK sin
+  reconstruir la tabla (con `gasto_compartido_pagos` colgando, la vista
+  `vw_saldo_neto_hogar` y los triggers), sobre las bases reales de los dos.
+  También habría que cambiar el repositorio y la pantalla (`INNER JOIN` →
+  `LEFT JOIN`). La traducción da lo mismo sin migrar nada.
+- *Crear la categoría faltante activa*: ensuciaría el catálogo del otro. Nace
+  inactiva: la FK se cumple, el nombre se ve en Compartidos, y no aparece para
+  cargar. En la pantalla Categorías se ve como inactiva y se puede reactivar.
+  Sube como categoría privada de quien la tiene, como cualquier alta.
+
+**Reparación de lo que ya estaba en Supabase.** Las filas subidas antes de este
+cambio, o por `migration/subir_a_supabase.py`, no tienen `_referencias`, y solo
+su autor puede describirlas. En la primera sync completa con esta versión, cada
+base:
+
+1. Completa `_referencias` en las filas compartidas que apuntan a filas suyas
+   (upsert del mismo `datos` + la marca, sin tocar `_modificado_en`).
+2. Baja las compartidas desde el principio, para reintentar lo que antes falló y
+   quedó atrás de la marca de bajada.
+
+Lo anota en `sync_estado` (clave `referencias_portables`) y no lo repite. Da
+igual qué miembro actualice primero: el upsert de la reparación cambia el
+`updated_at` de la fila, y el otro la baja en su próxima sync.
+
+**Límites conocidos:**
+
+- Si el autor renombra la categoría después de compartir, las otras bases
+  siguen con el nombre viejo. Si otro miembro vuelve a subir la fila, el
+  autor la traduce por ese nombre viejo y puede terminar con una categoría
+  inactiva nueva con el nombre anterior.
+- Una FK privada a una tabla sin clave natural y NOT NULL no tiene traducción
+  posible: sigue siendo error. Hoy no hay ninguna.
+- Privacidad: lo que viaja en `_referencias` (nombre y tipo de la categoría) lo
+  ve todo el hogar. Si en el futuro una tabla compartida apunta a `cuentas`,
+  viajaría el nombre de la cuenta.
+- No resuelve el `origen_id` polimórfico (no es una FK declarada): en la base
+  del otro miembro, el concepto y la moneda de un gasto compartido siguen
+  saliendo de un origen que no está ahí.
+
+Verificación: `verify/sync/verify_referencias_compartidas.py`.

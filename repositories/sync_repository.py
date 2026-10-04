@@ -21,7 +21,15 @@ porque se interpolan en el SQL.
 Escrituras de la sync: siempre dentro de escritura_sync(), que pone la
 MARCA_ESCRITURA_SYNC en sync_estado dentro de la misma transacción (y la
 saca antes del COMMIT): así los triggers no vuelven a marcar como
-pendiente lo que la propia sync escribe.
+pendiente lo que la propia sync escribe. sync_estado guarda además otras
+claves de la sync que SÍ se comitean (estado() / guardar_estado(), ej.
+REPARACION_REFERENCIAS de sync/sync_engine.py): los triggers solo miran
+MARCA_ESCRITURA_SYNC.
+
+Estructura para sync/referencias.py (docs/DATA_MODEL_DECISIONS.md sección
+27): claves_foraneas(), columnas_requeridas(), buscar(),
+id_por_clave_natural() y crear_fila() — leen el schema y las filas, no
+deciden qué referencia se traduce ni cómo.
 """
 
 import sqlite3
@@ -30,6 +38,7 @@ from typing import Any, Iterator, Optional
 
 from db.database import DatabaseManager
 from db.schema_migrations import MARCA_ESCRITURA_SYNC, SEPARADOR_CLAVE, TABLAS_SINCRONIZADAS, claves_primarias
+from repositories._ids import nuevo_id
 
 # Columnas que no viajan (sincronizado_en es local de cada base).
 COLUMNAS_LOCALES = ("sincronizado_en",)
@@ -49,7 +58,8 @@ CLAVES_NATURALES: dict[str, tuple[str, ...]] = {
 class SyncRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
-        self._columnas_cache: dict[str, list[str]] = {}
+        self._info_cache: dict[str, list[dict]] = {}
+        self._fks_cache: dict[str, list[dict]] = {}
 
     # ----------------------------------------------------------
     # ESTRUCTURA
@@ -61,12 +71,48 @@ class SyncRepository:
             raise ValueError(f"'{tabla}' no es una tabla sincronizada.")
         return tabla
 
+    def _info(self, tabla: str) -> list[dict]:
+        """PRAGMA table_info de la tabla (name, notnull, dflt_value, pk…), leído una vez."""
+        if tabla not in self._info_cache:
+            filas = self._db.conn.execute(f"PRAGMA table_info({self._validar_tabla(tabla)});").fetchall()
+            self._info_cache[tabla] = [dict(fila) for fila in filas]
+        return self._info_cache[tabla]
+
     def columnas(self, tabla: str) -> list[str]:
         """Columnas reales de la tabla en esta base (PRAGMA table_info)."""
-        if tabla not in self._columnas_cache:
-            filas = self._db.conn.execute(f"PRAGMA table_info({self._validar_tabla(tabla)});").fetchall()
-            self._columnas_cache[tabla] = [fila[1] for fila in filas]
-        return self._columnas_cache[tabla]
+        return [columna["name"] for columna in self._info(tabla)]
+
+    def columnas_requeridas(self, tabla: str) -> list[str]:
+        """Las que un INSERT tiene que traer sí o sí: NOT NULL, sin DEFAULT y fuera de la clave primaria."""
+        return [
+            columna["name"] for columna in self._info(tabla)
+            if columna["notnull"] and columna["dflt_value"] is None and not columna["pk"]
+        ]
+
+    def claves_foraneas(self, tabla: str) -> list[dict]:
+        """
+        Las FK declaradas de la tabla (PRAGMA foreign_key_list), de a una
+        columna: [{columna, tabla, columna_ref, nullable}] — `tabla` es la
+        referenciada y `columna_ref` la columna a la que apunta (su clave
+        primaria si el schema no la nombra). Una FK de varias columnas se
+        saltea (el schema no tiene ninguna).
+        """
+        if tabla not in self._fks_cache:
+            nullables = {columna["name"]: not columna["notnull"] for columna in self._info(tabla)}
+            por_fk: dict[int, list] = {}
+            for fk in self._db.conn.execute(f"PRAGMA foreign_key_list({self._validar_tabla(tabla)});").fetchall():
+                por_fk.setdefault(fk["id"], []).append(fk)
+            self._fks_cache[tabla] = [
+                {
+                    "columna": fk["from"],
+                    "tabla": fk["table"],
+                    "columna_ref": fk["to"] or claves_primarias(fk["table"])[0],
+                    "nullable": nullables.get(fk["from"], True),
+                }
+                for partes in por_fk.values() if len(partes) == 1
+                for fk in partes
+            ]
+        return self._fks_cache[tabla]
 
     @staticmethod
     def clave_de(tabla: str, fila: dict) -> str:
@@ -94,6 +140,34 @@ class SyncRepository:
 
     def todas(self, tabla: str) -> list[dict]:
         return [dict(f) for f in self._db.conn.execute(f"SELECT * FROM {self._validar_tabla(tabla)};").fetchall()]
+
+    def buscar(self, tabla: str, columna: str, valor: Any) -> Optional[dict]:
+        """La fila con columna = valor (la primera), o None. `columna` tiene que ser una columna real: se interpola en el SQL."""
+        if columna not in self.columnas(tabla):
+            raise ValueError(f"'{columna}' no es una columna de '{tabla}'.")
+        fila = self._db.conn.execute(f"SELECT * FROM {tabla} WHERE {columna} = ? LIMIT 1;", (valor,)).fetchone()
+        return dict(fila) if fila is not None else None
+
+    def id_por_clave_natural(self, tabla: str, valores: dict) -> Optional[str]:
+        """
+        El id de la fila de esta base con la misma clave natural
+        (CLAVES_NATURALES) que `valores`. None si la tabla no tiene clave
+        natural, si a `valores` le falta alguna de sus columnas, o si no hay
+        ninguna fila así.
+        """
+        columnas = CLAVES_NATURALES.get(self._validar_tabla(tabla))
+        if not columnas or any(columna not in valores for columna in columnas):
+            return None
+        fila = self._db.conn.execute(
+            f"SELECT id FROM {tabla} WHERE " + " AND ".join(f"{c} = ?" for c in columnas) + ";",
+            tuple(valores[c] for c in columnas),
+        ).fetchone()
+        return fila["id"] if fila is not None else None
+
+    def estado(self, clave: str) -> Optional[str]:
+        """El valor de `clave` en sync_estado, o None si no está."""
+        fila = self._db.conn.execute("SELECT valor FROM sync_estado WHERE clave = ?;", (clave,)).fetchone()
+        return fila["valor"] if fila is not None else None
 
     def cambio(self, tabla: str, clave: str) -> Optional[dict]:
         """La entrada de sync_cambios de esa fila, o None si no cambió desde la última sync."""
@@ -204,6 +278,33 @@ class SyncRepository:
     def quitar_cambio(self, conn: sqlite3.Connection, tabla: str, clave: str) -> None:
         conn.execute("DELETE FROM sync_cambios WHERE tabla = ? AND clave = ?;", (tabla, clave))
 
+    def guardar_estado(self, conn: sqlite3.Connection, clave: str, valor: str) -> None:
+        """Escribe `clave` en sync_estado (se comitea con la transacción, a diferencia de MARCA_ESCRITURA_SYNC)."""
+        conn.execute("INSERT OR REPLACE INTO sync_estado (clave, valor) VALUES (?, ?);", (clave, valor))
+
+    def crear_fila(self, conn: sqlite3.Connection, tabla: str, valores: dict) -> str:
+        """
+        INSERT de una fila que arma la propia sync (no viene de Supabase):
+        id nuevo (repositories/_ids.py), solo las columnas que existen acá y
+        sincronizado_en NULL — queda pendiente de subir como fila propia de
+        esta base. Devuelve el id. Solo tablas con clave `id`. Puede lanzar
+        sqlite3.IntegrityError (ej. un UNIQUE).
+        """
+        if claves_primarias(self._validar_tabla(tabla)) != ("id",):
+            raise ValueError(f"'{tabla}' no tiene clave `id`.")
+        columnas_locales = self.columnas(tabla)
+        fila = {
+            c: v for c, v in valores.items()
+            if c in columnas_locales and c not in COLUMNAS_LOCALES and c != "id"
+        }
+        fila["id"] = nuevo_id()
+        columnas = list(fila)
+        conn.execute(
+            f"INSERT INTO {tabla} ({', '.join(columnas)}) VALUES ({', '.join('?' for _ in columnas)});",
+            tuple(fila[c] for c in columnas),
+        )
+        return fila["id"]
+
     def guardar_fila(self, conn: sqlite3.Connection, tabla: str, datos: dict, momento: str) -> None:
         """
         INSERT o UPDATE por clave de una fila que vino de Supabase, solo con
@@ -240,16 +341,10 @@ class SyncRepository:
         COMMIT, así el orden de los UPDATE no importa (SQLite lo apaga solo
         al terminar la transacción).
         """
-        columnas = CLAVES_NATURALES.get(tabla)
-        if not columnas or any(columna not in valores for columna in columnas):
+        viejo = self.id_por_clave_natural(tabla, valores)  # None si la tabla no tiene clave natural
+        if viejo is None or viejo == valores["id"]:
             return
-        local = conn.execute(
-            f"SELECT id FROM {tabla} WHERE " + " AND ".join(f"{c} = ?" for c in columnas) + " AND id != ?;",
-            (*(valores[c] for c in columnas), valores["id"]),
-        ).fetchone()
-        if local is None:
-            return
-        viejo, nuevo = local["id"], valores["id"]
+        nuevo = valores["id"]
         conn.execute("PRAGMA defer_foreign_keys = ON;")
         for fila in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table';").fetchall():
             hija = fila["name"]
