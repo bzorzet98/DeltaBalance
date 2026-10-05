@@ -58,13 +58,13 @@ def main() -> None:
     moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
 
     cat_super = manager.fetchone(
-        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS VARIABLES' AND subcategoria = 'Supermercado';"
+        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS' AND subcategoria = 'SUPERMERCADO';"
     )["id"]
     cat_salud = manager.fetchone(
-        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS VARIABLES' AND subcategoria = 'Salud';"
+        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS' AND subcategoria = 'SALUD';"
     )["id"]
     cat_alquiler = manager.fetchone(
-        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS FIJOS' AND subcategoria = 'Alquiler / Vivienda';"
+        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS' AND subcategoria = 'VIVIENDA';"
     )["id"]
     cat_ingreso = manager.fetchone(
         "SELECT id FROM categorias WHERE tipo = 'ingreso' LIMIT 1;"
@@ -122,7 +122,7 @@ def main() -> None:
     montos_ordenados = [g["monto_total_minor"] for g in gasto_mayo]
     caso("get_gasto_por_categoria() ordena de mayor a menor", True, montos_ordenados == sorted(montos_ordenados, reverse=True))
     # El mayor gasto del mes es Alquiler (80000), por encima de Supermercado (50000) y Salud (15000).
-    caso("get_gasto_por_categoria() el mayor gasto del mes es Alquiler, con su categoria_nombre correcto", "Alquiler / Vivienda", gasto_mayo[0]["categoria_nombre"])
+    caso("get_gasto_por_categoria() el mayor gasto del mes es Alquiler, con su categoria_nombre correcto", "VIVIENDA", gasto_mayo[0]["categoria_nombre"])
 
     print("\n--- get_gasto_por_categoria() — dos monedas en la misma categoría/mes, sin mezclar ---")
     insertar_transaccion("2026-05-18", cuenta_usd, cat_super, moneda_usd, "egreso", 4000)
@@ -192,15 +192,21 @@ def main() -> None:
     # ------------------------------------------------------------
     print("\n--- get_comparacion_presupuesto() — los tres casos ---")
 
-    # Caso 1: presupuesto y gasto real (Supermercado, ARS: presupuesto 60000, gasto real 50000)
-    presupuestos_svc.set_budget(categoria_id=cat_super, mes=5, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=60000)
+    # Caso 1: presupuesto y gasto real (Supermercado, ARS: presupuesto 60000, gasto real 50000).
+    # Presupuestos variables con create_variable() (set_budget() no existe desde la
+    # reestructuración de presupuestos, db/schema_migrations.py).
+    presupuestos_svc.create_variable(
+        categoria_id=cat_super, monto_estimado_minor=60000, moneda_id=moneda_ars, mes=5, anio=2026,
+    )
 
     # Caso 2: presupuesto sin gasto real (Alquiler ya tiene gasto — usemos una categoría sin ninguna
     # transacción en mayo: Salud SÍ tiene gasto, así que para "sin gasto" usamos otra categoría nueva).
     cat_educacion = manager.fetchone(
-        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS FIJOS' AND subcategoria = 'Educacion';"
+        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS' AND subcategoria = 'EDUCACIÓN';"
     )["id"]
-    presupuestos_svc.set_budget(categoria_id=cat_educacion, mes=5, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=25000)
+    presupuestos_svc.create_variable(
+        categoria_id=cat_educacion, monto_estimado_minor=25000, moneda_id=moneda_ars, mes=5, anio=2026,
+    )
 
     # Caso 3: gasto real sin presupuesto — Alquiler tiene gasto (80000) pero nunca se le cargó presupuesto.
 

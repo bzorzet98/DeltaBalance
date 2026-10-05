@@ -196,6 +196,19 @@ def main() -> None:
     in_id = resultado_transfer.data["in_transaction_id"]
     caso("create_transfer() devuelve dos transaction_id distintos", True, out_id != in_id)
 
+    # Convención del usuario: cada pata nombra la OTRA cuenta, en mayúsculas.
+    nombre_origen = manager.fetchone("SELECT nombre FROM cuentas WHERE id = ?;", (cuenta_id,))["nombre"]
+    caso(
+        "la salida (egreso del origen) se llama TRANSFERENCIA A <DESTINO>",
+        "TRANSFERENCIA A CUENTA DESTINO",
+        svc.get(out_id)["concepto"],
+    )
+    caso(
+        "la entrada (ingreso al destino) se llama TRANSFERENCIA DESDE <ORIGEN>",
+        f"TRANSFERENCIA DESDE {nombre_origen.upper()}",
+        svc.get(in_id)["concepto"],
+    )
+
     vinculo = manager.fetchone(
         "SELECT * FROM autotransferencias WHERE transaccion_salida_id = ? AND transaccion_entrada_id = ?;",
         (out_id, in_id),

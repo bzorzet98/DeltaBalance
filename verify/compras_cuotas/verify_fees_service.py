@@ -117,7 +117,7 @@ def main() -> None:
 
     print("\n--- create_purchase() — validaciones de negocio intactas ---")
     caso_excepcion(
-        "create_purchase() con total_amount<=0 sigue lanzando FeesError",
+        "create_purchase() con total_amount=0 sigue lanzando FeesError",
         FeesError,
         lambda: svc.create_purchase(
             date_str="2026-01-05", concept="X", account_id=cuenta_a, category_id=cat_egreso,

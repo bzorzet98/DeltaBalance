@@ -71,6 +71,9 @@ correspondiente — nunca como `ingresos_proyectados`, para no contar la plata d
   activo al momento del rendimiento.
 - **Ventas/retiros**: asignación explícita a un objetivo puntual (el usuario elige de
   qué "sobre" sale la plata) — no se prorratea automático.
+- **Vigente otra vez desde la sección 31** (después de un rediseño que puso un reparto
+  fijo por activo): cada movimiento elige sus objetivos; el rendimiento es proporcional
+  por defecto y editable.
 - **Pendiente**: la validación de que la suma de `porcentaje` por `movimiento_id` no
   supere el 100% no se puede expresar en SQLite con un CHECK de columna (no ve otras
   filas de la tabla) — queda para la capa de servicio (`SavingsService`, fase futura),
@@ -390,10 +393,12 @@ mismo mecanismo de routing por categoría ya construido para "Impuesto tarjeta"/
 - **`create_transfer()` exige `category_id`** (no es opcional, a diferencia de
   `register_purchase()`/`register_sale()` de la sección 16) — se le pasa el id de
   la propia categoría "Autotransferencia" elegida en la fila. `create_transfer()`
-  tampoco tiene parámetro `concept` (hardcodea "Auto-transfer (out/in)" en las dos
-  transacciones que genera, firma real revisada antes de implementar) — el
-  concepto tipeado en la fila viaja como `notes` en su lugar, el mapeo más cercano
-  disponible.
+  tampoco tiene parámetro `concept` — el concepto tipeado en la fila viaja como
+  `notes` en su lugar, el mapeo más cercano disponible. Los conceptos los arma el
+  service con la convención del usuario: la salida "TRANSFERENCIA A <CUENTA
+  DESTINO>" y la entrada "TRANSFERENCIA DESDE <CUENTA ORIGEN>"
+  (`CONCEPTO_TRANSFERENCIA_SALIDA` / `_ENTRADA`; antes hardcodeaba "Auto-transfer
+  (out/in)").
 - **El signo tipeado en Monto se ignora en ambos flujos especiales** (se usa
   `abs(monto)`): a diferencia de una categoría normal, acá el tipo de movimiento lo
   fuerza el método de destino (`create_transfer()` siempre arma egreso+ingreso;
@@ -806,6 +811,13 @@ seed, con los mismos ids en toda base.
 - `sync_cambios(tabla, clave, operacion, modificado_en)`, que llenan triggers AFTER
   INSERT / UPDATE / DELETE en cada tabla. Así una edición y un borrado también
   viajan, sin tocar ningún service ni repositorio.
+- Cada trigger hace `DELETE` de la anotación anterior de la fila + `INSERT` de la
+  nueva, no `INSERT OR REPLACE`: dentro de un trigger SQLite usa la política de
+  conflicto de la sentencia que lo dispara, y un upsert (`ON CONFLICT DO UPDATE`, ej.
+  `tarjetas_config`) la fuerza a ABORT — con un cambio pendiente, guardar dos veces
+  rompía con `UNIQUE constraint failed: sync_cambios.tabla, sync_cambios.clave`.
+  `preparar_sync()` rehace los triggers en cada `inicializar()`, así una base vieja
+  toma la definición nueva.
 - `sync_estado`: la marca con la que la sync apaga esos triggers mientras escribe,
   dentro de su propia transacción. Nunca se comitea.
 
@@ -1073,6 +1085,17 @@ como filas con ícono de recibo: Categoría = la especial, Monto con signo, Cuot
 barra flotante, compartir los saltea, y un botón de recibo en la barra del total los
 muestra u oculta (el total los cuenta siempre).
 
+**En qué resumen entra un cargo** (pedido explícito): el de la **1ª cuota** de la fila
+de alta, no el de su fecha. La fecha es la del hecho (ej. la devolución del súper),
+y puede llegar en otro resumen. La 1ª cuota se sugiere igual que para una compra
+(`suggest_first_fee()`) y se puede cambiar a cualquier mes. El service ya lo permitía:
+`add_extra_charge()` no ata `date_str` al mes del resumen.
+
+**Signo del monto** (pedido explícito): positivo o negativo con cualquier categoría.
+Es cuidado del usuario, no una validación del sistema. `create_purchase()` acepta
+totales negativos (una devolución: total y cuotas negativos) y solo rechaza el 0; la
+pantalla ya no bloquea "monto negativo con categoría normal".
+
 **Efecto a tener en cuenta:** al ser compras de una categoría, cualquier reporte que
 sume `compras_cuotas` por categoría ve los cargos en "Impuesto tarjeta" / "Recargo
 tarjeta" / "Ajuste/Reintegro tarjeta".
@@ -1131,3 +1154,339 @@ anio)` al bajar y se cuenta como error (sección 24: una computadora por usuario
 la vez).
 
 Verificación: `verify/compras_cuotas/verify_tarjetas_resumenes.py`.
+
+## 30. Reestructuración del catálogo de categorías — ✅ implementado (`migration/reestructurar_categorias.py`, sin cambio de schema)
+
+**Catálogo final** (`CATEGORIAS_FINALES` del script = sección CATEGORIAS de `db/seed.sql`):
+todo en MAYÚSCULAS, los egresos bajo una sola categoría principal `EGRESOS` (antes
+`EGRESOS FIJOS` / `EGRESOS VARIABLES`), `INGRESOS`, `MOVIMIENTO CAPITAL` y `TARJETA DE
+CRÉDITO`. `EGRESOS / EGRESO VARIABLE` es transitoria.
+
+**Migración de una base existente** (`MAPA_MIGRACION`: nombre viejo exacto → nombre
+final). Decisión con el usuario: **renombrar en el lugar**, no crear una categoría
+nueva por cada una:
+
+- Si el destino no existe, la categoría vieja toma el nombre y el tipo nuevos con el
+  **mismo id**: ninguna transacción, compra, presupuesto ni gasto compartido se toca, y
+  a Supabase sube una sola fila por categoría. Si varias van al mismo destino (Sueldo +
+  BECA → SUELDO / BECA, Impuestos + Servicios → SERVICIOS BÁSICOS…), se renombra la
+  que más filas usan.
+- Las demás se **fusionan**: las filas de cada tabla con una FK a `categorias` (salen de
+  `PRAGMA foreign_key_list`) pasan al destino y la vieja queda `activa = 0` (sección 11:
+  nunca DELETE).
+- Lo que falte de `CATEGORIAS_FINALES` se crea; lo que existe inactivo se reactiva; un
+  tipo distinto se corrige.
+- Un cambio de tipo de categoría (ej. REINTEGRO PROMOCION: egreso → ingreso) se informa
+  con cuántas transacciones de cada tipo de movimiento la usan; el tipo de movimiento de
+  las transacciones no se toca. Una categoría de tipo ingreso no aparece en los
+  selectores que filtran egresos (Compras en cuotas, Presupuestos).
+- Las categorías fuera del mapa y del catálogo (las creadas a mano) quedan como están.
+
+Dry-run por default; `--confirmar` se niega si la app tiene la base abierta, hace backup
+(con el `-wal` ya pasado al archivo) y aplica todo en **una transacción**. Idempotente.
+
+**Código que reconoce categorías por nombre:** `CATEGORIAS_PROTEGIDAS`
+(`services/categorias_service.py`), `CATEGORIAS_CARGO_EXTRA`
+(`services/fees_service.py`), el routing del Registro
+(`ui/components/registro_transacciones.py`), la categoría de ahorro
+(`services/savings_service.py`) y la migración de cargos extra
+(`db/schema_migrations.py`) usan los nombres nuevos y comparan con
+`utils/categorias.py clave_categoria()`: sin espacios de más y en mayúsculas, en Python
+(`UPPER()` de SQLite no pasa la Ó). Así reconocen igual una base todavía sin migrar
+("Impuesto tarjeta") que una migrada ("IMPUESTO TARJETA"). Única excepción: "Sueldo"
+pasa a "SUELDO / BECA" (no es solo mayúsculas): en una base sin migrar deja de estar
+protegida hasta correr el script.
+
+**Sincronización:**
+
+- Todo lo que escribe el script pasa por los triggers de sync y sube en la próxima
+  sincronización.
+- Sincronizar ANTES de correrlo: una fusión reescribe gastos compartidos, y si el otro
+  miembro cambió uno que esta base todavía no bajó, la versión local lo pisaría
+  (last-write-wins).
+- Correrlo en la base de CADA miembro: un gasto compartido lleva su categoría por nombre
+  (sección 27, comparación exacta en `SyncRepository.id_por_clave_natural()`); una base
+  con los nombres viejos no reconoce los nuevos y crea una categoría inactiva con ese
+  nombre.
+
+**Quedan con los nombres viejos** (no se tocaron): los scripts históricos de
+`migration/` (`agregar_categoria_*.py`, `migrar_*.py` — no volver a correrlos sobre una
+base migrada) y `sync/tests/` (pytest, fuera del flujo de `verify/`).
+
+## 31. Objetivos de ahorro por movimiento — ✅ implementado (sin cambio de schema)
+
+**Problema.** El rediseño de Ahorros e Inversiones había puesto un reparto FIJO por
+activo (`activo_objetivos`: "este FCI es 70% MOTO, 30% TERRENEITOR") del que cada
+movimiento copiaba sus `asignaciones`, y el resumen por objetivo calculaba saldo de hoy ×
+porcentaje de hoy. Eso obliga a decidir el reparto al crear el instrumento y a
+recalcularlo cada vez que entra plata para otro objetivo. Pedido del usuario: "ingreso X
+al FCI y de este monto reparto para estos objetivos", en varias cargas, en días
+distintos.
+
+**Decisión.** Vuelve el criterio de la sección 4: los objetivos son de cada
+movimiento. `asignaciones` ya era por movimiento (porcentaje + monto asignado), así que
+no hay cambio de schema.
+
+- **Alta** (`SavingsService.registrar_*()`, parámetro `asignaciones`): lista de
+  `{objetivo_id, porcentaje}`, validada antes de escribir (cada objetivo existe, sin
+  repetir, porcentaje entre 0 y 100, suma ≤ 100). Lo que no llega al 100% queda **sin
+  asignar**. `None` o `[]` = sin objetivos.
+- **Rendimiento** (decisión del usuario: proporcional, editable): sin asignaciones
+  (`None`) se reparte según `get_reparto_proporcional()` — lo que cada objetivo tenía en
+  el activo **antes** de la fecha del rendimiento (un movimiento del mismo día no cuenta:
+  el interés que se acredita hoy lo generó lo que había hasta ayer), en unidades en
+  acciones / CEDEARs y en plata en el resto. Porcentajes con 4 decimales, redondeados
+  con el método del resto mayor para que un reparto que cubría el 100% lo siga
+  cubriendo. Un objetivo en cero o negativo no entra. Con una lista, esa.
+- **Retiros / ventas** (decisión del usuario): solo se valida contra el total del
+  activo, no contra lo de cada objetivo. Un objetivo puede quedar en negativo y el
+  resumen lo muestra así.
+- **Corrección** (`update_asignaciones()`): reemplaza las asignaciones de un movimiento
+  ya cargado, también si está vinculado a una transacción del Registro (la transacción
+  depende del monto y la fecha, no de los objetivos — sección 9 / CLAUDE.md §4). No
+  recalcula otros movimientos: un rendimiento proporcional ya cargado conserva su
+  reparto (se puede recalcular desde su celda con "USAR REPARTO PROPORCIONAL").
+- **Resumen** (`get_resumen_por_tipo()` / `get_resumen_por_objetivo()`): la parte de
+  cada objetivo en cada activo es la suma de lo asignado (aportes, compras y
+  rendimientos suman; ventas y retiros restan); en unidades, cantidad × porcentaje de
+  cada movimiento. SIN ASIGNAR = el total del activo menos esas partes.
+
+**`activo_objetivos` queda DEPRECATED:** nada la lee ni la escribe
+(`assign_objetivo()` / `remove_objetivo()` se borraron del service, y su UI — el botón
+OBJETIVOS de la tarjeta y la sección OBJETIVOS al crear un activo — también), salvo
+borrar las filas de un objetivo que se elimina (sección 32, por la FK). La tabla no se
+borra: puede tener filas (mismo criterio que `resumen_cargos_extra`, sección 28). Las
+tablas de ahorros no están en `TABLAS_SINCRONIZADAS`: cada base tiene los suyos. Una base que ya tenía repartos cargados: los
+movimientos registrados con ese reparto conservan sus asignaciones; los cargados antes
+de definirlo quedan SIN ASIGNAR y se corrigen desde la celda OBJETIVOS.
+
+**UI** (`ui/screens/ahorros.py`): la celda OBJETIVOS de la tabla de movimientos (fila
+de alta y filas ya cargadas) abre `dialogo_compra_ahorro.construir_objetivos_movimiento()`
+(objetivo + %, el monto de cada fila, "+ CREAR NUEVO OBJETIVO" ahí mismo, ASIGNADO · SIN
+ASIGNAR). La fila de alta conserva los objetivos elegidos entre cargas; un RENDIMIENTO
+arranca en PROPORCIONAL. El diálogo de movimiento de la tarjeta tiene la misma sección.
+
+Verify: `verify/ahorros/verify_objetivos_por_movimiento.py`.
+
+## 32. Editar y eliminar objetivos de ahorro — ✅ implementado (sin cambio de schema)
+
+Pedido del usuario: poder editar los objetivos y eliminarlos eligiendo cómo se reparten
+los instrumentos que tenían.
+
+**Editar** (`SavingsService.update_objetivo()`): nombre, meta y fecha meta, edición
+directa (sección 9): las asignaciones lo referencian por id y nada depende del nombre
+ni de la meta. `create_objetivo()` y `update_objetivo()` validan lo mismo
+(`_datos_objetivo()`: nombre no vacío, meta entera > 0 o sin meta, fecha meta
+AAAA-MM-DD o sin fecha). El `estado` (activo / cumplido / cancelado) no se edita desde
+la app.
+
+**Eliminar** (`delete_objetivo(objetivo_id, repartos)`): el objetivo tiene dependencias
+(sus `asignaciones`), así que no se borra en silencio: antes se pasa su parte a otros
+objetivos, elegida por el usuario por cada instrumento (`repartos`: activo_id →
+`[{objetivo_id, porcentaje}]`, suma ≤ 100, lo que falta queda sin asignar).
+
+- Cada asignación del objetivo en un instrumento se reparte con esos porcentajes y se
+  suma a la que el destino ya tuviera en el mismo movimiento. Como es lineal, la parte
+  que tenía en el instrumento (saldo o unidades) pasa entera en esa proporción, y el
+  historial de cada movimiento queda coherente con el resumen. Montos con el redondeo
+  del alta.
+- `get_partes_de_objetivo()` lista los instrumentos a repartir, también aquellos donde
+  el objetivo quedó en cero (ej. un plazo fijo ya retirado): ahí solo cambia a quién
+  figura el historial; la UI los deja sin asignar por defecto.
+- No se puede repartir hacia el mismo objetivo.
+- DELETE físico (`objetivos_ahorro` no tiene soft-delete), en una transacción con la
+  reescritura de las asignaciones y el borrado de sus filas en `activo_objetivos`
+  (deprecated, sección 31: la FK lo exige).
+- Las tablas de ahorros no se sincronizan: el borrado es solo de esta base.
+
+**UI** (`ui/screens/ahorros.py`): ✎ y 🗑 junto a cada objetivo en RESUMEN · POR
+OBJETIVO, que ahora lista todos los objetivos (también los que no tienen nada) con su
+meta. 🗑 abre `dialogo_compra_ahorro.construir_eliminar_objetivo()`: un editor de reparto
+por instrumento, sin "+ CREAR NUEVO OBJETIVO" (cada editor tiene su propia lista; un
+objetivo creado desde uno no aparecería en los otros) — el destino nuevo se crea antes
+con + NUEVO OBJETIVO.
+
+Verify: `verify/ahorros/verify_editar_eliminar_objetivos.py`.
+
+## 33. Moneda por movimiento en Ahorros e Inversiones — ✅ implementado (vía `db/schema_migrations.py`)
+
+Pedido del usuario: un CEDEAR se compra en pesos y se vende en dólares (MEP); la moneda
+tiene que ser de cada movimiento, no solo del activo.
+
+**Schema.** `movimientos_activo.moneda_id INTEGER REFERENCES monedas(id)`, agregada por
+`MIGRACIONES_COLUMNA` (no está en `db/schema.sql`, mismo criterio que `comision_minor` o
+`transaccion_id`). Nullable porque SQLite no admite un `ADD COLUMN ... NOT NULL` con FK
+y sin default; el backfill pone la moneda del activo en las filas que ya existían, y
+`SavingsService` la escribe siempre (también los métodos viejos `register_purchase()`,
+`register_sale()` y `register_return()`). Las lecturas que agrupan por moneda usan
+`COALESCE(ma.moneda_id, af.moneda_id)` por las dudas. La columna también está en
+`DDL_MOVIMIENTOS_FINAL`: `ampliar_tipos_ahorro()` corre después de las migraciones de
+columna y reconstruye la tabla en una base vieja; sin eso, la perdería.
+
+**Dónde puede ser otra moneda (decisión del usuario): solo en acciones / CEDEARs**
+(`TIPOS_POR_UNIDADES`). En FCI, plazos y el resto la moneda de un movimiento es siempre
+la del activo: un FCI en dólares es otro activo. `SavingsService._moneda_movimiento()`
+lo aplica en `registrar_compra/venta/rendimiento()` (parámetro `moneda_id`, None = la
+del activo) y en `update_movement(moneda_id=...)`; `registrar_aporte/retiro()` no lo
+reciben.
+
+**Por qué alcanza con eso para no mezclar monedas.** Todo lo que se calcula en plata
+sobre un activo (saldo, validación de retiros, parte de cada objetivo, reparto
+proporcional de un rendimiento) sigue sumando montos sin mirar la moneda. Eso es
+correcto en los activos que tienen una sola moneda. En acciones / CEDEARs lo que manda
+son las **unidades**, que no tienen moneda: tenencia, reparto entre objetivos,
+proporcional de un dividendo, validación de una venta. Lo único en plata que se
+muestra de ellas es el **precio promedio**, que ahora va **por moneda**
+(`_precios_promedio()`: monto bruto / unidades de las compras de cada moneda). Su
+`saldo_minor` puede mezclar monedas y no se muestra. `get_balance_por_tipo()` agrupa
+por la moneda del movimiento.
+
+**Compra / venta por monto bruto (decisión del usuario).** Se cargan CANTIDAD + MONTO,
+ya no el precio unitario. MONTO = cantidad × precio, **sin** la comisión: compra total
+= monto + comisión, venta total = monto − comisión (igual que antes). El precio
+unitario se guarda calculado (`round(monto / cantidad)`) y no se edita;
+`update_movement(monto_minor=...)` en una compra / venta es el bruto
+(`_monto_bruto()`), y `list_movimientos()` lo devuelve como `monto_minor`. Las filas
+viejas (cargadas por cantidad × precio) tienen el mismo bruto: total − comisión.
+
+**Transacción vinculada** del Registro: en la moneda del movimiento (si la cuenta no
+operaba en esa moneda, `TransaccionesRepository` le crea el saldo en 0, sección 14).
+
+**Firma.** `registrar_compra/venta(activo_id, cantidad, monto_minor, comision_minor,
+fecha, ..., moneda_id=None)`: `moneda_id` va al final y se conservan `notas`,
+`crear_transaccion` y `asignaciones` (el pedido proponía otra firma que los dejaba
+afuera y corría los posicionales).
+
+**Pendiente (no se tocó):** `get_balance_por_activo()` devuelve un saldo por activo que
+en un CEDEAR con movimientos en dos monedas las mezcla, y `get_objetivo_balance()` suma
+montos de activos en distintas monedas (ya lo hacía antes); ninguno lo usa la UI. Al
+vincular una transacción existente del Registro no se valida que esté en la misma
+moneda que el movimiento. La Σ de la barra flotante de la tabla suma los montos
+seleccionados sin mirar su moneda.
+
+Verify: `verify/ahorros/verify_moneda_movimiento.py`.
+
+## 34. Dashboard: resumen del mes y balance DISPONIBLE — ✅ implementado (sin cambio de schema)
+
+Pantalla DASHBOARD (`ui/screens/resumen_mes.py`, la que abre la app; `ui/screens/
+dashboard.py` es, por historia, la del Registro) alimentada por
+`DashboardService.get_resumen_mes(mes, anio, usuario_local, moneda_codigo)`. Solo
+lectura: compone los services de cada dominio y no duplica sus reglas.
+
+**Una moneda por resumen.** Nunca se suman pesos con dólares: el resumen es de una
+moneda (ARS por defecto) y `monedas_disponibles` lista las que tienen datos ese mes
+(la pantalla muestra pills para cambiar).
+
+**De dónde sale cada número (decisiones del usuario):**
+
+- **Ingresos:** `IngresosService.list_by_month()`, estimado y cobrado, en total y por
+  concepto.
+- **Egresos fijos:** presupuestos `fijo` del mes, estimado y pagado (real cargado a
+  mano), en total y por concepto; lo que **falta pagar** de cada uno (estimado − real,
+  nunca negativo) se muestra como dato.
+- **Cuotas:** `FeesService.resumen_por_tarjeta()`, el total de cada tarjeta.
+- **Gastos del Registro:** egresos del mes por categoría, salvo
+  `CATEGORIAS_EXCLUIDAS_GASTOS` (constante en `services/dashboard_service.py`, pedido
+  del usuario para poder editarla: hoy AUTOTRANSFERENCIA y PAGO TARJETA — este último
+  ya está en las cuotas). El real es el de `PresupuestosService.get_real_variable()`:
+  un gasto compartido que pagó el usuario cuenta solo su parte. Estimado: el
+  presupuesto variable de la categoría, si tiene; las categorías con presupuesto y sin
+  gasto aparecen en 0. Las de `CATEGORIAS_DE_FIJOS` (otra constante editable: hoy
+  VIVIENDA, SERVICIOS BÁSICOS y SEGUROS — donde el usuario paga sus fijos) se muestran
+  como información de EGRESOS FIJOS pero no son "gastos variables" del balance: ya
+  cuentan como egresos fijos.
+- **Gastos compartidos:** la parte del usuario de lo que pagó el OTRO miembro en el mes
+  (`monto_adeudado_minor` con pagador ≠ usuario local), por categoría — la regla del
+  ítem COMPARTIDOS de Presupuestos. **Informativo: no entra en el balance** (lo que
+  debe de eso ya está en las deudas).
+- **Deudas — ACUMULADO hasta el último día del mes, sin filtro de mes** (la pantalla lo
+  aclara): informales, `DebtsService.summary_by_person()` de cada tab; compartidos, el
+  pendiente (`monto_pendiente_minor`, ya descuenta pagos parciales) de los gastos
+  `pendiente`: los que pagó el usuario se los deben (persona: los otros miembros del
+  hogar), los que pagó otro los debe él (persona: quien pagó). Un saldo negativo pasa
+  al otro lado (alguien que pagó de más: se le debe).
+- **DISPONIBLE, en dos modos** (switch ESTIMADO / REAL de la pantalla; el service
+  devuelve los dos en `balance[modo]`):
+  - ESTIMADO = ingresos estimados − fijos estimados − cuotas − gastos variables
+    estimados + neto de deudas;
+  - REAL = ingresos cobrados − fijos pagados − cuotas − gastos variables reales + neto
+    de deudas.
+
+  Gastos variables = GASTOS DEL MES sin las categorías de fijos. En REAL, lo gastado
+  de cada categoría. En ESTIMADO (decisión del usuario, para ver lo real y lo
+  proyectado juntos), lo gastado **más lo que falta** de su presupuesto (presupuesto −
+  gastado, nunca negativo) — en la práctica el mayor de los dos: si ya se pasó, resta
+  lo gastado; **sin presupuesto, resta lo gastado** (antes, 0: lo gastado en
+  categorías sin presupuesto no aparecía en el ESTIMADO).
+  `DashboardService._gasto_variable()`. (La primera versión restaba los fijos que
+  faltaban pagar, los gastos del Registro y los compartidos; se reemplazó por estas
+  fórmulas.)
+
+**Doble conteo que queda.** Un gasto compartido que pagó el usuario cuenta en GASTOS solo
+con su parte, y lo que le debe el otro de ese gasto suma además en las deudas
+(acumuladas): el DISPONIBLE queda por encima por esa parte del otro mientras esté
+pendiente. Lo que pagó el otro ya no se cuenta dos veces (los gastos compartidos
+salieron del balance). Se dejó así: el usuario eligió deudas con todo lo acumulado.
+
+**Calculadora de escenarios.** Cada modo trae además `grupos` — el DISPONIBLE desarmado
+en ítems: ingresos y fijos por concepto, cuotas por tarjeta, variables por categoría y
+el neto de deudas — con `aporte_minor` con signo (la suma es el DISPONIBLE) e ids que no
+dependen del modo. `DashboardService.calcular_escenario(balance_modo, excluidos,
+ajuste_minor)` (función pura) da el DISPONIBLE sin los ítems excluidos y con un ajuste
+manual. La pantalla guarda lo excluido y el ajuste en `.deltabalance_prefs.json` bajo
+`balance_escenario_{mes}_{anio}_{moneda}` (por moneda: la misma tarjeta puede tener
+cuotas en ARS y en USD; se guarda lo EXCLUIDO, así lo nuevo aparece marcado). Es un
+"qué pasaría si" de la pantalla: no cambia ningún dato.
+
+**Moneda de un gasto compartido** sin origen en esta base (lo pagó el otro con una
+transacción que no se sincroniza): `MONEDA_SIN_ORIGEN_CODIGO`, como Presupuestos.
+`SnapshotsService` en cambio los saltea: el SALDO ANTERIOR de Compartidos no los
+cuenta (inconsistencia previa, no se tocó).
+
+**Sin usuario local** no se sabe qué pagó cada uno: no hay gastos compartidos y las
+deudas son solo las informales (`sin_usuario_local`).
+
+**Pantalla: una sola tarjeta** (pedido del usuario). No hay tarjetas aparte por dominio:
+el BALANCE expandido es el dashboard entero. Cada grupo muestra sus ítems con checkbox y,
+debajo, en gris, lo que no suma al DISPONIBLE: COBRADOS / ESTIMADOS de los ingresos,
+PAGADOS · FALTA de los fijos (y lo del Registro en categorías de fijos), la barra real /
+presupuesto de cada gasto variable, y ME DEBEN / DEBO por persona bajo el neto de deudas.
+Todo sale del mismo `get_resumen_mes()`; el service no cambió.
+
+Verify: `verify/dashboard/verify_resumen_mes.py`.
+
+## 35. Editar, eliminar y ocultar instrumentos de ahorro — ✅ implementado (sin cambio de schema)
+
+Pedido del usuario. Reglas de CLAUDE.md §4 aplicadas a `activos_financieros`:
+
+- **Editar** (`SavingsService.update_activo()`): nombre, broker, cuenta y comisiones por
+  defecto, directo (nada guardado depende de ellos; la cuenta nueva vale para los
+  movimientos que se carguen desde ahora, las transacciones ya vinculadas quedan en la
+  suya). `NO_CAMBIAR` = no tocar; `None` desvincula broker o cuenta. **El tipo no se
+  edita.** **La moneda, solo si el instrumento no tiene ningún movimiento** (decisión
+  del usuario): cada movimiento guarda su moneda (sección 33) y en FCI y plazos tiene
+  que ser la del activo.
+- **Eliminar** (`delete_activo()`): **solo sin ningún movimiento** (sin dependencias:
+  borrado directo, junto con sus filas del reparto deprecated `activo_objetivos`, que la
+  FK exige borrar antes). Con historial — aunque el saldo sea 0 — se rechaza.
+- **Ocultar** (`ocultar_activo()`, `activa = 0`): para un instrumento con historial que
+  ya no tiene tenencia. "Sin tenencia" = **0 unidades en acciones / CEDEARs** (su saldo
+  en plata puede mezclar monedas o quedar distinto de 0 si se vendió más caro) y **saldo
+  0 en el resto**. No borra nada; `reactivar_activo()` lo vuelve a mostrar.
+- Con tenencia: ni eliminar ni ocultar.
+
+`get_resumen_por_tipo(incluir_ocultos=True)` trae los ocultos (con `activa`,
+`movimientos` y `con_tenencia`, para que la pantalla decida qué ofrecer) y
+`list_movimientos()` marca los de un oculto (`activo_activa`). La pantalla de Ahorros
+los esconde del RESUMEN, de las tarjetas, de la fila de alta y de la tabla, salvo con
+"MOSTRAR OCULTOS" en su pestaña (ahí aparecen atenuados con REACTIVAR).
+
+Repositorios: `ActivosFinancierosRepository.eliminar()` y `cuenta_id` en `actualizar()`;
+`ActivoObjetivosRepository.eliminar_por_activo()`.
+
+**Pendiente (no se tocó):** `get_or_create_reserved_cash_asset()` (el "Efectivo
+reservado en <cuenta>" del Registro) reusa el activo de esa cuenta aunque esté oculto:
+lo que se reserve después queda en un instrumento escondido.
+
+Verify: `verify/ahorros/verify_eliminar_instrumento.py`,
+`verify/ahorros/verify_editar_instrumento.py`.

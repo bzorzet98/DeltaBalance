@@ -71,7 +71,7 @@ def main() -> None:
     svc = FeesService(manager)
 
     usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
-    categoria_normal = manager.fetchone("SELECT id FROM categorias WHERE subcategoria = 'Supermercado';")["id"]
+    categoria_normal = manager.fetchone("SELECT id FROM categorias WHERE subcategoria = 'SUPERMERCADO';")["id"]
 
     def compra(compra_id: str) -> dict:
         fila = manager.fetchone(
@@ -111,7 +111,7 @@ def main() -> None:
     caso("está en compras_cuotas con es_cargo_extra = 1", 1, fila.get("es_cargo_extra"))
     caso("… 1 cuota, total y cuota = el monto del cargo", (1, 30000, 30000),
          (fila.get("total_cuotas"), fila.get("monto_total_minor"), fila.get("monto_por_cuota_minor")))
-    caso("… con la categoría especial de su tipo", "Impuesto tarjeta", fila.get("categoria"))
+    caso("… con la categoría especial de su tipo", "IMPUESTO TARJETA", fila.get("categoria"))
     caso("… su fecha y su moneda", ("2026-07-20", "ARS"), (fila.get("fecha_compra"), fila.get("moneda")))
     cuotas_paises = cuotas(paises)
     caso("tiene UNA cuota en cuotas_credito", 1, len(cuotas_paises))
@@ -182,7 +182,7 @@ def main() -> None:
 
     fila = compra(sellos)
     caso("SELLOS pasó a compras_cuotas con el MISMO id", 1, fila.get("es_cargo_extra"))
-    caso("… con su moneda (USD), su fecha y su categoría", ("USD", "2026-08-10", "Impuesto tarjeta"),
+    caso("… con su moneda (USD), su fecha y su categoría", ("USD", "2026-08-10", "IMPUESTO TARJETA"),
          (fila.get("moneda"), fila.get("fecha_compra"), fila.get("categoria")))
     caso("… y su cuota en agosto, en su resumen", (8, 2026, resumen_agosto, "en_resumen", 1500), tuple(
         cuotas(sellos)[0][k] for k in ("mes_proyectado", "anio_proyectado", "resumen_id", "estado", "monto_cuota_minor")
@@ -190,7 +190,7 @@ def main() -> None:
     fila = compra(reintegro)
     caso("REINTEGRO VIEJO (sin moneda ni fecha): ARS — la única de la tarjeta — y el día 1 del mes",
          ("ARS", "2026-08-01", -800), (fila.get("moneda"), fila.get("fecha_compra"), fila.get("monto_total_minor")))
-    caso("… con la categoría de ajuste", "Ajuste/Reintegro tarjeta", fila.get("categoria"))
+    caso("… con la categoría de ajuste", "AJUSTE/REINTEGRO TARJETA", fila.get("categoria"))
     caso("el cargo de un resumen pagado queda con su cuota 'pagado'", "pagado", cuotas(iva_pagado)[0]["estado"])
     caso("los migrados quedan pendientes de subir (sincronizado_en NULL)", (None, None),
          (compra(sellos).get("sincronizado_en"), cuotas(sellos)[0]["sincronizado_en"]))

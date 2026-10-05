@@ -633,10 +633,14 @@ CREATE TABLE IF NOT EXISTS asignaciones (
 -- =============================================================
 -- ACTIVO OBJETIVOS (reparto vigente de un activo entre objetivos)
 -- =============================================================
+-- DEPRECATED (docs/DATA_MODEL_DECISIONS.md sección 31): los objetivos son
+-- de cada movimiento (`asignaciones`), ya no hay un reparto fijo por
+-- activo. Nada la lee ni la escribe (salvo borrar las filas de un objetivo
+-- que se elimina, por la FK); queda por las bases que ya tienen filas.
 -- Qué porcentaje de un activo es de cada objetivo de ahorro. Cada
--- movimiento nuevo del activo genera sus `asignaciones` con estos
+-- movimiento nuevo del activo generaba sus `asignaciones` con estos
 -- porcentajes (SavingsService). Misma limitación que asignaciones: la suma
--- por activo_id (<= 100) no entra en un CHECK — la valida el service.
+-- por activo_id (<= 100) no entra en un CHECK — la validaba el service.
 CREATE TABLE IF NOT EXISTS activo_objetivos (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 

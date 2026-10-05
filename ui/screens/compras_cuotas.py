@@ -91,26 +91,33 @@ arma el cronograma desde ahí. La sugiere FeesService.suggest_first_fee()
 cierre y la compra es posterior) y se vuelve a sugerir al cambiar la
 tarjeta o la fecha, hasta que se edita a mano (tipeando o con ◀ ▶: a partir
 de ahí queda la elegida). Cualquier mes vale, también uno anterior al de
-la compra (pedido explícito: es responsabilidad del usuario). No aplica a
-un cargo extra (se deshabilita como Cuotas).
+la compra (pedido explícito: es responsabilidad del usuario). En un cargo
+extra también se usa (pedido explícito): es el mes del resumen en que
+entra, que no tiene por qué ser el de su fecha — una devolución del súper
+de un día puede llegar en el resumen siguiente. Se sugiere igual que para
+una compra.
 
-Routing por CATEGORÍA al confirmar (sin cambios):
-- Categoría NORMAL: FeesService.create_purchase() con el monto, la
-  cantidad de cuotas y el tag (vacío = None) tal cual se cargaron. El monto
-  DEBE ser positivo.
-- Categoría ESPECIAL ("Impuesto tarjeta"/"Recargo tarjeta"/
-  "Ajuste/Reintegro tarjeta", services/fees_service.py
-  CATEGORIAS_CARGO_EXTRA): NO crea una compra — resuelve el resumen de esa
-  tarjeta y el mes/año de la fecha (FeesService.open_statement(),
+Routing por CATEGORÍA al confirmar. El monto puede ser positivo o negativo
+con cualquier categoría (pedido explícito: el signo es cuidado del
+usuario, no una validación del sistema); solo el 0 se rechaza.
+- Categoría NORMAL: FeesService.create_purchase() con el monto (con su
+  signo: negativo = devolución), la cantidad de cuotas, la 1ª cuota y el
+  tag (vacío = None) tal cual se cargaron.
+- Categoría ESPECIAL ("IMPUESTO TARJETA"/"RECARGO TARJETA"/
+  "AJUSTE/REINTEGRO TARJETA", services/fees_service.py
+  CATEGORIAS_CARGO_EXTRA, por nombre sin distinguir mayúsculas —
+  charge_type_de_categoria()): NO crea una compra — resuelve el resumen de esa
+  tarjeta del mes de la 1ª cuota (FeesService.open_statement(),
   idempotente) y carga un cargo extra (add_extra_charge()) con el monto CON
   su signo, la moneda y la fecha de la fila (docs/DATA_MODEL_DECISIONS.md
-  sección 28). Cuotas se deshabilita al elegir una de estas categorías. El
-  tag no se usa: los cargos extra no tienen.
+  sección 28). Cuotas se deshabilita al elegir una de estas categorías
+  (siempre 1). El tag no se usa: los cargos extra no tienen.
 
 --- Filas ---
 
-Devoluciones y reintegros (monto_total_minor negativo, típicamente
-migrados desde el Excel) son filas normales: el monto se muestra "−" en
+Devoluciones y reintegros (monto_total_minor negativo: migrados desde el
+Excel o cargados así desde la fila de alta, con cualquier categoría) son
+filas normales: el monto se muestra "−" en
 TEXT_NEGATIVO; las compras (monto_total_minor positivo, lo que se paga),
 "+" en TEXT_POSITIVO (pedido explícito).
 
@@ -201,7 +208,7 @@ import flet as ft
 
 from services.accounts_service import AccountsService
 from services.categorias_service import CategoriasService
-from services.fees_service import CATEGORIAS_CARGO_EXTRA, FeesError, FeesService
+from services.fees_service import FeesError, FeesService, charge_type_de_categoria
 from services.shared_expenses_service import SharedExpensesService
 from ui.components import compartir_compra
 from ui.components.campo_monto import CampoMonto
@@ -394,11 +401,13 @@ def build(
     )
     categorias = [dict(c) for c in categorias_service.list_categories(tipo="egreso")]
     monedas_por_codigo = {m["codigo"]: dict(m) for m in accounts_service.list_currencies()}
-    # id REAL (varía entre bases) de cada categoría especial → charge_type.
+    # id REAL (varía entre bases) de cada categoría especial → charge_type
+    # (por nombre, sin distinguir mayúsculas: FeesService.charge_type_de_categoria()).
+    charge_type_por_id = {
+        str(c["id"]): charge_type_de_categoria(c["categoria_principal"], c["subcategoria"]) for c in categorias
+    }
     mapa_categoria_a_charge_type: dict[str, str] = {
-        str(c["id"]): CATEGORIAS_CARGO_EXTRA[(c["categoria_principal"], c["subcategoria"])]
-        for c in categorias
-        if (c["categoria_principal"], c["subcategoria"]) in CATEGORIAS_CARGO_EXTRA
+        id_categoria: charge_type for id_categoria, charge_type in charge_type_por_id.items() if charge_type is not None
     }
     opciones_tarjeta = [(str(c["id"]), c["nombre"]) for c in tarjetas_activas]
     opciones_categoria_alta = [(str(c["id"]), c["subcategoria"]) for c in categorias]
@@ -881,11 +890,9 @@ def build(
             _guardar_borrador_alta()
 
         def _habilitar_cuotas(id_categoria: str) -> None:
-            # Cuotas y 1ª cuota no aplican a un cargo extra (categoría especial).
-            es_cargo_extra = id_categoria in mapa_categoria_a_charge_type
-            campo_cuotas.disabled = es_cargo_extra
-            celda_primera.disabled = es_cargo_extra
-            campo_primera.disabled = es_cargo_extra
+            # Un cargo extra (categoría especial) es siempre de 1 cuota; la
+            # 1ª cuota sí se usa: es el mes del resumen en que entra.
+            campo_cuotas.disabled = id_categoria in mapa_categoria_a_charge_type
 
         def _on_categoria(id_categoria: Optional[str]) -> None:
             if id_categoria is not None:
@@ -1021,7 +1028,7 @@ def build(
             return
         fecha_str = (alta_refs["fecha"].value or "").strip()
         try:
-            fecha = datetime.strptime(fecha_str, "%Y-%m-%d")
+            datetime.strptime(fecha_str, "%Y-%m-%d")  # solo valida el formato
         except ValueError:
             _mostrar_error("LA FECHA DEBE TENER EL FORMATO AAAA-MM-DD.")
             return
@@ -1037,17 +1044,20 @@ def build(
 
         cuenta_id = campo_tarjeta.id_seleccionado
         categoria_id = campo_categoria.id_seleccionado
-        # Routing por categoría (ver docstring del módulo): el signo por sí
-        # solo no decide nada.
+        # Routing por categoría (ver docstring del módulo): el signo no
+        # decide nada ni se valida — positivo o negativo con cualquier
+        # categoría (pedido explícito).
         charge_type = mapa_categoria_a_charge_type.get(campo_categoria.id_seleccionado)
+        # 1ª cuota: para una compra, desde dónde arranca el cronograma; para
+        # un cargo extra, el mes del resumen en que entra. Cualquier mes vale,
+        # sin atarlo a la fecha (pedido explícito).
+        periodo_primera = _leer_periodo(alta_refs["primera"].value)
+        if periodo_primera is None:
+            _mostrar_error(f"LA 1ª CUOTA DEBE TENER EL FORMATO {HINT_PRIMERA_CUOTA}.")
+            return
+        mes_primera, anio_primera = periodo_primera
 
         if charge_type is None:
-            if monto_con_signo < 0:
-                _mostrar_error(
-                    "EL MONTO NO PUEDE SER NEGATIVO CON UNA CATEGORÍA NORMAL — ELEGÍ UNA CATEGORÍA ESPECIAL "
-                    "DE TARJETA (IMPUESTO/RECARGO/AJUSTE-REINTEGRO) PARA CARGAR UN AJUSTE O REINTEGRO."
-                )
-                return
             try:
                 cantidad_cuotas = int((alta_refs["cuotas"].value or "").strip())
             except ValueError:
@@ -1056,12 +1066,6 @@ def build(
             if cantidad_cuotas < 1:
                 _mostrar_error("LA CANTIDAD DE CUOTAS DEBE SER AL MENOS 1.")
                 return
-            periodo_primera = _leer_periodo(alta_refs["primera"].value)
-            if periodo_primera is None:
-                _mostrar_error(f"LA 1ª CUOTA DEBE TENER EL FORMATO {HINT_PRIMERA_CUOTA}.")
-                return
-            # Cualquier mes vale, también uno anterior al de la compra (pedido explícito).
-            mes_primera, anio_primera = periodo_primera
             try:
                 resultado = fees_service.create_purchase(
                     date_str=fecha_str,
@@ -1091,10 +1095,11 @@ def build(
                     f"{_texto_periodo(mes_primera, anio_primera)}."
                 )
         else:
-            # Cargo extra del resumen, con el signo tal cual se tipeó (la
+            # Cargo extra del resumen de la 1ª cuota (no el de la fecha: ver
+            # docstring del módulo), con el signo tal cual se tipeó (la
             # categoría ya clasificó el TIPO de cargo, no su signo).
             try:
-                resultado_resumen = fees_service.open_statement(account_id=cuenta_id, month=fecha.month, year=fecha.year)
+                resultado_resumen = fees_service.open_statement(account_id=cuenta_id, month=mes_primera, year=anio_primera)
                 decimales = monedas_por_codigo.get(moneda_codigo, {}).get("decimales", 2)
                 fees_service.add_extra_charge(
                     statement_id=resultado_resumen.entity_id,
@@ -1109,12 +1114,15 @@ def build(
                 # no hay cargo extra retroactivo sobre un resumen cerrado.
                 _mostrar_error(str(err))
                 return
-            mensaje = f"CARGO EXTRA ({charge_type.upper()}) REGISTRADO EN EL RESUMEN DE {fecha.month:02d}/{fecha.year}."
+            mensaje = (
+                f"CARGO EXTRA ({charge_type.upper()}) REGISTRADO EN EL RESUMEN DE "
+                f"{_texto_periodo(mes_primera, anio_primera)}."
+            )
             # Igual que una compra: va a la tabla y al total del mes de su resumen.
-            if (fecha.month, fecha.year) != (ui["mes"], ui["anio"]):
+            if (mes_primera, anio_primera) != (ui["mes"], ui["anio"]):
                 mensaje += (
                     f" APARECE EN LA TABLA Y EN EL TOTAL DE LA TARJETA DE "
-                    f"{_texto_periodo(fecha.month, fecha.year)}."
+                    f"{_texto_periodo(mes_primera, anio_primera)}."
                 )
 
         # La fila nueva conserva lo cargado (pedido explícito: carga en serie

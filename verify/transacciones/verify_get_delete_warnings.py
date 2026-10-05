@@ -55,12 +55,12 @@ def main() -> None:
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
     cat_transferencia = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
-        "AND subcategoria = 'Autotransferencia';"
+        "AND subcategoria = 'AUTOTRANSFERENCIA';"
     )["id"]
     moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
     categoria_inversiones = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
-        "AND subcategoria = 'Inversiones';"
+        "AND subcategoria = 'INVERSIONES';"
     )["id"]
 
     print("--- get_delete_warnings() sobre una transacción suelta (sin vínculos) ---")

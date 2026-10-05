@@ -68,6 +68,12 @@ su nombre exacto, así que no se consideran protegidas.
 CATEGORIAS_PROTEGIDAS queda como constante de módulo, con motivo explícito
 por entrada, para que quien la lea entienda por qué sin tener que releer
 esta auditoría.
+
+Nombres: desde migration/reestructurar_categorias.py
+(docs/DATA_MODEL_DECISIONS.md sección 30) el catálogo está en mayúsculas y
+"Sueldo" pasó a ser "SUELDO / BECA"; las claves de abajo usan esos nombres
+y se comparan con utils/categorias.py clave_categoria() (sin distinguir
+mayúsculas).
 """
 
 import sqlite3
@@ -77,20 +83,25 @@ from typing import Any, Optional
 from db.database import DatabaseManager
 from repositories.categorias_repository import CategoriasRepository
 from repositories._sentinels import NO_CAMBIAR
+from utils.categorias import clave_categoria
 
 TIPOS_VALIDOS = ("ingreso", "egreso", "movimiento")
 
-# Clave: (categoria_principal, subcategoria) tal como están en la fila —
-# se matchea por nombre, no por id, porque el id varía entre bases (dummy
-# DB de verify/, DB real del usuario, etc.) pero el par de nombres es la
-# identidad estable que describe la auditoría de arriba.
+# Clave: utils/categorias.py clave_categoria() — (categoria_principal,
+# subcategoria) sin espacios de más y en MAYÚSCULAS, los nombres del
+# catálogo desde migration/reestructurar_categorias.py
+# (docs/DATA_MODEL_DECISIONS.md sección 30). Se matchea por nombre, no por
+# id, porque el id varía entre bases (dummy DB de verify/, DB real del
+# usuario, etc.) pero el par de nombres es la identidad estable que describe
+# la auditoría de arriba; normalizado, una base todavía sin reestructurar
+# ("Autotransferencia") se reconoce igual.
 CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
-    ("INGRESOS", "Sueldo"): (
+    ("INGRESOS", "SUELDO / BECA"): (
         "EmpleosService espera esta categoría por convención documentada "
         "(no por id fijo) para vincular recibos de sueldo con transacciones "
         "de ingreso; tests/verify la buscan por este nombre exacto."
     ),
-    ("MOVIMIENTO CAPITAL", "Autotransferencia"): (
+    ("MOVIMIENTO CAPITAL", "AUTOTRANSFERENCIA"): (
         "TransactionService.create_transfer() documenta esta categoría como "
         "la esperada para autotransferencias entre cuentas; tests/verify la "
         "buscan por este nombre exacto."
@@ -106,17 +117,17 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
     # o desactivar cualquiera de las tres rompería ese routing en
     # silencio (dejaría de reconocerlas como especiales, todo lo cargado
     # con esa categoría empezaría a crear compras en cuotas normales).
-    ("TARJETA DE CRÉDITO", "Impuesto tarjeta"): (
+    ("TARJETA DE CRÉDITO", "IMPUESTO TARJETA"): (
         "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
         "tipo='impuesto' en vez de crear una compra en cuotas — ver "
         "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
     ),
-    ("TARJETA DE CRÉDITO", "Recargo tarjeta"): (
+    ("TARJETA DE CRÉDITO", "RECARGO TARJETA"): (
         "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
         "tipo='recargo' en vez de crear una compra en cuotas — ver "
         "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
     ),
-    ("TARJETA DE CRÉDITO", "Ajuste/Reintegro tarjeta"): (
+    ("TARJETA DE CRÉDITO", "AJUSTE/REINTEGRO TARJETA"): (
         "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
         "tipo='ajuste' en vez de crear una compra en cuotas — ver "
         "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
@@ -125,7 +136,7 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
     # en el Registro de transacciones. NOTA: "MOVIMIENTO CAPITAL ·
     # Autotransferencia" ya estaba en esta lista desde antes (ver arriba,
     # sección "Otras categorías..."); solo "Ahorro/Inversión" es nueva acá.
-    ("MOVIMIENTO CAPITAL", "Ahorro/Inversión"): (
+    ("MOVIMIENTO CAPITAL", "AHORRO/INVERSIÓN"): (
         "ui/components/registro_transacciones.py rutea esta categoría a un "
         "mini-diálogo (elegir/crear Objetivo de ahorro) que llama a "
         "SavingsService.register_purchase() con cuenta_id, en vez de crear "
@@ -141,7 +152,7 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
     # opcional) que llama a DebtsService.create(origen_tipo='transaccion',
     # origen_id=<esa transacción>) para vincular una deuda informal a ese
     # movimiento real.
-    ("MOVIMIENTO CAPITAL", "Deuda"): (
+    ("MOVIMIENTO CAPITAL", "DEUDA"): (
         "ui/components/registro_transacciones.py rutea esta categoría a un "
         "mini-diálogo (Persona/entidad + fecha de vencimiento opcional) que "
         "llama a DebtsService.create(origen_tipo='transaccion', "
@@ -233,7 +244,7 @@ class CategoriasService:
     def protection_reason(categoria: sqlite3.Row) -> Optional[str]:
         """Motivo de protección de `categoria`, o None si no está protegida."""
         return CATEGORIAS_PROTEGIDAS.get(
-            (categoria["categoria_principal"], categoria["subcategoria"])
+            clave_categoria(categoria["categoria_principal"], categoria["subcategoria"])
         )
 
     @staticmethod

@@ -53,8 +53,9 @@ usan (create_transfer() pone su propio tag).
 Categorías especiales (_CATEGORIAS_ROUTING_ESPECIAL), sin cambios de
 comportamiento:
 - "Autotransferencia": pide la cuenta destino y llama a
-  TransactionService.create_transfer() (el concepto viaja como `notes`,
-  create_transfer() no tiene `concept`). Signo ignorado (abs).
+  TransactionService.create_transfer(), que pone los conceptos
+  "TRANSFERENCIA A <DESTINO>" / "TRANSFERENCIA DESDE <ORIGEN>" (el concepto
+  tipeado viaja como `notes`). Signo ignorado (abs).
 - "Ahorro/Inversión": modo simple (objetivo + "crear nuevo" →
   SavingsService.get_or_create_reserved_cash_asset() +
   register_purchase()) o "Elegir activo específico" (formulario de
@@ -189,6 +190,7 @@ from ui.theme.tabla_tokens import (
     TEXT_SECONDARY,
 )
 from ui.theme.tokens import LayoutTokens, TypographyTokens
+from utils.categorias import clave_categoria
 from utils.money import amount_display, amount_to_minor
 
 # --- Configuración de layout ---
@@ -234,13 +236,15 @@ ESTADOS_INDICADOR_SYNC = {
 }
 
 # Categorías especiales de routing de la fila de alta — clave:
-# (categoria_principal, subcategoria), mismo criterio que
-# services/categorias_service.py CATEGORIAS_PROTEGIDAS (por nombre, el id
-# varía entre bases).
+# utils/categorias.py clave_categoria() (categoria_principal, subcategoria
+# en MAYÚSCULAS), mismo criterio que services/categorias_service.py
+# CATEGORIAS_PROTEGIDAS (por nombre, el id varía entre bases; sin distinguir
+# mayúsculas, así una base todavía sin reestructurar — "Autotransferencia" —
+# se reconoce igual).
 _CATEGORIAS_ROUTING_ESPECIAL: dict[tuple[str, str], str] = {
-    ("MOVIMIENTO CAPITAL", "Autotransferencia"): "autotransferencia",
-    ("MOVIMIENTO CAPITAL", "Ahorro/Inversión"): "ahorro_inversion",
-    ("MOVIMIENTO CAPITAL", "Deuda"): "deuda",
+    ("MOVIMIENTO CAPITAL", "AUTOTRANSFERENCIA"): "autotransferencia",
+    ("MOVIMIENTO CAPITAL", "AHORRO/INVERSIÓN"): "ahorro_inversion",
+    ("MOVIMIENTO CAPITAL", "DEUDA"): "deuda",
 }
 # Opción "+ Crear nuevo objetivo" del diálogo de Ahorro/Inversión — nunca
 # colisiona con un id real (siempre numérico).
@@ -324,16 +328,18 @@ def build(
     cuentas_todas_no_credito = _cuentas_no_credito(list(datos["cuentas_por_id"].values()))
     monedas_por_codigo = {m["codigo"]: dict(m) for m in accounts_service.list_currencies()}
 
+    # Todas las categorías activas (list_categories() ya saca las inactivas), de
+    # cualquier tipo — también las 'movimiento' sin routing, como CAMBIO MONEDA
+    # (pedido del usuario) —, con las 3 especiales de routing al final, así la
+    # primera opción por default sigue siendo una categoría normal.
     todas_las_categorias = [dict(c) for c in categorias_service.list_categories()]
-    # Normales (ingreso/egreso) + las 3 especiales de routing al final, así
-    # la primera opción por default sigue siendo una categoría normal.
     categorias_especiales = [
         c for c in todas_las_categorias
-        if (c["categoria_principal"], c["subcategoria"]) in _CATEGORIAS_ROUTING_ESPECIAL
+        if clave_categoria(c["categoria_principal"], c["subcategoria"]) in _CATEGORIAS_ROUTING_ESPECIAL
     ]
-    categorias = [c for c in todas_las_categorias if c["tipo"] in ("ingreso", "egreso")] + categorias_especiales
+    categorias = [c for c in todas_las_categorias if c not in categorias_especiales] + categorias_especiales
     mapa_categoria_a_routing: dict[str, str] = {
-        str(c["id"]): _CATEGORIAS_ROUTING_ESPECIAL[(c["categoria_principal"], c["subcategoria"])]
+        str(c["id"]): _CATEGORIAS_ROUTING_ESPECIAL[clave_categoria(c["categoria_principal"], c["subcategoria"])]
         for c in categorias_especiales
     }
     opciones_cuenta = [(str(c["id"]), c["nombre"]) for c in cuentas_activas]

@@ -32,6 +32,13 @@ from db.query_builder import QueryBuilder
 from repositories.transacciones_repository import TransaccionesRepository
 
 
+# Concepts of the two legs of an auto-transfer (create_transfer()), user's
+# convention: the origin leg names the destination account and vice versa.
+# Account names are uppercased (all user-visible text in uppercase).
+CONCEPTO_TRANSFERENCIA_SALIDA = "TRANSFERENCIA A {cuenta}"
+CONCEPTO_TRANSFERENCIA_ENTRADA = "TRANSFERENCIA DESDE {cuenta}"
+
+
 # =============================================================
 # EXCEPTIONS
 # =============================================================
@@ -353,6 +360,8 @@ class TransactionService:
         """
         Creates an auto-transfer between two accounts owned by the user.
         Produces two transaction rows (egreso from origin, ingreso to destination)
+        — concepts "TRANSFERENCIA A <DESTINATION>" and "TRANSFERENCIA DESDE
+        <ORIGIN>" (CONCEPTO_TRANSFERENCIA_SALIDA / _ENTRADA, account names) —
         and one linking row in autotransferencias (via
         TransaccionesRepository.crear_autotransferencia() — added when this
         method's docstring was found to claim it wrote that row when it
@@ -381,8 +390,8 @@ class TransactionService:
             )
 
         # Validate both accounts exist upfront (before any writes)
-        self._get_account(origin_account_id)
-        self._get_account(dest_account_id)
+        origin = self._get_account(origin_account_id)
+        dest = self._get_account(dest_account_id)
 
         conn = self._db.conn
 
@@ -390,7 +399,7 @@ class TransactionService:
             # Egreso from origin
             out_result = self.create(
                 date_str=date_str,
-                concept="Auto-transfer (out)",
+                concept=CONCEPTO_TRANSFERENCIA_SALIDA.format(cuenta=dest["nombre"].upper()),
                 account_id=origin_account_id,
                 category_id=category_id,
                 currency_code=currency_code,
@@ -404,7 +413,7 @@ class TransactionService:
             # Ingreso to destination
             in_result = self.create(
                 date_str=date_str,
-                concept="Auto-transfer (in)",
+                concept=CONCEPTO_TRANSFERENCIA_ENTRADA.format(cuenta=origin["nombre"].upper()),
                 account_id=dest_account_id,
                 category_id=category_id,
                 currency_code=currency_code,

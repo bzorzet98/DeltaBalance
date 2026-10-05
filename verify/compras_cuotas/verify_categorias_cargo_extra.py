@@ -27,13 +27,12 @@ un service), así que en su lugar:
 4. Confirma que una categoría normal (no está en CATEGORIAS_CARGO_EXTRA)
    sigue creando una compra en cuotas normal vía create_purchase(), sin
    ningún cambio de comportamiento.
-5. Confirma que create_purchase() sigue rechazando total_amount<=0
-   (incluye negativos) con FeesError — el mismo guardrail de la capa de
-   datos que ya existía antes de esta tarea, y que respalda la validación
-   de UI de "monto negativo con categoría normal" (esa validación puntual
-   vive en ui/screens/compras_cuotas.py, no es ejercitable acá, pero esta
-   verificación confirma que aunque se la saltee, la capa de datos igual
-   nunca deja pasar una compra con monto<=0).
+5. Confirma que create_purchase() acepta un total NEGATIVO con una
+   categoría normal (una devolución: total y cuotas negativos) y sigue
+   rechazando solo el 0 con FeesError. Antes rechazaba todo total <= 0 y la
+   pantalla bloqueaba "monto negativo con categoría normal"; las dos reglas
+   se sacaron (pedido explícito: el signo es cuidado del usuario, no una
+   validación del sistema).
 
 Correlo con:
     python verify/compras_cuotas/verify_categorias_cargo_extra.py
@@ -51,9 +50,9 @@ from services.categorias_service import CATEGORIAS_PROTEGIDAS
 from services.fees_service import CATEGORIAS_CARGO_EXTRA, FeesError, FeesService
 
 CATEGORIAS_ESPECIALES = [
-    ("TARJETA DE CRÉDITO", "Impuesto tarjeta", "impuesto"),
-    ("TARJETA DE CRÉDITO", "Recargo tarjeta", "recargo"),
-    ("TARJETA DE CRÉDITO", "Ajuste/Reintegro tarjeta", "ajuste"),
+    ("TARJETA DE CRÉDITO", "IMPUESTO TARJETA", "impuesto"),
+    ("TARJETA DE CRÉDITO", "RECARGO TARJETA", "recargo"),
+    ("TARJETA DE CRÉDITO", "AJUSTE/REINTEGRO TARJETA", "ajuste"),
 ]
 
 
@@ -111,12 +110,12 @@ def main() -> None:
         )
 
     cat_normal = manager.fetchone(
-        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS VARIABLES' AND subcategoria = 'Supermercado';"
+        "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS' AND subcategoria = 'SUPERMERCADO';"
     )["id"]
     caso(
-        "Una categoría normal (Supermercado) NO está en CATEGORIAS_CARGO_EXTRA",
+        "Una categoría normal (SUPERMERCADO) NO está en CATEGORIAS_CARGO_EXTRA",
         None,
-        CATEGORIAS_CARGO_EXTRA.get(("EGRESOS VARIABLES", "Supermercado")),
+        CATEGORIAS_CARGO_EXTRA.get(("EGRESOS", "SUPERMERCADO")),
     )
 
     print("\n--- Parte B: routing simulado (lo que ui/screens/compras_cuotas.py ejecuta) ---")
@@ -170,14 +169,19 @@ def main() -> None:
     caso("la compra quedó con la categoría normal elegida", cat_normal, compra["categoria_id"])
     caso("la compra generó 3 cuotas", 3, len(svc.get_fees_for_purchase(res_compra.entity_id)))
 
-    print("\n--- Parte D: create_purchase() sigue rechazando total_amount<=0 (incluye negativos) ---")
+    print("\n--- Parte D: create_purchase() acepta totales negativos (devoluciones) y rechaza solo el 0 ---")
 
-    caso_excepcion(
-        "create_purchase() con total_amount negativo sigue lanzando FeesError",
-        FeesError,
-        lambda: svc.create_purchase(
-            date_str="2026-07-10", concept="Compra inválida", account_id=tarjeta,
-            category_id=cat_normal, currency_code="ARS", total_amount=-100.0, total_fees=1,
+    res_devolucion = svc.create_purchase(
+        date_str="2026-07-10", concept="Devolución súper", account_id=tarjeta,
+        category_id=cat_normal, currency_code="ARS", total_amount=-100.0, total_fees=1,
+    )
+    caso("create_purchase() con total negativo y categoría normal devuelve success=True", True, res_devolucion.success)
+    caso(
+        "… total y cuota negativos (−$100 = −10000 minor)",
+        (-10000, [-10000]),
+        (
+            svc.get_purchase(res_devolucion.entity_id)["monto_total_minor"],
+            [c["monto_cuota_minor"] for c in svc.get_fees_for_purchase(res_devolucion.entity_id)],
         ),
     )
     caso_excepcion(
