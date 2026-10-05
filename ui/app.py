@@ -82,8 +82,14 @@ conn.total_changes de la conexión de la app (punto 2 de arriba).
 
 El SyncEngine queda registrado (sync.sync_engine.registrar_motor()) para el
 indicador de sincronización del Registro. Parte inferior de la sidebar:
-nombre de display (click para editarlo, AuthService.set_display_name()),
-email y CERRAR SESIÓN (o INICIAR SESIÓN si se trabaja sin conexión).
+el indicador de sincronización (pedido del usuario: visible desde cualquier
+pantalla) — nube verde sincronizado / amarilla sincronizando / roja sin
+conexión o sin sesión, "SINC" con la sidebar expandida, la hora de la
+última sync y los errores en el tooltip; click = sync_completo() en otro
+hilo; mismos íconos y colores que el del Registro (ESTADOS_INDICADOR_SYNC),
+repintado por su oyente "sidebar" del motor —; después, nombre de display
+(click para editarlo, AuthService.set_display_name()), email y CERRAR
+SESIÓN (o INICIAR SESIÓN si se trabaja sin conexión).
 
 """
 import asyncio
@@ -104,7 +110,17 @@ from services.snapshots_service import SnapshotsService
 from services.transaction_service import TransactionService
 from services.ingresos_proyectados_service import IngresosProyectadosService
 from sync.auth import AuthService
-from sync.sync_engine import ESTADO_SINCRONIZANDO, TABLAS_COMPARTIDAS, SyncEngine, registrar_motor
+from sync.sync_engine import (
+    ESTADO_SIN_CONEXION,
+    ESTADO_SIN_SESION,
+    ESTADO_SINCRONIZADO,
+    ESTADO_SINCRONIZANDO,
+    TABLAS_COMPARTIDAS,
+    SyncEngine,
+    registrar_motor,
+)
+from ui.components.registro_transacciones import ESTADOS_INDICADOR_SYNC, TEXTO_INDICADOR_SYNC
+from ui.components.tabla_planilla import mostrar_mensaje, refrescar, sin_auto_update
 
 from ui.screens import ingresos as ingresos_screen
 from ui.screens import login as login_screen
@@ -149,6 +165,13 @@ USUARIO_ESPACIADO = 2
 USUARIO_TAMANIO_NOMBRE = 14
 USUARIO_TAMANIO_EMAIL = 11
 USUARIO_TAMANIO_CERRAR_SESION = 10
+# Indicador de sincronización, al pie de la sidebar (íconos y colores: los del Registro).
+SYNC_TAMANIO_ICONO = 18
+SYNC_TAMANIO_TEXTO = 12
+SYNC_PADDING_H = 12
+SYNC_PADDING_V = 8
+SYNC_ESPACIO = 10  # entre la nube y "SINC" (igual que _item_nav)
+SYNC_RADIO = 8
 
 
 def _recorrer_controles(control: ft.Control) -> Iterator[ft.Control]:
@@ -455,6 +478,66 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             content=ft.Column([nombre, email, boton], spacing=USUARIO_ESPACIADO, tight=True),
         )
 
+    # --- Indicador de sincronización (pie de la sidebar, ver docstring) ---
+
+    sync_ui: dict[str, object] = {"contenedor": None, "expandido": False}
+
+    def _tooltip_sync(estado: str, etiqueta: str) -> str:
+        partes = [etiqueta]
+        if estado in (ESTADO_SINCRONIZADO, ESTADO_SIN_CONEXION) and motor_sync.ultima_sync is not None:
+            partes.append(f"{motor_sync.ultima_sync:%H:%M}")
+        resultado = motor_sync.ultimo_resultado
+        if estado == ESTADO_SINCRONIZADO and resultado is not None and resultado.errores:
+            partes.append(f"{resultado.errores} ERROR(ES)")
+        return " · ".join(partes) + " — CLICK PARA SINCRONIZAR"
+
+    def _forzar_sync(e=None) -> None:
+        if not motor_sync.hay_sesion():
+            mostrar_mensaje(page, "INICIÁ SESIÓN (ABAJO, EN LA BARRA LATERAL) PARA SINCRONIZAR.", es_error=True)
+            return
+        page.run_thread(motor_sync.sync_completo)  # el motor avisa SINCRONIZANDO… y el resultado
+        sin_auto_update()
+
+    def _indicador_sync(expandido: bool) -> ft.Control:
+        """Nube verde / amarilla / roja según el estado del motor; expandida, además "SINC"."""
+        estado = motor_sync.estado if motor_sync.hay_sesion() else ESTADO_SIN_SESION
+        nube, color, etiqueta = ESTADOS_INDICADOR_SYNC.get(estado, ESTADOS_INDICADOR_SYNC[ESTADO_SIN_CONEXION])
+        tooltip = _tooltip_sync(estado, etiqueta)
+        if not expandido:
+            return ft.IconButton(icon=nube, icon_color=color, tooltip=tooltip, on_click=_forzar_sync)
+        return ft.Container(
+            padding=ft.Padding.symmetric(horizontal=SYNC_PADDING_H, vertical=SYNC_PADDING_V),
+            border_radius=SYNC_RADIO,
+            ink=True,
+            tooltip=tooltip,
+            on_click=_forzar_sync,
+            content=ft.Row(
+                [
+                    ft.Icon(nube, size=SYNC_TAMANIO_ICONO, color=color),
+                    ft.Text(TEXTO_INDICADOR_SYNC, size=SYNC_TAMANIO_TEXTO, weight=ft.FontWeight.W_500, color=color),
+                ],
+                spacing=SYNC_ESPACIO,
+            ),
+        )
+
+    def _area_sync(expandido: bool) -> ft.Control:
+        # Un Container propio: el oyente del motor repinta solo esto, no la sidebar entera.
+        contenedor = ft.Container(content=_indicador_sync(expandido))
+        sync_ui["contenedor"], sync_ui["expandido"] = contenedor, expandido
+        return contenedor
+
+    async def _repintar_sync() -> None:
+        contenedor = sync_ui["contenedor"]
+        if not isinstance(contenedor, ft.Container):
+            return
+        contenedor.content = _indicador_sync(bool(sync_ui["expandido"]))
+        refrescar(page, contenedor)  # solo si está montado (en el login no hay sidebar)
+
+    def _al_cambiar_estado_sync(_motor: SyncEngine) -> None:
+        page.run_task(_repintar_sync)  # llega desde el hilo de la sync
+
+    motor_sync.escuchar("sidebar", _al_cambiar_estado_sync)
+
     def _logo(tamanio: int) -> ft.Control:
         return ft.Image(
             src=SIDEBAR_LOGO_SRC, width=tamanio, height=tamanio,
@@ -515,6 +598,7 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         controles.append(_item_nav("CUENTAS", ft.Icons.ACCOUNT_BALANCE, mostrar_cuentas, expandido))
         controles.append(_item_nav("CATEGORÍAS", ft.Icons.CATEGORY, mostrar_categorias, expandido))
         controles.append(ft.Divider())
+        controles.append(_area_sync(expandido))  # visible desde cualquier pantalla (pedido del usuario)
         controles.append(_area_usuario(expandido))
         controles.append(_boton_toggle())
 

@@ -372,6 +372,12 @@ realmente se transfiere afuera — ambos casos usan el mismo mecanismo.
 ## 17. Categorías especiales Autotransferencia / Ahorro-Inversión en el Registro — ✅ implementado (Tarea 1b)
 
 Sin cambios de schema — esta tarea es routing de UI + un método nuevo de servicio.
+
+> **Actualización:** el routing de "Ahorro/Inversión" se sacó del Registro (pedido
+> del usuario): la categoría se guarda como una transacción normal y el aporte se
+> carga a mano en Ahorros. El diálogo sigue en `registro_transacciones.py`, sin
+> disparo. Autotransferencia y Deuda siguen igual.
+
 Decisión tomada: la fuente de verdad para cargar CUALQUIER movimiento (incluidas
 transferencias entre cuentas y aportes a ahorro) es el Registro de transacciones —
 mismo mecanismo de routing por categoría ya construido para "Impuesto tarjeta"/
@@ -805,6 +811,29 @@ rompería la subida hasta tocar Supabase a mano. Además:
 llegaría sin sus cuotas y una cuenta sin sus saldos. `monedas` no viaja: sale del
 seed, con los mismos ids en toda base.
 
+**Ahorros también viaja** (pedido del usuario: lo cargado con `python main.py` no
+aparecía en la app empaquetada, que usa otra base): `brokers`, `activos_financieros`,
+`objetivos_ahorro`, `movimientos_activo`, `asignaciones` y `activo_objetivos`, como
+tablas privadas (`deltabalance_filas`), después de `cuentas` y `transacciones` (sus
+FK). No hizo falta cambiar el schema: `preparar_sync()` les agrega `sincronizado_en`
+y los triggers a todas las de la lista. Dos detalles:
+
+- Los brokers iniciales los siembra `db/schema_migrations.py` en TODA base, cada una
+  con su UUID: `brokers` entra en `CLAVES_NATURALES` (`nombre`), así al bajar el
+  broker de otra computadora el de acá adopta su id.
+- **Tablas nuevas** (`sync/sync_engine.py`, `_bajar_tablas_nuevas()`): una base que
+  ya sincronizaba nunca pidió estas tablas, y su marca de bajada pudo pasar de largo
+  lo que otra computadora subió de ellas. Cada sync completa baja ENTERAS — antes de
+  subir nada, con last-write-wins normal — las tablas que esta base todavía no bajó
+  así, y las anota en `sync_estado` (`tabla_bajada:<tabla>`, una sola vez). Bajar
+  antes de subir importa por los brokers: subiendo primero, quedarían dos COCOS en
+  Supabase y los activos de la otra computadora apuntarían a uno que acá no existe.
+  Las tablas que ya tenían filas sincronizadas solo se anotan.
+
+Límite: el activo de "efectivo reservado" (sección 17) se busca por cuenta y moneda;
+si dos bases lo crearon antes de sincronizar, quedan dos (no hay UNIQUE que los una).
+Verificación: `verify/sync/verify_ahorros_sync.py`.
+
 **Localmente** (`preparar_sync()`, en cada `inicializar()`):
 
 - `sincronizado_en` en cada tabla de `TABLAS_SINCRONIZADAS`.
@@ -1005,9 +1034,18 @@ igual qué miembro actualice primero: el upsert de la reparación cambia el
 - Privacidad: lo que viaja en `_referencias` (nombre y tipo de la categoría) lo
   ve todo el hogar. Si en el futuro una tabla compartida apunta a `cuentas`,
   viajaría el nombre de la cuenta.
-- No resuelve el `origen_id` polimórfico (no es una FK declarada): en la base
-  del otro miembro, el concepto y la moneda de un gasto compartido siguen
-  saliendo de un origen que no está ahí.
+- El `origen_id` polimórfico (no es una FK declarada) no se traduce. Su
+  **concepto** sí viaja (pedido del usuario: el otro miembro veía "ORIGEN #…
+  NO ENCONTRADO"): al subir un gasto compartido, si su origen está en esta base,
+  va en `datos` como `_concepto`; al bajarlo en una base donde el origen no
+  está y el gasto no tiene descripción propia, la descripción local pasa a ser
+  ese concepto (la pantalla de Compartidos ya muestra la descripción antes que
+  el origen). Esa descripción no es una edición: si la fila se vuelve a subir
+  desde esa base, viaja la descripción de Supabase (la del autor), así el autor
+  sigue viendo el concepto vivo de su transacción. Las filas ya subidas sin
+  `_concepto` las completa su autor en una segunda pasada de la reparación
+  (`sync_estado`, clave `conceptos_origen`). La **moneda** del origen sigue sin
+  viajar: en la base del otro miembro, el gasto se muestra en la moneda default.
 
 Verificación: `verify/sync/verify_referencias_compartidas.py`.
 
@@ -1256,7 +1294,8 @@ no hay cambio de schema.
 OBJETIVOS de la tarjeta y la sección OBJETIVOS al crear un activo — también), salvo
 borrar las filas de un objetivo que se elimina (sección 32, por la FK). La tabla no se
 borra: puede tener filas (mismo criterio que `resumen_cargos_extra`, sección 28). Las
-tablas de ahorros no están en `TABLAS_SINCRONIZADAS`: cada base tiene los suyos. Una base que ya tenía repartos cargados: los
+tablas de ahorros se sincronizan desde la sección 24 ("Ahorros también viaja"),
+`activo_objetivos` incluida. Una base que ya tenía repartos cargados: los
 movimientos registrados con ese reparto conservan sus asignaciones; los cargados antes
 de definirlo quedan SIN ASIGNAR y se corrigen desde la celda OBJETIVOS.
 
@@ -1297,7 +1336,8 @@ objetivos, elegida por el usuario por cada instrumento (`repartos`: activo_id �
 - DELETE físico (`objetivos_ahorro` no tiene soft-delete), en una transacción con la
   reescritura de las asignaciones y el borrado de sus filas en `activo_objetivos`
   (deprecated, sección 31: la FK lo exige).
-- Las tablas de ahorros no se sincronizan: el borrado es solo de esta base.
+- El borrado viaja como cualquier otro: las tablas de ahorros se sincronizan (sección
+  24, "Ahorros también viaja").
 
 **UI** (`ui/screens/ahorros.py`): ✎ y 🗑 junto a cada objetivo en RESUMEN · POR
 OBJETIVO, que ahora lista todos los objetivos (también los que no tienen nada) con su

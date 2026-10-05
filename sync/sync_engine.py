@@ -95,6 +95,23 @@ la subida hasta tocar Supabase a mano.
   por usuario; o migration/subir_a_supabase.py, que marca las filas y deja
   una marca de ese formato): se baja todo desde EPOCA con last-write-wins
   normal — no como restauración, que pisaría lo editado acá sin subir.
+- TABLAS NUEVAS (una tabla recién agregada a TABLAS_SINCRONIZADAS, ej. las
+  de Ahorros): una base que ya sincronizaba nunca la pidió, y su marca de
+  bajada pudo pasar de largo lo que otra computadora subió de ella. Al
+  empezar cada sync completa, _bajar_tablas_nuevas() baja ENTERAS — desde
+  cero, last-write-wins normal — las tablas que esta base todavía no bajó
+  así, ANTES de subir nada, y las anota en sync_estado (PREFIJO_TABLA_BAJADA
+  + tabla; una sola vez). Antes de subir por las filas que trae el seed (o
+  db/schema_migrations.py) con un UUID propio en cada base, como los
+  brokers: bajando primero, la fila de acá adopta el id de la que ya está
+  en Supabase (CLAVES_NATURALES); subiendo primero, quedarían dos copias y
+  los activos de la otra computadora apuntarían a un broker que acá no
+  existe. Las tablas que ya tienen filas sincronizadas solo se anotan; la
+  primera sincronización de una base las anota todas.
+- El concepto del origen de un gasto compartido viaja como marca y, en la
+  base del otro miembro, completa la descripción (sync/referencias.py, "El
+  concepto del ORIGEN"); las filas que ya estaban en Supabase sin él las
+  completa su autor en la reparación (REPARACION_CONCEPTOS).
 
 --- Hilos ---
 
@@ -128,11 +145,13 @@ from sync.supabase_client import get_client
 from ui.utils.prefs import escribir_pref, leer_pref
 
 # Las del pedido + las que dependen de ellas (sin sus cuotas / saldos, una
-# compra o una cuenta llegaría incompleta a Supabase).
+# compra o una cuenta llegaría incompleta a Supabase). Y Ahorros (pedido del
+# usuario: verlos en la app empaquetada, que usa otra base).
 TABLAS_PRIVADAS = [
     "transacciones", "cuentas", "categorias", "deudas",
     "compras_cuotas", "presupuestos", "ingresos_proyectados",
     "cuentas_saldos", "cuotas_credito", "resumenes_tarjeta", "tarjetas_config", "tarjetas_resumenes",
+    "brokers", "activos_financieros", "objetivos_ahorro", "movimientos_activo", "asignaciones", "activo_objetivos",
 ]
 TABLAS_COMPARTIDAS = [
      "hogares", "hogar_miembros", "gastos_compartidos", "gasto_compartido_pagos",
@@ -164,6 +183,13 @@ EPOCA = "1970-01-01T00:00:00+00:00"
 # referencias (ver docstring del módulo, REFERENCIAS). Sin ella, la próxima
 # sync completa la hace.
 REPARACION_REFERENCIAS = "referencias_portables"
+# Ídem, para el concepto del origen de los gastos compartidos
+# (sync/referencias.py MARCA_CONCEPTO): una base que ya hizo la reparación
+# de referencias la vuelve a correr una vez para completarlo.
+REPARACION_CONCEPTOS = "conceptos_origen"
+# Prefijo de la clave de sync_estado que anota que esta base ya bajó una
+# tabla ENTERA (ver docstring del módulo, TABLAS NUEVAS): + nombre de la tabla.
+PREFIJO_TABLA_BAJADA = "tabla_bajada:"
 
 ESTADO_SINCRONIZADO = "sincronizado"
 ESTADO_SINCRONIZANDO = "sincronizando"
@@ -516,14 +542,19 @@ class SyncEngine:
         clave_marca = self._clave_marca(usuario_id)
         desde = self._marcas.leer(clave_marca)
         primera = self._es_primera(repo)
-        reparar = repo.estado(REPARACION_REFERENCIAS) is None  # una vez por base (docstring, REFERENCIAS)
+        # Una vez por base (docstring, REFERENCIAS); también si falta la del concepto del origen.
+        reparar = repo.estado(REPARACION_REFERENCIAS) is None or repo.estado(REPARACION_CONCEPTOS) is None
         if primera:
             print(f"{PREFIJO_LOG} usuario {usuario_id}: PRIMERA sincronización de esta base — se baja TODO (gana lo remoto)")
             desde = None  # una marca suelta no vale para una base que nunca sincronizó
             bajada_completa = self._bajar_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, None, c, primera=True)
             self._aplicar_borrados(repo, c, primera=True)
+            if bajada_completa:
+                self._anotar_bajadas(repo, TABLAS_SINCRONIZADAS)  # ya bajó todas enteras: ninguna es "nueva"
             self._subir_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, c, primera=True)
         else:
+            # Antes de subir: las tablas que esta base todavía no bajó enteras (docstring, TABLAS NUEVAS).
+            self._bajar_tablas_nuevas(repo, usuario_id, c)
             if desde is None:
                 # Ya sincronizó, pero sin marca propia (formato anterior de la
                 # marca, o migration/subir_a_supabase.py): se baja todo, con
@@ -540,7 +571,9 @@ class SyncEngine:
             self._aplicar_borrados(repo, c)
         if reparar and bajada_completa and self._reparar_referencias(repo, usuario_id, c):
             with repo.escritura_sync() as conn:
-                repo.guardar_estado(conn, REPARACION_REFERENCIAS, _ahora_local())
+                momento = _ahora_local()
+                repo.guardar_estado(conn, REPARACION_REFERENCIAS, momento)
+                repo.guardar_estado(conn, REPARACION_CONCEPTOS, momento)
         if not bajada_completa:
             # Una compartida quedó sin bajar (ver docstring del módulo): la
             # marca no se mueve. Volver a bajar lo demás no cambia nada
@@ -550,6 +583,39 @@ class SyncEngine:
         # Al final, recién con todo bajado: si algo falla antes, la excepción
         # salta esta línea y la próxima vuelve a bajar desde la marca anterior.
         self._marcas.escribir(clave_marca, max(filter(None, [desde, c.ultimo_updated_at]), default=EPOCA))
+
+    def _bajar_tablas_nuevas(self, repo: SyncRepository, usuario_id: str, c: _Contadores) -> None:
+        """
+        TABLAS NUEVAS (ver docstring del módulo): las de TABLAS_SINCRONIZADAS
+        que esta base todavía no bajó enteras. Las que ya tienen alguna fila
+        sincronizada se venían bajando con la marca: solo se anotan. Las
+        demás (ej. las de Ahorros, recién agregadas) se bajan desde cero,
+        con last-write-wins normal, y recién después se anotan. Una
+        compartida que Supabase rechaza queda sin anotar: se reintenta en la
+        próxima sync.
+        """
+        sin_anotar = [t for t in TABLAS_SINCRONIZADAS if repo.estado(PREFIJO_TABLA_BAJADA + t) is None]
+        if not sin_anotar:
+            return
+        nuevas = [t for t in sin_anotar if not any(fila.get("sincronizado_en") for fila in repo.todas(t))]
+        completa = True
+        if nuevas:
+            print(f"{PREFIJO_LOG} usuario {usuario_id}: tablas que esta base nunca bajó — se bajan enteras antes de subir: "
+                  f"{', '.join(nuevas)}")
+            completa = self._bajar_tablas(repo, nuevas, usuario_id, None, c)
+            self._aplicar_borrados(repo, c)
+        self._anotar_bajadas(repo, [t for t in sin_anotar if completa or t not in TABLAS_COMPARTIDAS])
+
+    @staticmethod
+    def _anotar_bajadas(repo: SyncRepository, tablas: Iterable[str]) -> None:
+        """Anota en sync_estado que esta base ya bajó esas tablas enteras (PREFIJO_TABLA_BAJADA)."""
+        tablas = list(tablas)
+        if not tablas:
+            return
+        with repo.escritura_sync() as conn:
+            momento = _ahora_local()
+            for tabla in tablas:
+                repo.guardar_estado(conn, PREFIJO_TABLA_BAJADA + tabla, momento)
 
     def _subir_tablas(
         self, repo: SyncRepository, tablas: list[str], usuario_id: str, c: _Contadores, primera: bool = False,

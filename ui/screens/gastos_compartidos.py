@@ -48,6 +48,13 @@ prorrateada, la compra de esa cuota (mapa cuota → compra armado una vez
 con FeesService.get_fees_for_purchase()). Se cachean por origen mientras
 la pantalla vive (ui/app.py la reconstruye si otra pantalla cambió datos).
 La descripción propia del gasto, si tiene, reemplaza al concepto del origen.
+Un gasto del OTRO miembro tiene su origen en la base de él, no acá: la
+sincronización trae el concepto de ese origen y lo deja como descripción
+del gasto (sync/referencias.py, "El concepto del ORIGEN"), así que se ve
+el concepto real en vez de "ORIGEN #… NO ENCONTRADO" — que queda solo
+para un gasto que todavía no lo trae (hasta que su autor sincronice con
+esta versión). Su moneda sigue siendo la default (MONEDA_DEFAULT): la del
+origen no viaja.
 
 --- Saldo neto ---
 

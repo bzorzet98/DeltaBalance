@@ -47,11 +47,14 @@ COLUMNAS_LOCALES = ("sincronizado_en",)
 # seed categorías y la cuenta "Caja Efectivo" con UUIDs propios, distintos
 # de los de la base que se está restaurando. Al bajar una de esas filas, si
 # acá ya hay una con la misma clave natural y otro id, se le cambia el id
-# (y el de sus hijos) al remoto en vez de chocar con el UNIQUE.
+# (y el de sus hijos) al remoto en vez de chocar con el UNIQUE. brokers:
+# los iniciales los siembra db/schema_migrations.py en TODA base, cada una
+# con su UUID.
 CLAVES_NATURALES: dict[str, tuple[str, ...]] = {
     "categorias": ("categoria_principal", "subcategoria"),
     "cuentas": ("nombre",),
     "hogares": ("codigo_invitacion",),
+    "brokers": ("nombre",),
 }
 
 

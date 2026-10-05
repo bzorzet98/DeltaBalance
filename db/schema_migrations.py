@@ -1190,7 +1190,9 @@ def aplicar_migraciones_columna(conn: sqlite3.Connection, exigir_uuid: bool = Tr
 #    que dependen de ellas (cuentas_saldos, cuotas_credito,
 #    resumenes_tarjeta, tarjetas_config, tarjetas_resumenes,
 #    gasto_compartido_pagos: sin ellas, en Supabase una compra quedaría sin
-#    sus cuotas y una cuenta sin sus saldos). Va en MIGRACIONES_COLUMNA_SYNC
+#    sus cuotas y una cuenta sin sus saldos), y las de Ahorros (brokers,
+#    activos_financieros, objetivos_ahorro, movimientos_activo, asignaciones,
+#    activo_objetivos). Va en MIGRACIONES_COLUMNA_SYNC
 #    y no en MIGRACIONES_COLUMNA porque tarjetas_config / tarjetas_resumenes
 #    las crea MIGRACIONES_TABLA y deudas la rearma reestructurar_deudas(): la
 #    columna se agrega después.
@@ -1230,6 +1232,18 @@ TABLAS_SINCRONIZADAS: list[str] = [
     "cuotas_credito",
     "presupuestos",
     "ingresos_proyectados",
+    # Ahorros (pedido del usuario: verlos en la app empaquetada, que usa otra
+    # base). brokers antes que activos_financieros (broker_id); los activos
+    # después de cuentas (cuenta_id); los movimientos después de transacciones
+    # (transaccion_id); asignaciones y activo_objetivos, después de sus dos
+    # padres. Una base que ya sincronizaba las baja enteras antes de subirlas
+    # (sync/sync_engine.py, TABLAS NUEVAS).
+    "brokers",
+    "activos_financieros",
+    "objetivos_ahorro",
+    "movimientos_activo",
+    "asignaciones",
+    "activo_objetivos",
     "hogares",
     "hogar_miembros",
     "gastos_compartidos",
