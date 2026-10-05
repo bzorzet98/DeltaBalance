@@ -25,6 +25,12 @@ Cubre:
   - Tercera integrante: CARLA baja todo desde cero, sin errores, cada
     gasto con categorías de SU base.
   - Las privadas viajan como siempre (sin _referencias).
+  - Concepto del origen: un gasto de NOELIA sin descripción propia llega a
+    BRUNO — que no tiene la transacción de origen — con el concepto de esa
+    transacción como descripción (antes: "ORIGEN #… NO ENCONTRADO"); en la
+    base de NOELIA la descripción sigue vacía, también después de que
+    BRUNO vuelva a subir el gasto. Una fila subida sin el concepto la
+    completa su autora en la reparación.
   - Filas viejas (subidas sin _referencias): error claro antes de la
     reparación; la reparación de su autor las completa y llegan. Y al
     revés: si la marca de bajada ya había pasado de largo, la primera
@@ -45,8 +51,8 @@ from db.database import DatabaseManager
 from services.categorias_service import CategoriasService
 from services.shared_expenses_service import SharedExpensesService
 from services.transaction_service import TransactionService
-from sync.referencias import MARCA_REFERENCIAS
-from sync.sync_engine import REPARACION_REFERENCIAS, SyncEngine
+from sync.referencias import MARCA_CONCEPTO, MARCA_REFERENCIAS
+from sync.sync_engine import REPARACION_CONCEPTOS, REPARACION_REFERENCIAS, SyncEngine
 
 BRUNO = "f5ca8a42-a039-4a46-998e-2b01dbb28e9c"
 NOELIA = "3cb96dd5-e56b-47b6-803f-63410d9c3bdd"
@@ -209,6 +215,44 @@ def main() -> None:
 
     caso("las privadas viajan como siempre: la categoría de NOELIA, en deltabalance_filas y sin referencias",
          (NOELIA, False), (fake.fila(vet_n).get("usuario_id"), MARCA_REFERENCIAS in fake.datos(vet_n)))
+
+    # ============================================================
+    print("\n--- Concepto del origen: un gasto de NOELIA sin descripción propia ---")
+    # ============================================================
+    tx_farmacia = transaccion(mn, super_n, 40000, "2026-09-22", "FARMACIA DE NOE")
+    g_farmacia = SharedExpensesService(mn).add_shared_expense(
+        hogar_id, "NOELIA", "transaccion", tx_farmacia, super_n, 40000, 50.0, "2026-09-22",
+    ).entity_id
+    motor_n.sync_completo()
+    caso(f"en Supabase el gasto lleva {MARCA_CONCEPTO}: el concepto de la transacción de NOELIA, sin descripción",
+         ("FARMACIA DE NOE", None), (fake.datos(g_farmacia).get(MARCA_CONCEPTO), fake.datos(g_farmacia).get("descripcion")))
+    r = motor_b.sync_completo()
+    caso("BRUNO: sync sin errores", 0, r.errores)
+    caso("en la base de BRUNO (sin esa transacción) la descripción es el concepto — no 'ORIGEN #… NO ENCONTRADO'",
+         "FARMACIA DE NOE", gasto(mb, g_farmacia).get("descripcion"))
+    caso("en la base de NOELIA sigue sin descripción (ve el concepto vivo de su transacción)",
+         None, gasto(mn, g_farmacia).get("descripcion"))
+    r = motor_b.sync_completo()
+    caso("otra sync de BRUNO sin cambios: (subidas, bajadas, errores) = 0 — la descripción completada no se reaplica",
+         (0, 0, 0), (r.subidas, r.bajadas, r.errores))
+
+    SharedExpensesService(mb).aplicar_pago(g_farmacia, hogar_id, 5000, "2026-09-23", tipo_pago="compensacion")
+    motor_b.sync_completo()
+    caso("BRUNO le registra un pago y lo vuelve a subir: en Supabase, descripción vacía y el concepto de NOELIA",
+         (None, "FARMACIA DE NOE"),
+         (fake.datos(g_farmacia).get("descripcion"), fake.datos(g_farmacia).get(MARCA_CONCEPTO)))
+    motor_n.sync_completo()
+    caso("NOELIA recibe el pago (20.000 − 5.000) y su gasto sigue sin descripción", (15000, None),
+         (gasto(mn, g_farmacia).get("monto_pendiente_minor"), gasto(mn, g_farmacia).get("descripcion")))
+
+    # Como lo dejó subido una versión anterior de la app: sin el concepto.
+    datos_sin_concepto = fake.datos(g_farmacia)
+    datos_sin_concepto.pop(MARCA_CONCEPTO, None)
+    fake.reescribir_datos(g_farmacia, datos_sin_concepto)
+    mn.execute("DELETE FROM sync_estado WHERE clave = ?;", (REPARACION_CONCEPTOS,))  # NOELIA abre la versión nueva
+    r = motor_n.sync_completo()
+    caso("una fila subida sin el concepto: NOELIA, su autora, lo completa en la reparación", (0, "FARMACIA DE NOE"),
+         (r.errores, fake.datos(g_farmacia).get(MARCA_CONCEPTO)))
 
     # ============================================================
     print("\n--- Filas viejas: subidas antes de que existiera _referencias ---")

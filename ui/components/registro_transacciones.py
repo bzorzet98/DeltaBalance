@@ -17,11 +17,9 @@ no cambió.
 
 --- Indicador de sincronización ---
 
-A la derecha del título, el estado de la sincronización con Supabase
-(_indicador_sync(): ícono de nube + "SINC" — verde sincronizado, amarillo
-sincronizando, rojo sin conexión; click = sincronizar ahora). Toma el SyncEngine que registró ui/app.py
-(sync.sync_engine.motor_registrado()), así que no hizo falta cambiar la
-firma de build() ni la del dashboard.
+Ya no está acá: vive en la sidebar (ui/app.py), visible desde cualquier
+pantalla. Este módulo conserva sus íconos, colores y texto
+(ESTADOS_INDICADOR_SYNC, TEXTO_INDICADOR_SYNC) porque ui/app.py los importa.
 
 --- Estado propio del Registro ---
 
@@ -56,11 +54,10 @@ comportamiento:
   TransactionService.create_transfer(), que pone los conceptos
   "TRANSFERENCIA A <DESTINO>" / "TRANSFERENCIA DESDE <ORIGEN>" (el concepto
   tipeado viaja como `notes`). Signo ignorado (abs).
-- "Ahorro/Inversión": modo simple (objetivo + "crear nuevo" →
-  SavingsService.get_or_create_reserved_cash_asset() +
-  register_purchase()) o "Elegir activo específico" (formulario de
-  ui/components/dialogo_compra_ahorro.py en el mismo diálogo). Signo
-  ignorado.
+- "Ahorro/Inversión": YA NO es especial (pedido del usuario) — se guarda
+  como una transacción normal y el aporte se carga a mano en Ahorros. Su
+  diálogo (_abrir_dialogo_ahorro_inversion(): objetivo + "crear nuevo", o
+  "Elegir activo específico") sigue en el código, sin disparo.
 - "Deuda": crea la transacción normal primero y después pide persona/
   vencimiento para vincularle una deuda (DebtsService.create(origen_tipo=
   'transaccion')); el tab sale del signo (egreso → 'me_deben', ingreso →
@@ -153,8 +150,6 @@ from sync.sync_engine import (
     ESTADO_SIN_SESION,
     ESTADO_SINCRONIZADO,
     ESTADO_SINCRONIZANDO,
-    SyncEngine,
-    motor_registrado,
 )
 from ui.components import compartir_gasto, dialogo_compra_ahorro
 from ui.components.saldo_anterior import TEXTO_SALDO_ANTERIOR, TOOLTIP_SALDO_ANTERIOR, boton_recalcular
@@ -176,14 +171,11 @@ from ui.components.tabla_planilla import (
     estilo_campo,
     mostrar_mensaje,
     pantalla_planilla,
-    refrescar,
     sin_auto_update,
     sin_borde,
     texto_celda,
 )
 from ui.theme.tabla_tokens import (
-    BG_SUPERFICIE,
-    BORDER_DEFAULT,
     TEXT_ACCENT,
     TEXT_NEGATIVO,
     TEXT_POSITIVO,
@@ -219,14 +211,10 @@ MENSAJE_SIGNO_NO_EDITABLE = (
     "BORRALO Y CARGALO DE NUEVO CON EL SIGNO CORRECTO."
 )
 
-# Indicador de sincronización con Supabase (barra superior, a la derecha del título).
+# Indicador de sincronización: ya no está en el Registro (vive en la sidebar).
+# Estos tres quedan acá porque ui/app.py los importa para dibujarlo.
 COLOR_SYNC_EN_CURSO = "#FFC107"  # amarillo: no hay token de "en curso" en ui/theme/tabla_tokens.py
 TEXTO_INDICADOR_SYNC = "SINC"
-TAMANIO_ICONO_SYNC = 16
-ESPACIO_ICONO_SYNC = 4
-PADDING_INDICADOR_H = 10
-ALTURA_INDICADOR = 36
-RADIO_INDICADOR = 18
 # estado de SyncEngine → (ícono, color, tooltip corto).
 ESTADOS_INDICADOR_SYNC = {
     ESTADO_SINCRONIZADO: (ft.Icons.CLOUD_DONE, TEXT_POSITIVO, "SINCRONIZADO"),
@@ -241,9 +229,11 @@ ESTADOS_INDICADOR_SYNC = {
 # CATEGORIAS_PROTEGIDAS (por nombre, el id varía entre bases; sin distinguir
 # mayúsculas, así una base todavía sin reestructurar — "Autotransferencia" —
 # se reconoce igual).
+# AHORRO/INVERSIÓN ya no está (pedido del usuario): se guarda como una
+# transacción normal y el aporte se carga a mano en Ahorros. Su diálogo
+# (_abrir_dialogo_ahorro_inversion()) queda, sin disparo.
 _CATEGORIAS_ROUTING_ESPECIAL: dict[tuple[str, str], str] = {
     ("MOVIMIENTO CAPITAL", "AUTOTRANSFERENCIA"): "autotransferencia",
-    ("MOVIMIENTO CAPITAL", "AHORRO/INVERSIÓN"): "ahorro_inversion",
     ("MOVIMIENTO CAPITAL", "DEUDA"): "deuda",
 }
 # Opción "+ Crear nuevo objetivo" del diálogo de Ahorro/Inversión — nunca
@@ -330,7 +320,7 @@ def build(
 
     # Todas las categorías activas (list_categories() ya saca las inactivas), de
     # cualquier tipo — también las 'movimiento' sin routing, como CAMBIO MONEDA
-    # (pedido del usuario) —, con las 3 especiales de routing al final, así la
+    # (pedido del usuario) —, con las especiales de routing al final, así la
     # primera opción por default sigue siendo una categoría normal.
     todas_las_categorias = [dict(c) for c in categorias_service.list_categories()]
     categorias_especiales = [
@@ -704,15 +694,12 @@ def build(
         categoria_id = campo_categoria.id_seleccionado
         moneda_codigo = dropdown_moneda.value
 
-        # "autotransferencia"/"ahorro_inversion" REEMPLAZAN el guardado
-        # normal (el diálogo guarda y llama a _alta_ok()); "deuda" lo
-        # EXTIENDE (transacción normal primero, después el diálogo).
+        # "autotransferencia" REEMPLAZA el guardado normal (el diálogo guarda
+        # y llama a _alta_ok()); "deuda" lo EXTIENDE (transacción normal
+        # primero, después el diálogo).
         routing = mapa_categoria_a_routing.get(campo_categoria.id_seleccionado)
         if routing == "autotransferencia":
             _abrir_dialogo_autotransferencia(cuenta_id, moneda_codigo, monto_con_signo, fecha_str, concepto, categoria_id)
-            return
-        if routing == "ahorro_inversion":
-            _abrir_dialogo_ahorro_inversion(cuenta_id, moneda_codigo, monto_con_signo, fecha_str, concepto)
             return
 
         try:
@@ -854,6 +841,7 @@ def build(
     def _abrir_dialogo_ahorro_inversion(
         cuenta_id: str, moneda_codigo: str, monto: float, fecha_str: str, concepto: str,
     ) -> None:
+        # SIN DISPARO: la fila de alta ya no lo abre (ver _CATEGORIAS_ROUTING_ESPECIAL).
         # Dos modos en el MISMO AlertDialog: el link "Elegir activo
         # específico" reemplaza contenedor_dialogo.content por el formulario
         # de dialogo_compra_ahorro.py; estado_confirmar indirecciona qué
@@ -1248,80 +1236,7 @@ def build(
         estado["mes"], estado["anio"] = ui["mes"], ui["anio"]
         tabla.recargar(limpiar_seleccion=True)
 
-    # El indicador de sync va al extremo derecho, en la MISMA fila que el
-    # buscador y el selector de mes: en una fila aparte, con la ventana
-    # angosta la barra de título se desbordaba por debajo del indicador.
     titulo = barra_titulo(
         page, "REGISTRO DE TRANSACCIONES", tabla, ui, _al_cambiar_periodo, "BUSCAR EN EL REGISTRO…",
-        acciones=[_indicador_sync(page)],
     )
     return pantalla_planilla([titulo, contenedor_saldos, control_tabla])
-
-
-def _indicador_sync(page: ft.Page) -> ft.Control:
-    """
-    Estado de la sincronización con Supabase (sync/sync_engine.py, el motor
-    que registró ui/app.py), compacto: ícono de nube + "SINC" — verde
-    CLOUD_DONE sincronizado, amarillo CLOUD_SYNC sincronizando, rojo
-    CLOUD_OFF sin conexión (también trabajando sin sesión). Tooltip de una
-    línea: el estado, la hora de la última sincronización y, si la hubo, la
-    cantidad de errores. Click: fuerza una sincronización completa en otro
-    hilo. El motor avisa cada cambio de estado desde el hilo de la sync: el
-    repintado pasa a la UI con page.run_task(). El oyente se registra con una
-    clave fija ("registro"): cuando el Registro se reconstruye, el indicador
-    nuevo reemplaza al viejo.
-    """
-    motor = motor_registrado()
-    icono = ft.Icon(ft.Icons.CLOUD_OFF, size=TAMANIO_ICONO_SYNC)  # _pintar() pone el del estado
-    texto = ft.Text(TEXTO_INDICADOR_SYNC, size=TypographyTokens.REGISTRO_FONT_SALDO_BAR, weight=ft.FontWeight.W_500)
-    indicador = ft.Container(
-        height=ALTURA_INDICADOR,
-        padding=ft.Padding.symmetric(horizontal=PADDING_INDICADOR_H),
-        bgcolor=BG_SUPERFICIE,
-        border=ft.Border.all(1, BORDER_DEFAULT),
-        border_radius=RADIO_INDICADOR,
-        alignment=ft.Alignment.CENTER,
-        content=ft.Row(
-            [icono, texto], spacing=ESPACIO_ICONO_SYNC, tight=True, vertical_alignment=ft.CrossAxisAlignment.CENTER,
-        ),
-    )
-
-    def _estado() -> str:
-        return motor.estado if motor is not None and motor.hay_sesion() else ESTADO_SIN_SESION
-
-    def _tooltip(estado: str, etiqueta: str) -> str:
-        partes = [etiqueta]
-        if estado in (ESTADO_SINCRONIZADO, ESTADO_SIN_CONEXION) and motor.ultima_sync is not None:
-            partes.append(f"{motor.ultima_sync:%H:%M}")
-        resultado = motor.ultimo_resultado if motor is not None else None
-        if estado == ESTADO_SINCRONIZADO and resultado is not None and resultado.errores:
-            partes.append(f"{resultado.errores} ERROR(ES)")
-        return " · ".join(partes)
-
-    def _pintar() -> None:
-        estado = _estado()
-        nube, color, etiqueta = ESTADOS_INDICADOR_SYNC.get(estado, ESTADOS_INDICADOR_SYNC[ESTADO_SIN_CONEXION])
-        icono.icon = nube
-        icono.color = color
-        texto.color = color
-        indicador.tooltip = _tooltip(estado, etiqueta)
-
-    async def _repintar() -> None:
-        _pintar()
-        refrescar(page, indicador)
-
-    def _al_cambiar(_motor: SyncEngine) -> None:
-        page.run_task(_repintar)  # llega desde el hilo de la sync
-
-    def _forzar(e=None) -> None:
-        if motor is None or not motor.hay_sesion():
-            mostrar_mensaje(page, "INICIÁ SESIÓN DESDE LA BARRA LATERAL PARA SINCRONIZAR.", es_error=True)
-            return
-        page.run_thread(motor.sync_completo)  # el motor avisa SINCRONIZANDO… y el resultado
-        sin_auto_update()
-
-    indicador.on_click = _forzar
-    if motor is not None:
-        motor.escuchar("registro", _al_cambiar)
-    _pintar()
-    return indicador
