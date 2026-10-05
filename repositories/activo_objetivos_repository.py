@@ -3,8 +3,13 @@ DeltaBalance — repositories/activo_objetivos_repository.py
 
 Acceso a datos para la tabla `activo_objetivos` (db/schema.sql): qué
 porcentaje de un activo financiero es de cada objetivo de ahorro — el
-reparto VIGENTE del activo. A partir de él SavingsService genera las
+reparto VIGENTE del activo. A partir de él SavingsService generaba las
 `asignaciones` de cada movimiento nuevo.
+
+DEPRECATED (docs/DATA_MODEL_DECISIONS.md sección 31): los objetivos son de
+cada movimiento. SavingsService solo usa eliminar_por_objetivo() /
+eliminar_por_activo(), al borrar un objetivo (sección 32) o un instrumento
+(sección 35): la FK lo exige.
 
 Sin lógica de negocio: no decide cuándo se puede asignar ni reparte montos
 — eso vive en services/savings_service.py. validar_porcentajes() solo
@@ -65,6 +70,16 @@ class ActivoObjetivosRepository:
     def eliminar(self, reparto_id: str, conn: Optional[sqlite3.Connection] = None) -> bool:
         cursor = self._ejecutar("DELETE FROM activo_objetivos WHERE id = ?;", (reparto_id,), conn)
         return cursor.rowcount > 0
+
+    def eliminar_por_objetivo(self, objetivo_id: str, conn: Optional[sqlite3.Connection] = None) -> int:
+        """Todas las filas de un objetivo (antes de borrarlo: FK). Devuelve cuántas borró."""
+        cursor = self._ejecutar("DELETE FROM activo_objetivos WHERE objetivo_id = ?;", (objetivo_id,), conn)
+        return cursor.rowcount
+
+    def eliminar_por_activo(self, activo_id: str, conn: Optional[sqlite3.Connection] = None) -> int:
+        """Todas las filas de un activo (antes de borrarlo: FK). Devuelve cuántas borró."""
+        cursor = self._ejecutar("DELETE FROM activo_objetivos WHERE activo_id = ?;", (activo_id,), conn)
+        return cursor.rowcount
 
     # ----------------------------------------------------------
     # READ

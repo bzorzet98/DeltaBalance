@@ -121,19 +121,21 @@ class ActivosFinancierosRepository:
         comision_compra_minor: Any = NO_CAMBIAR,
         comision_venta_minor: Any = NO_CAMBIAR,
         conn: Optional[sqlite3.Connection] = None,
+        cuenta_id: Any = NO_CAMBIAR,
     ) -> bool:
         """
-        Update parcial de nombre/tipo/moneda_id/broker_id/comisiones.
-        Default NO_CAMBIAR = no tocar ese campo (None en broker_id lo
-        desvincula). NO incluye `activa` a propósito — eso es transición
-        exclusiva de desactivar()/activar(), mismo patrón que
-        CategoriasRepository.
+        Update parcial de nombre/tipo/moneda_id/broker_id/comisiones/
+        cuenta_id. Default NO_CAMBIAR = no tocar ese campo (None en
+        broker_id / cuenta_id lo desvincula). NO incluye `activa` a
+        propósito — eso es transición exclusiva de desactivar()/activar(),
+        mismo patrón que CategoriasRepository.
         """
         campos, valores = [], []
         if nombre    is not NO_CAMBIAR: campos.append("nombre = ?");    valores.append(nombre)
         if tipo      is not NO_CAMBIAR: campos.append("tipo = ?");      valores.append(tipo)
         if moneda_id is not NO_CAMBIAR: campos.append("moneda_id = ?"); valores.append(moneda_id)
         if broker_id is not NO_CAMBIAR: campos.append("broker_id = ?"); valores.append(broker_id)
+        if cuenta_id is not NO_CAMBIAR: campos.append("cuenta_id = ?"); valores.append(cuenta_id)
         if comision_compra_minor is not NO_CAMBIAR:
             campos.append("comision_compra_minor = ?")
             valores.append(comision_compra_minor)
@@ -160,3 +162,20 @@ class ActivosFinancierosRepository:
 
     def activar(self, activo_id: str) -> None:
         self._db.execute("UPDATE activos_financieros SET activa = 1 WHERE id = ?;", (activo_id,))
+
+    # ----------------------------------------------------------
+    # DELETE
+    # ----------------------------------------------------------
+
+    def eliminar(self, activo_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
+        """
+        DELETE físico. Las FK de movimientos_activo / activo_objetivos lo
+        rechazan si quedan filas que lo referencian: quién puede borrarse
+        (y qué se borra antes, en la misma transacción `conn`) lo decide
+        SavingsService.delete_activo().
+        """
+        sql = "DELETE FROM activos_financieros WHERE id = ?;"
+        if conn is not None:
+            conn.execute(sql, (activo_id,))
+        else:
+            self._db.execute(sql, (activo_id,))

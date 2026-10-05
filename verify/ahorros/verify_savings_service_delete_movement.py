@@ -64,7 +64,7 @@ def main() -> None:
     moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
     categoria_inversiones = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
-        "AND subcategoria = 'Inversiones';"
+        "AND subcategoria = 'INVERSIONES';"
     )["id"]
     cuenta_mp = cuentas_repo.crear(
         nombre="Mercado Pago (verify delete_movement)", tipo="debito", moneda_codigo="ARS", saldo_inicial=1000.0,

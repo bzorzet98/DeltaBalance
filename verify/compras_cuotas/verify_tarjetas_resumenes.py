@@ -17,6 +17,10 @@ FeesService:
 - Se sincroniza: está en TABLAS_SINCRONIZADAS, tiene sincronizado_en y sus
   triggers, y cada fecha guardada queda pendiente de subir (sync_cambios);
   una que se rechaza no deja nada pendiente.
+- Regresión: guardar dos veces los días default de una tarjeta sin
+  sincronizar en el medio ya no rompe con "UNIQUE constraint failed:
+  sync_cambios.tabla, sync_cambios.clave" (triggers de sync con DELETE +
+  INSERT, db/schema_migrations.py _ddl_triggers_sync()).
 
 El comportamiento sin fechas reales lo sigue cubriendo
 verify_tarjetas_y_cronograma.py.
@@ -26,7 +30,9 @@ Correlo con:
 """
 
 from pathlib import Path
+import sqlite3
 import sys
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -179,6 +185,38 @@ def main() -> None:
     caso("… y anotada en sync_cambios para la próxima subida", "guardado", (manager.fetchone(
         "SELECT operacion FROM sync_cambios WHERE tabla = 'tarjetas_resumenes' AND clave = ?;", (fila["id"],),
     ) or {"operacion": None})["operacion"])
+
+    # ============================================================
+    print("\n--- Guardar dos veces sin sincronizar en el medio ---")
+    # ============================================================
+    # El error real: GUARDAR DÍAS DEFAULT sobre una tarjeta cuyo cambio
+    # anterior todavía no subió → "UNIQUE constraint failed:
+    # sync_cambios.tabla, sync_cambios.clave". El upsert de tarjetas_config
+    # (ON CONFLICT DO UPDATE) le imponía ABORT al INSERT OR REPLACE del
+    # trigger; ahora el trigger hace DELETE + INSERT.
+    config_id = manager.fetchone("SELECT id FROM tarjetas_config WHERE cuenta_id = ?;", (visa,))["id"]
+
+    def anotaciones_config() -> list[str]:
+        return [f["operacion"] for f in manager.fetchall(
+            "SELECT operacion FROM sync_cambios WHERE tabla = 'tarjetas_config' AND clave = ?;", (config_id,),
+        )]
+
+    def guardar_dias_de_nuevo() -> Any:
+        try:
+            return svc.set_card_config(visa, 16, 6).success
+        except sqlite3.IntegrityError as err:
+            return f"IntegrityError: {err}"
+
+    caso("los días default de VISA tienen un cambio pendiente de subir", ["guardado"], anotaciones_config())
+    caso("volver a guardarlos (upsert sobre una fila con cambio pendiente) no rompe", True, guardar_dias_de_nuevo())
+    caso("… quedan los días nuevos", (16, 6), (
+        svc.get_card_config(visa)["dia_cierre"], svc.get_card_config(visa)["dia_vencimiento"],
+    ))
+    caso("… y sigue habiendo UNA anotación pendiente", ["guardado"], anotaciones_config())
+    sql_trigger = manager.fetchone(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_sync_tarjetas_config_update';",
+    )["sql"]
+    caso("el trigger de la base ya es el nuevo (sin INSERT OR REPLACE)", False, "INSERT OR REPLACE" in sql_trigger)
 
     manager.desconectar()
     print(f"\n--- Resumen: {casos_ok}/{casos_total} casos OK ---")

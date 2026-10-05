@@ -6,7 +6,7 @@ del hogar aunque apunten a filas PRIVADAS de quien los cargó
 (sync/referencias.py, docs/DATA_MODEL_DECISIONS.md sección 27). Tres bases
 temporales — BRUNO, NOELIA y una tercera, CARLA — y un Supabase falso en
 memoria (verify/sync/_fake_supabase.py, sin RLS ni red). Cada base nace con
-su propio seed: "Supermercado" existe en las tres, con un UUID distinto en
+su propio seed: "SUPERMERCADO" existe en las tres, con un UUID distinto en
 cada una. Es el caso real que rompía con "FOREIGN KEY constraint failed".
 
 Cubre:
@@ -117,8 +117,8 @@ def main() -> None:
     caso("NOELIA bajó el hogar de BRUNO", True,
          mn.fetchone("SELECT id FROM hogares WHERE id = ?;", (hogar_id,)) is not None)
     SharedExpensesService(mn).join_hogar(codigo, "NOELIA")
-    super_b, super_n = categoria_id(mb, "Supermercado"), categoria_id(mn, "Supermercado")
-    caso("'Supermercado' existe en las dos bases con UUID distinto (cada seed genera el suyo)", True, super_b != super_n)
+    super_b, super_n = categoria_id(mb, "SUPERMERCADO"), categoria_id(mn, "SUPERMERCADO")
+    caso("'SUPERMERCADO' existe en las dos bases con UUID distinto (cada seed genera el suyo)", True, super_b != super_n)
 
     # ============================================================
     print("\n--- NOELIA comparte dos gastos: uno con una categoría que BRUNO también tiene, otro con una que no ---")
@@ -128,13 +128,13 @@ def main() -> None:
     g_vet = compartir(mn, "NOELIA", vet_n, 50000, "2026-09-11", "VACUNA")
     caso("NOELIA: sync OK", True, motor_n.sync_completo().success)
     caso(f"en Supabase el gasto lleva {MARCA_REFERENCIAS}: la categoría descripta por nombre",
-         {"categoria_principal": "EGRESOS VARIABLES", "subcategoria": "Supermercado", "tipo": "egreso"},
+         {"categoria_principal": "EGRESOS", "subcategoria": "SUPERMERCADO", "tipo": "egreso"},
          fake.datos(g_super).get(MARCA_REFERENCIAS, {}).get("categoria_id"))
 
     r = motor_b.sync_completo()
     caso("BRUNO: sync sin errores (antes: FOREIGN KEY constraint failed)", 0, r.errores)
     caso("el gasto de NOELIA llegó a la base de BRUNO", True, bool(gasto(mb, g_super)))
-    caso("… con la categoría 'Supermercado' DE BRUNO", super_b, gasto(mb, g_super).get("categoria_id"))
+    caso("… con la categoría 'SUPERMERCADO' DE BRUNO", super_b, gasto(mb, g_super).get("categoria_id"))
     fila_vet = mb.fetchone("SELECT * FROM categorias WHERE subcategoria = 'Veterinaria';")
     vet_b = dict(fila_vet) if fila_vet is not None else {}
     caso("la categoría que BRUNO no tenía se creó en su base", True, bool(vet_b))
@@ -144,7 +144,7 @@ def main() -> None:
     caso("… queda pendiente de subir (sincronizado_en NULL)", None, vet_b.get("sincronizado_en"))
     nombres = {g["id"]: g["category_name"] for g in SharedExpensesService(mb).list_shared_expenses(hogar_id)}
     caso("la pantalla de Compartidos de BRUNO los lista con su categoría",
-         {g_super: "Supermercado", g_vet: "Veterinaria"}, nombres)
+         {g_super: "SUPERMERCADO", g_vet: "Veterinaria"}, nombres)
 
     motor_b.sync_completo()
     caso("la categoría creada subió como fila privada de BRUNO", BRUNO, fake.fila(vet_b.get("id", "")).get("usuario_id"))
@@ -157,7 +157,7 @@ def main() -> None:
     # ============================================================
     SharedExpensesService(mb).aplicar_pago(g_super, hogar_id, 20000, "2026-09-15", tipo_pago="compensacion")
     motor_b.sync_completo()
-    caso("BRUNO lo sube con SU categoría + la referencia por nombre", (super_b, "Supermercado"),
+    caso("BRUNO lo sube con SU categoría + la referencia por nombre", (super_b, "SUPERMERCADO"),
          (fake.datos(g_super).get("categoria_id"),
           fake.datos(g_super).get(MARCA_REFERENCIAS, {}).get("categoria_id", {}).get("subcategoria")))
     r = motor_n.sync_completo()
@@ -204,7 +204,7 @@ def main() -> None:
     caso("CARLA tiene los 3 gastos del hogar", {g_super, g_vet, g_bruno}, {g["id"] for g in gastos_c})
     ids_categorias_c = {f["id"] for f in mc.fetchall("SELECT id FROM categorias;")}
     caso("… todos apuntando a categorías de SU base", True, all(g["categoria_id"] in ids_categorias_c for g in gastos_c))
-    caso("… 'Supermercado' traducido a la de CARLA", categoria_id(mc, "Supermercado"), gasto(mc, g_super).get("categoria_id"))
+    caso("… 'SUPERMERCADO' traducido a la de CARLA", categoria_id(mc, "SUPERMERCADO"), gasto(mc, g_super).get("categoria_id"))
     caso("… y los 2 pagos", 2, mc.fetchone("SELECT COUNT(*) AS n FROM gasto_compartido_pagos;")["n"])
 
     caso("las privadas viajan como siempre: la categoría de NOELIA, en deltabalance_filas y sin referencias",
@@ -229,7 +229,7 @@ def main() -> None:
 
     r = motor_n.sync_completo()
     caso("NOELIA (primera corrida de la versión nueva): sync OK", True, r.success)
-    caso(f"… completó {MARCA_REFERENCIAS} del gasto viejo en Supabase", "Supermercado",
+    caso(f"… completó {MARCA_REFERENCIAS} del gasto viejo en Supabase", "SUPERMERCADO",
          fake.datos(g_viejo).get(MARCA_REFERENCIAS, {}).get("categoria_id", {}).get("subcategoria"))
     caso("… y anotó la reparación en sync_estado", True,
          mn.fetchone("SELECT valor FROM sync_estado WHERE clave = ?;", (REPARACION_REFERENCIAS,)) is not None)

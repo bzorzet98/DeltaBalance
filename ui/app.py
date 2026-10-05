@@ -117,6 +117,7 @@ from ui.screens import deudas as deudas_screen
 from ui.screens import estadisticas as estadisticas_screen
 from ui.screens import gastos_compartidos as gastos_compartidos_screen
 from ui.screens import presupuestos as presupuestos_screen
+from ui.screens import resumen_mes as resumen_mes_screen
 
 # --- Configuración de layout ---
 SIDEBAR_ANCHO_EXPANDIDO = 220
@@ -204,6 +205,9 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     pantalla_actual: dict[str, Optional[str]] = {"nombre": None}
 
     builders: dict[str, Callable[[], ft.Control]] = {
+        # DASHBOARD: resumen del mes (ui/screens/resumen_mes.py). "registro" es
+        # la pantalla del Registro, que por historia vive en ui/screens/dashboard.py.
+        "resumen_mes": lambda: resumen_mes_screen.build(page, dashboard_service),
         "registro": lambda: dashboard_screen.build(
             page,
             accounts_service,
@@ -321,7 +325,11 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
             _restaurar_scroll(pantallas[nombre])
         page.update()
 
+    def mostrar_resumen_mes(e=None) -> None:
+        _navegar("resumen_mes")
+
     def mostrar_dashboard(e=None) -> None:
+        # Navega al Registro (nombre histórico: ver "resumen_mes" en builders).
         _navegar("registro")
 
     def mostrar_ingresos(e=None) -> None:
@@ -357,9 +365,9 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
     # ------------------------------------------------------------
     # SIDEBAR (colapsable — ver docstring del módulo)
     # ------------------------------------------------------------
-    # Orden: Registro, Cuotas, Compartidos, Deudas, Ingresos, Presupuestos,
-    # Estadísticas; después "Configuración" con Cuentas y Categorías (no son
-    # de primer nivel).
+    # Orden: Dashboard, Registro, Cuotas, Compartidos, Deudas, Ingresos,
+    # Presupuestos, Ahorros, Estadísticas; después "Configuración" con
+    # Cuentas y Categorías (no son de primer nivel).
 
     # Colapsada por default (pedido explícito) — solo el botón de flecha la
     # expande/contrae.
@@ -482,12 +490,15 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
 
         controles: list[ft.Control] = [
             encabezado,
+            # Ícono propio: BAR_CHART ya es el de ESTADÍSTICAS.
+            _item_nav("DASHBOARD", ft.Icons.SPACE_DASHBOARD, mostrar_resumen_mes, expandido),
             _item_nav("REGISTRO", ft.Icons.RECEIPT_LONG, mostrar_dashboard, expandido),
             _item_nav("CUOTAS", ft.Icons.CREDIT_CARD, mostrar_compras_cuotas, expandido),
             _item_nav("COMPARTIDOS", ft.Icons.HOME, mostrar_gastos_compartidos, expandido),
             _item_nav("DEUDAS", ft.Icons.HANDSHAKE, mostrar_deudas, expandido),
             _item_nav("INGRESOS", ft.Icons.TRENDING_UP, mostrar_ingresos, expandido),
             _item_nav("PRESUPUESTOS", ft.Icons.SAVINGS, mostrar_presupuestos, expandido),
+            _item_nav("AHORROS", ft.Icons.ACCOUNT_BALANCE_WALLET, mostrar_ahorros, expandido),
             _item_nav("ESTADÍSTICAS", ft.Icons.BAR_CHART, mostrar_estadisticas, expandido),
             ft.Container(expand=True),
             ft.Divider(),
@@ -552,7 +563,7 @@ def build_app(page: ft.Page, db: DatabaseManager) -> None:
         )
         hay_cuentas = len(accounts_service.list_accounts()) > 0
         if hay_cuentas:
-            mostrar_dashboard()
+            mostrar_resumen_mes()  # la app abre en el DASHBOARD
         else:
             mostrar_onboarding()
 

@@ -397,7 +397,7 @@ def main() -> None:
     cuentas_repo = CuentasRepository(manager)
     categoria_ahorro_inversion = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
-        "AND subcategoria = 'Ahorro/Inversión';"
+        "AND subcategoria = 'AHORRO/INVERSIÓN';"
     )["id"]
 
     cuenta_mp = cuentas_repo.crear(

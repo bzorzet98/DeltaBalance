@@ -83,7 +83,7 @@ def main() -> None:
     moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
     cuenta_id = cuentas_repo.crear(nombre="Cuenta Sueldo Service", tipo="debito", moneda_codigo="ARS")
     categoria_sueldo = manager.fetchone(
-        "SELECT id FROM categorias WHERE subcategoria = 'Sueldo';"
+        "SELECT id FROM categorias WHERE subcategoria = 'SUELDO / BECA';"
     )["id"]
 
     print("--- create_employment() — defaults de columna del repositorio, sin pasar porcentajes ---")

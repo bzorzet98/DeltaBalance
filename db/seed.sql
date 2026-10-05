@@ -21,87 +21,70 @@ INSERT OR IGNORE INTO monedas (codigo, simbolo, decimales) VALUES
 -- CATEGORIAS
 -- tipo: 'ingreso' | 'egreso' | 'movimiento'
 --
--- Lista simplificada (21 categorías, antes 27) — propuesta y aprobada por
--- el usuario el 2026-08-25 para reducir categorías redundantes/demasiado
--- específicas para el uso diario. INSERT OR IGNORE solo alcanza a bases
--- NUEVAS (nunca renombra ni fusiona filas ya sembradas con los nombres
--- viejos) — una base ya existente (como data/deltabalance.db) necesita
--- correr migration/migrar_categorias_simplificadas.py para llegar al mismo
--- estado. Ver ese script para el detalle de qué categoría vieja se fusionó
--- en cuál nueva. Las dos categorías protegidas (services/categorias_service.py
--- CATEGORIAS_PROTEGIDAS: INGRESOS · Sueldo, MOVIMIENTO CAPITAL ·
--- Autotransferencia) no cambiaron de nombre.
+-- Catálogo reestructurado (docs/DATA_MODEL_DECISIONS.md sección 30): todo
+-- en MAYÚSCULAS, egresos bajo una sola categoría principal EGRESOS. Es el
+-- mismo CATEGORIAS_FINALES de migration/reestructurar_categorias.py, que
+-- lleva a este catálogo una base ya sembrada con los nombres anteriores
+-- (INSERT OR IGNORE solo alcanza a bases NUEVAS: nunca renombra ni fusiona
+-- filas existentes).
+--
+-- Categorías que el código reconoce por nombre (sin distinguir mayúsculas,
+-- utils/categorias.py clave_categoria()) — protegidas en
+-- services/categorias_service.py CATEGORIAS_PROTEGIDAS:
+-- - INGRESOS · SUELDO / BECA.
+-- - MOVIMIENTO CAPITAL · AUTOTRANSFERENCIA / AHORRO/INVERSIÓN / DEUDA:
+--   routing especial de la fila de alta del Registro
+--   (ui/components/registro_transacciones.py).
+-- - TARJETA DE CRÉDITO · IMPUESTO TARJETA / RECARGO TARJETA /
+--   AJUSTE/REINTEGRO TARJETA: en Compras en cuotas son cargos extra del
+--   resumen, no compras (services/fees_service.py CATEGORIAS_CARGO_EXTRA).
 -- =============================================================
+
+-- EGRESOS ("EGRESO VARIABLE": transitoria, para los datos migrados sin una
+-- categoría más precisa)
+INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
+    ('EGRESOS', 'VIVIENDA',          'egreso'),
+    ('EGRESOS', 'SERVICIOS BÁSICOS', 'egreso'),
+    ('EGRESOS', 'SEGUROS',           'egreso'),
+    ('EGRESOS', 'EDUCACIÓN',         'egreso'),
+    ('EGRESOS', 'TRANSPORTE / AUTO', 'egreso'),
+    ('EGRESOS', 'SUPERMERCADO',      'egreso'),
+    ('EGRESOS', 'ALIMENTOS',         'egreso'),
+    ('EGRESOS', 'GASTRONOMÍA',       'egreso'),
+    ('EGRESOS', 'SALUD',             'egreso'),
+    ('EGRESOS', 'DEPORTE',           'egreso'),
+    ('EGRESOS', 'INDUMENTARIA',      'egreso'),
+    ('EGRESOS', 'HOGAR',             'egreso'),
+    ('EGRESOS', 'MASCOTAS',          'egreso'),
+    ('EGRESOS', 'REGALOS',           'egreso'),
+    ('EGRESOS', 'OCIO',              'egreso'),
+    ('EGRESOS', 'VACACIONES',        'egreso'),
+    ('EGRESOS', 'EGRESO VARIABLE',   'egreso');
 
 -- INGRESOS
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
-    ('INGRESOS', 'Sueldo',               'ingreso'),
-    ('INGRESOS', 'Cobro Deuda',          'ingreso'),
-    ('INGRESOS', 'Reintegro',            'ingreso');
-
--- EGRESOS FIJOS
-INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
-    ('EGRESOS FIJOS', 'Alquiler / Vivienda', 'egreso'),
-    ('EGRESOS FIJOS', 'Servicios',           'egreso'),
-    ('EGRESOS FIJOS', 'Seguros',             'egreso'),
-    ('EGRESOS FIJOS', 'Impuestos',           'egreso'),
-    ('EGRESOS FIJOS', 'Educacion',           'egreso');
-
--- EGRESOS VARIABLES
-INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
-    ('EGRESOS VARIABLES', 'Supermercado',        'egreso'),
-    ('EGRESOS VARIABLES', 'Hogar',                'egreso'),
-    ('EGRESOS VARIABLES', 'Bienestar y Deporte',  'egreso'),
-    ('EGRESOS VARIABLES', 'Ocio',                 'egreso'),
-    ('EGRESOS VARIABLES', 'Comidas y Bebidas',    'egreso'),
-    ('EGRESOS VARIABLES', 'Transporte / Auto',    'egreso'),
-    ('EGRESOS VARIABLES', 'Salud',                'egreso'),
-    ('EGRESOS VARIABLES', 'Ropa',                 'egreso'),
-    ('EGRESOS VARIABLES', 'Regalos y Mascotas',   'egreso');
+    ('INGRESOS', 'SUELDO / BECA',       'ingreso'),
+    ('INGRESOS', 'INGRESO VARIABLE',    'ingreso'),
+    ('INGRESOS', 'REINTEGRO',           'ingreso'),
+    ('INGRESOS', 'REINTEGRO PROMOCIÓN', 'ingreso'),
+    ('INGRESOS', 'RENDIMIENTOS',        'ingreso'),
+    ('INGRESOS', 'COBRO DEUDA',         'ingreso');
 
 -- MOVIMIENTO CAPITAL
--- 'Ahorro/Inversión' (Tarea 1b de docs/PROXIMOS_PASOS.md, ver
--- services/categorias_service.py CATEGORIAS_PROTEGIDAS) es categoría
--- especial protegida: elegirla en la fila de alta del Registro de
--- transacciones (ui/components/registro_transacciones.py) rutea a un
--- aporte de ahorro (SavingsService.register_purchase()) en vez de crear
--- una transacción simple. NUEVA en una base ya existente: INSERT OR
--- IGNORE acá no alcanza a data/deltabalance.db si ya existía antes de
--- este cambio — correr migration/agregar_categoria_ahorro_inversion.py a
--- mano en ese caso.
--- 'Deuda' (nueva, docs/PROXIMOS_PASOS.md — corrección posterior a la
--- Tarea 9 Parte B): elegirla en la fila de alta del Registro NO reemplaza
--- la transacción normal (a diferencia de las otras dos especiales de
--- este bloque) — primero crea la transacción real de siempre, y DESPUÉS
--- abre un mini-diálogo que vincula una deuda informal
--- (DebtsService.create(origen_tipo='transaccion', origen_id=<esa
--- transacción>)) a esa misma transacción. Misma advertencia de INSERT OR
--- IGNORE: correr migration/agregar_categoria_deuda.py a mano contra una
--- base ya existente.
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
-    ('MOVIMIENTO CAPITAL', 'Autotransferencia',  'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Rendimientos',        'ingreso'),
-    ('MOVIMIENTO CAPITAL', 'Inversiones',         'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Cambio Moneda',       'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Ahorro/Inversión',    'movimiento'),
-    ('MOVIMIENTO CAPITAL', 'Deuda',               'movimiento');
+    ('MOVIMIENTO CAPITAL', 'AUTOTRANSFERENCIA', 'movimiento'),
+    ('MOVIMIENTO CAPITAL', 'AHORRO/INVERSIÓN',  'movimiento'),
+    ('MOVIMIENTO CAPITAL', 'INVERSIONES',       'movimiento'),
+    ('MOVIMIENTO CAPITAL', 'CAMBIO MONEDA',     'movimiento'),
+    ('MOVIMIENTO CAPITAL', 'DEUDA',             'movimiento');
 
--- TARJETA DE CRÉDITO — categorías especiales protegidas (agregadas Tarea 3
--- de docs/PROXIMOS_PASOS.md, ver services/categorias_service.py
--- CATEGORIAS_PROTEGIDAS y services/fees_service.py CATEGORIAS_CARGO_EXTRA):
--- elegir una de estas tres en la fila de alta de Compras en cuotas
--- (ui/screens/compras_cuotas.py) NO crea una compra en cuotas — rutea a un
--- cargo extra del resumen de tarjeta (resumen_cargos_extra) del tipo
--- correspondiente. tipo='egreso' por default aunque el monto de un
--- ajuste/reintegro puede ser negativo (la clasificación de categoría es
--- egreso igual, el signo lo define el monto tipeado, no la categoría).
--- NUEVA en una base ya existente: INSERT OR IGNORE acá NO alcanza a
--- data/deltabalance.db si ya existía antes de este cambio — correr
--- migration/agregar_categorias_tarjeta.py a mano en ese caso.
+-- TARJETA DE CRÉDITO (tipo 'egreso' aunque un ajuste/reintegro pueda ser
+-- negativo: el signo lo define el monto tipeado, no la categoría)
 INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUES
-    ('TARJETA DE CRÉDITO', 'Impuesto tarjeta',            'egreso'),
-    ('TARJETA DE CRÉDITO', 'Recargo tarjeta',              'egreso'),
-    ('TARJETA DE CRÉDITO', 'Ajuste/Reintegro tarjeta',     'egreso');
+    ('TARJETA DE CRÉDITO', 'IMPUESTO TARJETA',         'egreso'),
+    ('TARJETA DE CRÉDITO', 'AJUSTE/REINTEGRO TARJETA', 'egreso'),
+    ('TARJETA DE CRÉDITO', 'PAGO TARJETA',             'egreso'),
+    ('TARJETA DE CRÉDITO', 'RECARGO TARJETA',          'egreso');
 
 -- =============================================================
 -- BROKERS: no van acá. Los siembra db/schema_migrations.py

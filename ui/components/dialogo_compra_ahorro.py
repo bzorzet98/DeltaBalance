@@ -112,22 +112,38 @@ FormularioCompraAhorro (contenido + confirmar), que usa la pantalla de
 Ahorros:
 - construir_nuevo_activo(): nombre, tipo (FCI / ACCIÓN / CEDEAR / PLAZO
   FIJO / PLAZO FLEX), broker, moneda, cuenta asociada (opcional, Tarea
-  6g), comisiones por defecto y objetivos con porcentaje (suma <= 100;
-  SavingsService.assign_objetivo() por cada uno). on_exito recibe el
-  resultado de create_activo().
+  6g) y comisiones por defecto. on_exito recibe el resultado de
+  create_activo(). Sin objetivos: van en cada movimiento (ver abajo).
 - construir_movimiento(): según el tipo de activo, COMPRA / VENTA /
-  RENDIMIENTO (acciones, CEDEARs: cantidad entera + precio unitario +
-  comisión, y el dólar del día en la compra) o APORTE / RETIRO /
-  RENDIMIENTO (FCI, plazos: monto). Fecha y, salvo en un rendimiento, una
+  RENDIMIENTO (acciones, CEDEARs: moneda del movimiento + cantidad entera
+  + monto bruto + comisión, y el dólar del día en la compra — sección 33)
+  o APORTE / RETIRO / RENDIMIENTO (FCI, plazos: monto, en la moneda del
+  activo). Fecha y, salvo en un rendimiento, una
   transacción del Registro del mismo mes para vincular (opcional; si no se
   elige ninguna y el activo tiene cuenta, el service crea la suya). Los
   campos se rearman al cambiar el tipo; la lista de transacciones, al
   cambiar el mes de la fecha. "RETIRO" es una venta por monto
-  (registrar_retiro()).
-- construir_objetivos_activo(): el reparto del activo entre objetivos,
-  editable (construir_editor_asignaciones() precargado con `iniciales`).
-  Aplica las diferencias con remove_objetivo()/assign_objetivo(), primero
-  las bajas y las rebajas para no pasar nunca del 100% a mitad de camino.
+  (registrar_retiro()). Abajo, OBJETIVOS del movimiento (ver "Objetivos
+  por movimiento").
+- construir_objetivos_movimiento(): el diálogo de la celda OBJETIVOS de la
+  tabla de movimientos (fila de alta y filas ya cargadas).
+- construir_editar_activo(): editar un instrumento — los campos de
+  construir_nuevo_activo() precargados; el tipo no se edita y la moneda
+  solo sin movimientos (docs/DATA_MODEL_DECISIONS.md sección 35).
+- construir_eliminar_objetivo(): eliminar un objetivo eligiendo a quién
+  pasa lo que tenía en cada instrumento (docs/DATA_MODEL_DECISIONS.md
+  sección 32).
+
+--- Objetivos por movimiento (docs/DATA_MODEL_DECISIONS.md sección 31) ---
+
+Reemplaza al reparto fijo por activo (el antiguo construir_objetivos_activo()
+y la sección OBJETIVOS de construir_nuevo_activo(), que lo cargaban con
+assign_objetivo()): cada movimiento dice a qué objetivos va y en qué
+porcentaje, con construir_editor_asignaciones() — que ganó crear un objetivo
+ahí mismo, el monto de cada fila y la línea ASIGNADO · SIN ASIGNAR. Un
+rendimiento arranca en PROPORCIONAL (TEXTO_REPARTO_PROPORCIONAL: lo
+calcula el service al guardar, SavingsService.get_reparto_proporcional());
+destildarlo, o abrir el diálogo, precarga ese reparto para cambiarlo.
 """
 
 from dataclasses import dataclass
@@ -146,9 +162,16 @@ from utils.money import amount_display, amount_to_minor
 
 # --- Configuración de layout ---
 ANCHO_DIALOGO_COMPRA_AHORRO = 380
+# construir_objetivos_movimiento(): sus filas suman la columna de monto.
+ANCHO_DIALOGO_OBJETIVOS = 480
 ANCHO_CAMPO_ASIGNACION_OBJETIVO = 200
 ANCHO_CAMPO_ASIGNACION_PORCENTAJE = 90
+ANCHO_CAMPO_ASIGNACION_MONTO = 110
 ESPACIADO_DIALOGO = 12
+ESPACIADO_ASIGNACIONES = 6
+TAMANIO_ICONO_ASIGNACION = 16
+TEXTO_CREAR_OBJETIVO = "+ CREAR NUEVO OBJETIVO"
+TEXTO_REPARTO_PROPORCIONAL = "PROPORCIONAL: SEGÚN LO QUE CADA OBJETIVO TENÍA EN EL ACTIVO ANTES DE ESA FECHA"
 
 # Criterio de qué tipos tienen "unidad" real (tiene sentido pedir cantidad/
 # precio_unitario al comprar) — ver docstring del módulo.
@@ -168,6 +191,8 @@ DECIMALES_DEFAULT = 2
 # criterio que _ID_OBJETIVO_NUEVO en registro_transacciones.py (nunca
 # colisiona con un id real, INTEGER PRIMARY KEY siempre numérico como str).
 _ID_ACTIVO_NUEVO = "__nuevo__"
+# Ídem, "+ CREAR NUEVO OBJETIVO" en las filas de construir_editor_asignaciones().
+_ID_OBJETIVO_NUEVO = "__nuevo_objetivo__"
 
 
 def _tipo_activo_display(tipo: str) -> str:
@@ -217,106 +242,237 @@ class FormularioCompraAhorro:
 
 @dataclass
 class EditorAsignaciones:
-    """contenido: Column con las filas + "+ Agregar otro objetivo", para insertar en el Column del diálogo del caller. resolver(): ver construir_editor_asignaciones()."""
+    """contenido: Column con las filas + "+ AGREGAR OBJETIVO", para insertar en el Column del diálogo del caller. resolver(): ver construir_editor_asignaciones()."""
     contenido: ft.Control
     resolver: Callable[[], tuple[Optional[list[dict]], Optional[str]]]
 
 
+def _creador_objetivo(savings_service: SavingsService) -> Callable[[str], str]:
+    """crear_objetivo de construir_editor_asignaciones(): el objetivo nuevo, sin meta ni fecha meta."""
+    return lambda nombre: savings_service.create_objetivo(nombre=nombre).entity_id
+
+
+def _fmt_porcentaje(valor: float) -> str:
+    """33.33333 → '33.3333'; 100.0 → '100' (mismos decimales que SavingsService.DECIMALES_PORCENTAJE)."""
+    return f"{round(valor, 4):g}"
+
+
 def construir_editor_asignaciones(
-    page: ft.Page, objetivos_disponibles: list[dict], iniciales: Optional[list[dict]] = None,
+    page: ft.Page,
+    objetivos_disponibles: list,
+    iniciales: Optional[list[dict]] = None,
+    crear_objetivo: Optional[Callable[[str], str]] = None,
+    monto_minor: Optional[int] = None,
+    decimales: int = DECIMALES_DEFAULT,
+    simbolo: str = "",
+    con_resumen: bool = False,
+    una_fila_vacia: bool = False,
 ) -> EditorAsignaciones:
     """
-    iniciales (opcional, rediseño de Ahorros e Inversiones): filas que
-    arrancan cargadas, [{"objetivo_id": ..., "porcentaje": ...}] — las usa
-    construir_objetivos_activo() para editar el reparto actual de un activo.
-
     Lista dinámica de filas (Objetivo + %) — extraída para que
     ui/screens/ahorros.py la reuse LITERALMENTE (no una copia adaptada)
-    en el diálogo "Egreso general" (register_sale() con lista de
-    asignaciones, Tarea 6d), en vez de duplicar este mecanismo.
+    en vez de duplicar este mecanismo. Hoy la usan el formulario de Compra
+    del Registro (construir()), el de movimiento de la pantalla de Ahorros
+    (construir_movimiento()) y el diálogo de objetivos de un movimiento
+    (construir_objetivos_movimiento()).
 
-    "+ Agregar otro objetivo" agrega una fila nueva a una lista Python
-    interna Y a un ft.Column visible, cada fila con su propio botón
-    "Quitar" que saca esa fila de ambos y refresca la columna. Puede
-    quedar en cero filas.
+    iniciales: filas que arrancan cargadas, [{"objetivo_id", "porcentaje"}].
+    Sin iniciales y con una_fila_vacia, arranca con una fila para elegir.
 
-    resolver() valida y arma la lista final de asignaciones (llamarlo al
-    confirmar el diálogo del caller): una fila totalmente vacía (sin
-    objetivo Y sin porcentaje) se ignora en silencio; una fila PARCIAL
-    (una de las dos cosas cargada, la otra no) es un error explícito,
-    igual que un mismo objetivo repetido en más de una fila — esto
-    último no lo valida ningún service (dejaría un IntegrityError crudo
-    de SQLite por el UNIQUE(movimiento_id, objetivo_id), nunca visto por
-    el usuario como mensaje claro). Devuelve (asignaciones, None) si todo
-    validó, o (None, mensaje_error) si no — el caller decide dónde
-    mostrar ese mensaje (típicamente su propio texto_error). NO valida
-    que la suma de porcentaje no supere 100 — esa regla de negocio queda
-    del lado del service (AsignacionInvalidaError), tanto para
-    register_purchase() como para register_sale().
+    "+ AGREGAR OBJETIVO" agrega una fila, con el porcentaje que falta para
+    llegar a 100 ya cargado (la primera, 100). Cada fila tiene su ✕ para
+    sacarla; puede quedar en cero filas.
+
+    Opcionales del diálogo de objetivos de un movimiento (objetivos por
+    movimiento, docs/DATA_MODEL_DECISIONS.md sección 31):
+    - crear_objetivo(nombre) → id: suma "+ CREAR NUEVO OBJETIVO" a cada
+      selector; elegirlo muestra el nombre + ✓, que lo crea EN EL MOMENTO
+      (aunque después se cancele el diálogo: un objetivo suelto no rompe
+      nada) y deja la fila con el objetivo nuevo elegido. Crearlo al
+      confirmar daría duplicados si el movimiento falla y se reintenta.
+    - monto_minor (+ decimales, simbolo): el monto que le toca a cada fila
+      según su porcentaje, en vivo.
+    - con_resumen: una línea "ASIGNADO · SIN ASIGNAR" debajo, en vivo.
+
+    resolver() valida y arma la lista final (llamarlo al confirmar el
+    diálogo del caller): [{"objetivo_id", "porcentaje", "nombre"}]. Una
+    fila totalmente vacía (sin objetivo Y sin porcentaje) se ignora en
+    silencio; una fila PARCIAL (una de las dos cosas cargada, la otra no)
+    es un error explícito, igual que un mismo objetivo repetido en más de
+    una fila — esto último no lo valida ningún service (dejaría un
+    IntegrityError crudo de SQLite por el UNIQUE(movimiento_id,
+    objetivo_id), nunca visto por el usuario como mensaje claro). Devuelve
+    (asignaciones, None) si todo validó, o (None, mensaje_error) si no — el
+    caller decide dónde mostrar ese mensaje (típicamente su propio
+    texto_error). NO valida que la suma no supere 100 — esa regla de
+    negocio queda del lado del service (AsignacionInvalidaError); el caller
+    puede adelantarla con _suma_supera_100().
     """
-    filas_asignacion: list[dict] = []
-    columna_asignaciones = ft.Column(spacing=6)
+    opciones = [{"id": str(o["id"]), "nombre": o["nombre"]} for o in objetivos_disponibles]
+    filas: list[dict] = []
+    columna_filas = ft.Column(spacing=ESPACIADO_ASIGNACIONES)
+    texto_resumen = ft.Text("", size=TypographyTokens.LABEL_SIZE, visible=con_resumen)
+    texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE, visible=False)
 
-    def _refrescar_columna() -> None:
-        columna_asignaciones.controls = [f["row"] for f in filas_asignacion]
+    def _opciones_selector() -> list[tuple[str, str]]:
+        base = [(o["id"], o["nombre"].upper()) for o in opciones]
+        return base + [(_ID_OBJETIVO_NUEVO, TEXTO_CREAR_OBJETIVO)] if crear_objetivo is not None else base
+
+    def _porcentaje(fila: dict) -> Optional[float]:
+        texto = (fila["porcentaje"].value or "").strip()
+        return numero(texto) if texto else None
+
+    def _asignado() -> float:
+        return sum(p for p in (_porcentaje(f) for f in filas) if p is not None and p > 0)
+
+    def _actualizar_calculados() -> None:
+        """Monto de cada fila y línea de resumen (sin page.update(): lo hace el caller)."""
+        for fila in filas:
+            if fila["monto"] is None:
+                continue
+            porcentaje = _porcentaje(fila)
+            fila["monto"].value = (
+                amount_display(round(monto_minor * porcentaje / 100), decimales, simbolo)
+                if porcentaje is not None and porcentaje > 0 else ""
+            )
+        asignado = _asignado()
+        if asignado > 100 + TOLERANCIA_PORCENTAJE:
+            texto_resumen.value = f"LOS OBJETIVOS SUMAN {_fmt_porcentaje(asignado)}%: MÁS DE 100%."
+            texto_resumen.color = ft.Colors.ERROR
+        else:
+            texto_resumen.value = (
+                f"ASIGNADO: {_fmt_porcentaje(asignado)}% · SIN ASIGNAR: {_fmt_porcentaje(max(100 - asignado, 0))}%"
+            )
+            texto_resumen.color = None
+
+    def _al_cambiar_porcentaje(e=None) -> None:
+        _actualizar_calculados()
         page.update()
 
-    def _agregar_fila(e=None, objetivo_id: Optional[str] = None, porcentaje: Optional[float] = None) -> None:
-        campo_objetivo_fila = CampoFiltrable(
-            page, [(str(o["id"]), o["nombre"]) for o in objetivos_disponibles],
-            on_seleccionar=lambda id_: None, placeholder="Objetivo", width=ANCHO_CAMPO_ASIGNACION_OBJETIVO,
-            valor_inicial_id=str(objetivo_id) if objetivo_id is not None else None,
-        )
-        campo_porcentaje_fila = ft.TextField(
-            hint_text="%", width=ANCHO_CAMPO_ASIGNACION_PORCENTAJE, dense=True,
-            value=f"{porcentaje:g}" if porcentaje is not None else None,
-        )
-        fila_dict = {"objetivo": campo_objetivo_fila, "porcentaje": campo_porcentaje_fila}
+    def _mostrar_error(mensaje: str) -> None:
+        texto_error.value = mensaje
+        texto_error.visible = bool(mensaje)
 
-        def _quitar(e=None, fila_dict=fila_dict) -> None:
-            filas_asignacion.remove(fila_dict)
-            _refrescar_columna()
+    def _refrescar() -> None:
+        columna_filas.controls = [f["contenedor"] for f in filas]
+        _actualizar_calculados()
+        page.update()
 
-        fila_dict["row"] = ft.Row(
+    def _al_elegir(fila: dict, id_: Optional[str]) -> None:
+        fila["nuevo"].visible = id_ == _ID_OBJETIVO_NUEVO
+        _mostrar_error("")
+        page.update()
+
+    def _crear(fila: dict) -> None:
+        nombre = (fila["nombre_nuevo"].value or "").strip().upper()
+        if not nombre:
+            _mostrar_error("EL NOMBRE DEL OBJETIVO NUEVO NO PUEDE ESTAR VACÍO.")
+            page.update()
+            return
+        try:
+            objetivo_id = str(crear_objetivo(nombre))
+        except (SavingsError, ValueError) as err:
+            _mostrar_error(str(err).upper())
+            page.update()
+            return
+        opciones.append({"id": objetivo_id, "nombre": nombre})
+        _armar_fila(fila, objetivo_id)
+        _mostrar_error("")
+        _refrescar()
+
+    def _quitar(fila: dict) -> None:
+        filas.remove(fila)
+        _refrescar()
+
+    def _armar_fila(fila: dict, objetivo_id: Optional[str]) -> None:
+        """(Re)arma los controles de una fila: al crearla y tras crear un objetivo nuevo desde ella."""
+        texto_porcentaje = fila["porcentaje"].value if "porcentaje" in fila else fila.pop("porcentaje_inicial")
+        fila["objetivo"] = CampoFiltrable(
+            page, _opciones_selector(), on_seleccionar=lambda id_: _al_elegir(fila, id_),
+            placeholder="OBJETIVO", width=ANCHO_CAMPO_ASIGNACION_OBJETIVO, valor_inicial_id=objetivo_id,
+        )
+        fila["porcentaje"] = ft.TextField(
+            hint_text="%", width=ANCHO_CAMPO_ASIGNACION_PORCENTAJE, dense=True, value=texto_porcentaje,
+            on_change=_al_cambiar_porcentaje,
+        )
+        fila["monto"] = (
+            ft.Text("", width=ANCHO_CAMPO_ASIGNACION_MONTO, size=TypographyTokens.LABEL_SIZE, text_align=ft.TextAlign.RIGHT)
+            if monto_minor is not None else None
+        )
+        fila["nombre_nuevo"] = ft.TextField(
+            hint_text="NOMBRE DEL OBJETIVO NUEVO", width=ANCHO_CAMPO_ASIGNACION_OBJETIVO, dense=True,
+            on_submit=lambda e: _crear(fila),
+        )
+        fila["nuevo"] = ft.Row(
             [
-                campo_objetivo_fila.control,
-                campo_porcentaje_fila,
-                ft.IconButton(icon=ft.Icons.CLOSE, icon_size=16, tooltip="Quitar", on_click=_quitar),
+                fila["nombre_nuevo"],
+                ft.IconButton(
+                    icon=ft.Icons.CHECK, icon_size=TAMANIO_ICONO_ASIGNACION, tooltip="CREAR OBJETIVO",
+                    on_click=lambda e: _crear(fila),
+                ),
             ],
-            spacing=6,
+            spacing=ESPACIADO_ASIGNACIONES,
+            visible=False,
         )
-        filas_asignacion.append(fila_dict)
-        _refrescar_columna()
+        controles: list[ft.Control] = [fila["objetivo"].control, fila["porcentaje"]]
+        if fila["monto"] is not None:
+            controles.append(fila["monto"])
+        controles.append(ft.IconButton(
+            icon=ft.Icons.CLOSE, icon_size=TAMANIO_ICONO_ASIGNACION, tooltip="QUITAR", on_click=lambda e: _quitar(fila),
+        ))
+        fila["contenedor"].content = ft.Column(
+            [ft.Row(controles, spacing=ESPACIADO_ASIGNACIONES, vertical_alignment=ft.CrossAxisAlignment.CENTER), fila["nuevo"]],
+            spacing=ESPACIADO_ASIGNACIONES,
+        )
 
-    boton_agregar = ft.TextButton(content=ft.Text("+ Agregar otro objetivo"), on_click=_agregar_fila)
+    def _agregar_fila(objetivo_id: Optional[str] = None, porcentaje: Optional[float] = None) -> None:
+        if porcentaje is None:
+            porcentaje = max(100 - _asignado(), 0) or None  # lo que falta para 100
+        fila: dict = {
+            "contenedor": ft.Container(),
+            "porcentaje_inicial": _fmt_porcentaje(porcentaje) if porcentaje is not None else None,
+        }
+        _armar_fila(fila, str(objetivo_id) if objetivo_id is not None else None)
+        filas.append(fila)
+
+    def _al_agregar(e=None) -> None:
+        _agregar_fila()
+        _refrescar()
+
+    boton_agregar = ft.TextButton(content=ft.Text("+ AGREGAR OBJETIVO"), on_click=_al_agregar)
 
     def _resolver() -> tuple[Optional[list[dict]], Optional[str]]:
+        nombres = {o["id"]: o["nombre"] for o in opciones}
         asignaciones: list[dict] = []
-        ids_vistos: set[int] = set()
-        for fila in filas_asignacion:
-            objetivo_id_str = fila["objetivo"].id_seleccionado
+        ids_vistos: set[str] = set()
+        for fila in filas:
+            objetivo_id = fila["objetivo"].id_seleccionado
             porcentaje_texto = (fila["porcentaje"].value or "").strip()
-            if not objetivo_id_str and not porcentaje_texto:
+            if objetivo_id == _ID_OBJETIVO_NUEVO:
+                return None, "CREÁ EL OBJETIVO NUEVO CON ✓ (O ELEGÍ UNO DE LA LISTA)."
+            if not objetivo_id and not porcentaje_texto:
                 continue  # fila vacía — se ignora, ver docstring
-            if not objetivo_id_str:
-                return None, "Hay una fila de asignación sin objetivo seleccionado."
-            try:
-                porcentaje = float(porcentaje_texto.replace(",", "."))
-            except ValueError:
-                return None, "El porcentaje de una asignación no es un número válido."
+            if not objetivo_id:
+                return None, "HAY UNA FILA SIN OBJETIVO ELEGIDO (ELEGILO O QUITALA CON ✕)."
+            porcentaje = numero(porcentaje_texto)
+            if porcentaje is None:
+                return None, "EL PORCENTAJE DE UN OBJETIVO NO ES UN NÚMERO VÁLIDO."
             if porcentaje <= 0:
-                return None, "El porcentaje de una asignación debe ser mayor a 0."
-            objetivo_id = objetivo_id_str
+                return None, "EL PORCENTAJE DE UN OBJETIVO DEBE SER MAYOR A 0."
             if objetivo_id in ids_vistos:
-                return None, "No repitas el mismo objetivo en más de una fila de asignación."
+                return None, "NO REPITAS EL MISMO OBJETIVO EN MÁS DE UNA FILA."
             ids_vistos.add(objetivo_id)
-            asignaciones.append({"objetivo_id": objetivo_id, "porcentaje": porcentaje})
+            asignaciones.append({"objetivo_id": objetivo_id, "porcentaje": porcentaje, "nombre": nombres.get(objetivo_id, "")})
         return asignaciones, None
 
     for inicial in iniciales or []:
         _agregar_fila(objetivo_id=inicial["objetivo_id"], porcentaje=inicial["porcentaje"])
+    if not filas and una_fila_vacia:
+        _agregar_fila()
+    columna_filas.controls = [f["contenedor"] for f in filas]
+    _actualizar_calculados()
 
-    contenido = ft.Column([columna_asignaciones, boton_agregar], spacing=6)
+    contenido = ft.Column([columna_filas, boton_agregar, texto_resumen, texto_error], spacing=ESPACIADO_ASIGNACIONES)
     return EditorAsignaciones(contenido=contenido, resolver=_resolver)
 
 
@@ -737,7 +893,6 @@ def construir_nuevo_activo(
     campo_comision_venta = CampoMonto(
         page, on_confirmar=lambda m: None, dense=False, label="COMISIÓN DE VENTA POR DEFECTO (OPCIONAL)",
     )
-    editor_objetivos = construir_editor_asignaciones(page, savings_service.list_objetivos())
     texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
 
     def _error(mensaje: str) -> None:
@@ -759,13 +914,6 @@ def construir_nuevo_activo(
         if not (valida_compra and valida_venta):
             _error("UNA COMISIÓN NO ES UN NÚMERO VÁLIDO.")
             return
-        asignaciones, error_asignaciones = editor_objetivos.resolver()
-        if error_asignaciones is not None:
-            _error(error_asignaciones)
-            return
-        if _suma_supera_100(asignaciones):
-            _error("LOS OBJETIVOS SUMAN MÁS DE 100%.")
-            return
         try:
             resultado = savings_service.create_activo(
                 nombre=nombre,
@@ -779,23 +927,113 @@ def construir_nuevo_activo(
         except (SavingsError, ValueError) as err:
             _error(str(err))
             return
-        for asignacion in asignaciones:
-            try:
-                savings_service.assign_objetivo(resultado.entity_id, asignacion["objetivo_id"], asignacion["porcentaje"])
-            except (SavingsError, ValueError) as err:
-                _error(f"EL ACTIVO SE CREÓ, PERO NO SE PUDO ASIGNAR UN OBJETIVO: {err}")
-                return
         on_exito(resultado)
 
     contenido = _contenido_formulario([
         campo_nombre, dropdown_tipo, campo_broker.control, dropdown_moneda, campo_cuenta.control,
         campo_comision_compra.control, campo_comision_venta.control,
-        ft.Divider(height=1),
-        ft.Text("OBJETIVOS (SUMA HASTA 100%)", size=TypographyTokens.LABEL_SIZE, weight=ft.FontWeight.BOLD),
-        editor_objetivos.contenido,
         texto_error,
     ])
     return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)
+
+
+def construir_editar_activo(
+    page: ft.Page,
+    savings_service: SavingsService,
+    accounts_service: AccountsService,
+    activo: dict,
+    on_exito: Callable[[SavingsResult], None],
+) -> FormularioCompraAhorro:
+    """
+    Editar un instrumento (docs/DATA_MODEL_DECISIONS.md sección 35): los
+    campos de construir_nuevo_activo(), precargados, con
+    SavingsService.update_activo(). El TIPO se muestra pero no se edita; la
+    MONEDA queda deshabilitada si el instrumento ya tiene movimientos
+    (decisión del usuario). Vaciar el broker o la cuenta los desvincula. Un
+    broker o una cuenta actuales que ya no se ofrecen (dados de baja, o una
+    tarjeta) se agregan a sus opciones: si no, el campo arrancaría vacío y
+    guardar los borraría sin querer. `activo`: una entrada de
+    SavingsService.get_resumen_por_tipo().
+    """
+    monedas = accounts_service.list_currencies()
+    monedas_por_id = {str(m["id"]): m for m in monedas}
+    con_movimientos = activo["movimientos"] > 0
+
+    opciones_broker = [(b["id"], b["nombre"]) for b in savings_service.get_brokers()]
+    if activo["broker_id"] and all(id_ != activo["broker_id"] for id_, _ in opciones_broker):
+        opciones_broker.append((activo["broker_id"], activo["broker"] or activo["broker_id"]))
+    opciones_cuenta = [(str(c["id"]), c["nombre"]) for c in _cuentas_no_credito(accounts_service.list_accounts(solo_activas=True))]
+    cuenta_actual = str(activo["cuenta_id"]) if activo["cuenta_id"] else None
+    if cuenta_actual and all(id_ != cuenta_actual for id_, _ in opciones_cuenta):
+        cuenta = next((c for c in accounts_service.list_accounts(solo_activas=False) if str(c["id"]) == cuenta_actual), None)
+        opciones_cuenta.append((cuenta_actual, cuenta["nombre"] if cuenta else cuenta_actual))
+
+    campo_nombre = ft.TextField(label="NOMBRE DEL ACTIVO", value=activo["activo"], autofocus=True)
+    texto_tipo = ft.Text(
+        f"TIPO: {_tipo_activo_display(activo['tipo'])} (NO SE EDITA)", size=TypographyTokens.LABEL_SIZE,
+    )
+    campo_broker = CampoFiltrable(
+        page, opciones_broker, on_seleccionar=lambda id_: None, placeholder="BROKER (OPCIONAL)", dense=False,
+        valor_inicial_id=activo["broker_id"],
+    )
+    dropdown_moneda = ft.Dropdown(
+        label="MONEDA", dense=True,
+        options=[ft.dropdown.Option(key=str(m["id"]), text=m["codigo"]) for m in monedas],
+        value=str(activo["moneda_id"]), disabled=con_movimientos,
+        tooltip="YA TIENE MOVIMIENTOS: SU MONEDA NO SE CAMBIA." if con_movimientos else None,
+    )
+    campo_cuenta = CampoFiltrable(
+        page, opciones_cuenta, on_seleccionar=lambda id_: None, placeholder="CUENTA ASOCIADA (OPCIONAL)", dense=False,
+        valor_inicial_id=cuenta_actual,
+    )
+    # Muestran un valor guardado: persistir_formula=True (CLAUDE.md §9).
+    campo_comision_compra = CampoMonto(
+        page, on_confirmar=lambda m: None, dense=False, label="COMISIÓN DE COMPRA POR DEFECTO (OPCIONAL)",
+        valor_inicial_minor=activo["comision_compra_minor"] or None, persistir_formula=True,
+    )
+    campo_comision_venta = CampoMonto(
+        page, on_confirmar=lambda m: None, dense=False, label="COMISIÓN DE VENTA POR DEFECTO (OPCIONAL)",
+        valor_inicial_minor=activo["comision_venta_minor"] or None, persistir_formula=True,
+    )
+    texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
+
+    def _error(mensaje: str) -> None:
+        texto_error.value = mensaje.upper()
+        page.update()
+
+    def _confirmar(e=None) -> None:
+        texto_error.value = ""
+        moneda = monedas_por_id.get(dropdown_moneda.value or "")
+        if moneda is None:
+            _error("ELEGÍ LA MONEDA DEL ACTIVO.")
+            return
+        comision_compra, valida_compra = _minor_de_campo(campo_comision_compra, moneda["decimales"])
+        comision_venta, valida_venta = _minor_de_campo(campo_comision_venta, moneda["decimales"])
+        if not (valida_compra and valida_venta):
+            _error("UNA COMISIÓN NO ES UN NÚMERO VÁLIDO.")
+            return
+        try:
+            resultado = savings_service.update_activo(
+                activo["activo_id"],
+                nombre=campo_nombre.value or "",
+                broker_id=campo_broker.id_seleccionado or None,
+                moneda_id=moneda["id"],  # la misma que tenía no es un cambio
+                cuenta_id=campo_cuenta.id_seleccionado or None,
+                comision_compra_minor=comision_compra or 0,
+                comision_venta_minor=comision_venta or 0,
+            )
+        except (SavingsError, ValueError) as err:
+            _error(str(err))
+            return
+        on_exito(resultado)
+
+    partes: list[ft.Control] = [campo_nombre, texto_tipo, campo_broker.control, dropdown_moneda]
+    if con_movimientos:
+        partes.append(ft.Text(
+            "YA TIENE MOVIMIENTOS: LA MONEDA NO SE PUEDE CAMBIAR.", size=TypographyTokens.LABEL_SIZE, italic=True,
+        ))
+    partes += [campo_cuenta.control, campo_comision_compra.control, campo_comision_venta.control, texto_error]
+    return FormularioCompraAhorro(contenido=_contenido_formulario(partes), confirmar=_confirmar)
 
 
 def construir_movimiento(
@@ -809,14 +1047,45 @@ def construir_movimiento(
     """
     Movimiento de un activo (ver docstring del módulo). `activo`: una
     entrada de SavingsService.get_resumen_por_tipo() (activo_id, activo,
-    tipo, por_unidades, moneda, decimales, comisiones por defecto).
+    tipo, por_unidades, moneda_id, moneda, decimales, comisiones por
+    defecto).
+
+    Acciones / CEDEARs (moneda por movimiento, docs/DATA_MODEL_DECISIONS.md
+    sección 33): MONEDA (default la del activo) y, en compra / venta,
+    CANTIDAD + MONTO bruto (cantidad × precio, sin la comisión) en vez del
+    precio unitario. FCI y plazos: sin selector, la moneda del activo.
+    Cambiar la moneda solo cambia los labels: los CampoMonto se convierten
+    al confirmar con los decimales de la moneda elegida.
     """
     opciones_tipo = TIPOS_MOVIMIENTO_POR_UNIDADES if activo["por_unidades"] else TIPOS_MOVIMIENTO_POR_MONTO
     claves_tipo = [clave for clave, _ in opciones_tipo]
-    decimales = activo["decimales"]
-    codigo = activo["moneda"]
-    moneda_ars = next((m for m in accounts_service.list_currencies() if m["codigo"] == MONEDA_DOLAR_OFICIAL_CODIGO), None)
+    monedas = accounts_service.list_currencies()
+    monedas_por_id = {str(m["id"]): m for m in monedas}
+    moneda_ars = next((m for m in monedas if m["codigo"] == MONEDA_DOLAR_OFICIAL_CODIGO), None)
     decimales_dolar = moneda_ars["decimales"] if moneda_ars else DECIMALES_DEFAULT
+    dropdown_moneda = ft.Dropdown(
+        label="MONEDA", dense=True,
+        options=[ft.dropdown.Option(key=str(m["id"]), text=m["codigo"]) for m in monedas],
+        value=str(activo["moneda_id"]),
+        on_select=lambda e: _al_cambiar_moneda(),
+    )
+
+    def _moneda() -> dict:
+        """La moneda del movimiento: la elegida (acciones / CEDEARs) o la del activo."""
+        moneda = monedas_por_id.get(dropdown_moneda.value or "") if activo["por_unidades"] else None
+        return moneda or {"id": activo["moneda_id"], "codigo": activo["moneda"], "decimales": activo["decimales"]}
+
+    def _labels_monto() -> None:
+        codigo = _moneda()["codigo"]
+        if "monto" in refs:
+            sufijo = ", SIN COMISIÓN" if dropdown_tipo.value in ("compra", "venta") else ""
+            refs["monto"].control.label = f"MONTO ({codigo}{sufijo})"
+        if "comision" in refs:
+            refs["comision"].control.label = f"COMISIÓN ({codigo}, OPCIONAL)"
+
+    def _al_cambiar_moneda() -> None:
+        _labels_monto()
+        page.update()
 
     dropdown_tipo = ft.Dropdown(
         label="TIPO DE MOVIMIENTO", dense=True,
@@ -829,37 +1098,88 @@ def construir_movimiento(
     )
     contenedor_campos = ft.Column(spacing=ESPACIADO_DIALOGO)
     contenedor_vinculo = ft.Column(spacing=ESPACIADO_DIALOGO)
+    contenedor_objetivos = ft.Column(spacing=ESPACIADO_ASIGNACIONES)
     texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
-    refs: dict = {"vinculo": None, "mes_vinculo": None}
+    refs: dict = {"vinculo": None, "mes_vinculo": None, "modo_objetivos": None, "editor": None, "proporcional": None}
+
+    def _editor_objetivos(iniciales: Optional[list[dict]] = None) -> EditorAsignaciones:
+        return construir_editor_asignaciones(
+            page, savings_service.list_objetivos(), iniciales=iniciales,
+            crear_objetivo=_creador_objetivo(savings_service), con_resumen=True,
+        )
+
+    def _dibujar_objetivos() -> None:
+        """
+        Rendimiento: PROPORCIONAL tildado por defecto (get_reparto_proporcional()
+        al guardar); destildarlo muestra el editor con ese reparto precargado.
+        El resto: el editor, sin filas (los objetivos son opcionales). Solo
+        se rearma al entrar o salir de RENDIMIENTO: pasar de APORTE a RETIRO
+        conserva lo cargado.
+        """
+        modo = "rendimiento" if dropdown_tipo.value == "rendimiento" else "otros"
+        if modo == refs["modo_objetivos"]:
+            return
+        refs["modo_objetivos"] = modo
+        titulo = ft.Text("OBJETIVOS", size=TypographyTokens.LABEL_SIZE, weight=ft.FontWeight.BOLD)
+        if modo == "rendimiento":
+            refs["editor"] = None
+            contenedor_editor = ft.Column(visible=False)
+            refs["proporcional"] = ft.Checkbox(
+                label=TEXTO_REPARTO_PROPORCIONAL, value=True,
+                on_change=lambda e: _al_cambiar_proporcional(contenedor_editor),
+            )
+            contenedor_objetivos.controls = [titulo, refs["proporcional"], contenedor_editor]
+        else:
+            refs["proporcional"] = None
+            refs["editor"] = _editor_objetivos()
+            contenedor_objetivos.controls = [titulo, refs["editor"].contenido]
+
+    def _al_cambiar_proporcional(contenedor_editor: ft.Column) -> None:
+        if refs["proporcional"].value:
+            refs["editor"] = None
+            contenedor_editor.controls = []
+            contenedor_editor.visible = False
+        else:
+            try:
+                reparto = savings_service.get_reparto_proporcional(activo["activo_id"], (campo_fecha.value or "").strip())
+            except SavingsError:
+                reparto = []  # fecha inválida todavía: el editor arranca vacío
+            refs["editor"] = _editor_objetivos(reparto)
+            contenedor_editor.controls = [refs["editor"].contenido]
+            contenedor_editor.visible = True
+        page.update()
 
     def _dibujar_campos() -> None:
         tipo = dropdown_tipo.value
+        decimales = _moneda()["decimales"]
+        refs.pop("comision", None)
+        # Cantidad, moneda, monto, comisión (orden del pedido); la moneda solo en acciones / CEDEARs.
+        controles: list[ft.Control] = []
+        if tipo in ("compra", "venta"):
+            refs["cantidad"] = ft.TextField(label="CANTIDAD (ENTERA)")
+            controles.append(refs["cantidad"])
+        if activo["por_unidades"]:
+            controles.append(dropdown_moneda)
+        refs["monto"] = CampoMonto(page, on_confirmar=lambda m: None, decimales=decimales, dense=False)
+        controles.append(refs["monto"].control)
         if tipo in ("compra", "venta"):
             comision_default = activo["comision_compra_minor"] if tipo == "compra" else activo["comision_venta_minor"]
-            refs["cantidad"] = ft.TextField(label="CANTIDAD (ENTERA)")
-            refs["precio"] = CampoMonto(
-                page, on_confirmar=lambda m: None, decimales=decimales, dense=False,
-                label=f"PRECIO UNITARIO ({codigo})",
-            )
             refs["comision"] = CampoMonto(
                 page, on_confirmar=lambda m: None, decimales=decimales, dense=False,
-                valor_inicial_minor=comision_default or None, label=f"COMISIÓN ({codigo}, OPCIONAL)",
+                valor_inicial_minor=comision_default or None,
             )
-            controles: list[ft.Control] = [refs["cantidad"], refs["precio"].control, refs["comision"].control]
+            controles.append(refs["comision"].control)
             if tipo == "compra":
                 refs["dolar"] = CampoMonto(
                     page, on_confirmar=lambda m: None, decimales=decimales_dolar, dense=False,
                     label="DÓLAR DEL DÍA (ARS, OPCIONAL)",
                 )
                 controles.append(refs["dolar"].control)
-        else:
-            refs["monto"] = CampoMonto(
-                page, on_confirmar=lambda m: None, decimales=decimales, dense=False, label=f"MONTO ({codigo})",
-            )
-            controles = [refs["monto"].control]
+        _labels_monto()
         contenedor_campos.controls = controles
         # Un rendimiento no se vincula a una transacción (registrar_rendimiento() no la acepta).
         contenedor_vinculo.visible = tipo != "rendimiento"
+        _dibujar_objetivos()
         page.update()
 
     def _dibujar_vinculo() -> None:
@@ -897,17 +1217,31 @@ def construir_movimiento(
         tipo = dropdown_tipo.value
         vinculo = refs["vinculo"]
         transaccion_id = (vinculo.id_seleccionado or None) if vinculo is not None and tipo != "rendimiento" else None
+        # None = PROPORCIONAL (solo un rendimiento): lo calcula el service con la fecha.
+        asignaciones: Optional[list[dict]] = None
+        if refs["editor"] is not None:
+            asignaciones, error_asignaciones = refs["editor"].resolver()
+            if error_asignaciones is not None:
+                _error(error_asignaciones)
+                return
+            if _suma_supera_100(asignaciones):
+                _error("LOS OBJETIVOS SUMAN MÁS DE 100%.")
+                return
+        moneda = _moneda()
+        decimales = moneda["decimales"]
+        # Solo acciones / CEDEARs mandan moneda: en el resto la pone el service (la del activo).
+        moneda_id = int(moneda["id"]) if activo["por_unidades"] else None
+        monto, valido_monto = _minor_de_campo(refs["monto"], decimales)
+        if not valido_monto or not monto:
+            _error("INGRESÁ UN MONTO VÁLIDO.")
+            return
         try:
             if tipo in ("compra", "venta"):
                 texto_cantidad = (refs["cantidad"].value or "").strip()
                 if not texto_cantidad.isdigit() or int(texto_cantidad) <= 0:
                     _error("LA CANTIDAD TIENE QUE SER UN NÚMERO ENTERO MAYOR A 0.")
                     return
-                precio, valido_precio = _minor_de_campo(refs["precio"], decimales)
                 comision, valida_comision = _minor_de_campo(refs["comision"], decimales)
-                if not valido_precio or not precio:
-                    _error("INGRESÁ UN PRECIO UNITARIO VÁLIDO.")
-                    return
                 if not valida_comision:
                     _error("LA COMISIÓN NO ES UN NÚMERO VÁLIDO.")
                     return
@@ -917,55 +1251,78 @@ def construir_movimiento(
                         _error("EL DÓLAR DEL DÍA NO ES UN NÚMERO VÁLIDO.")
                         return
                     resultado = savings_service.registrar_compra(
-                        activo["activo_id"], int(texto_cantidad), precio, comision or 0, fecha,
-                        transaccion_id=transaccion_id, dolar_momento_minor=dolar,
+                        activo["activo_id"], int(texto_cantidad), monto, comision or 0, fecha,
+                        transaccion_id=transaccion_id, dolar_momento_minor=dolar, asignaciones=asignaciones,
+                        moneda_id=moneda_id,
                     )
                 else:
                     resultado = savings_service.registrar_venta(
-                        activo["activo_id"], int(texto_cantidad), precio, comision or 0, fecha,
-                        transaccion_id=transaccion_id,
+                        activo["activo_id"], int(texto_cantidad), monto, comision or 0, fecha,
+                        transaccion_id=transaccion_id, asignaciones=asignaciones, moneda_id=moneda_id,
                     )
             else:
-                monto, valido_monto = _minor_de_campo(refs["monto"], decimales)
-                if not valido_monto or not monto:
-                    _error("INGRESÁ UN MONTO VÁLIDO.")
-                    return
                 if tipo == "aporte":
                     resultado = savings_service.registrar_aporte(
-                        activo["activo_id"], monto, fecha, transaccion_id=transaccion_id,
+                        activo["activo_id"], monto, fecha, transaccion_id=transaccion_id, asignaciones=asignaciones,
                     )
                 elif tipo == "retiro":
                     resultado = savings_service.registrar_retiro(
-                        activo["activo_id"], monto, fecha, transaccion_id=transaccion_id,
+                        activo["activo_id"], monto, fecha, transaccion_id=transaccion_id, asignaciones=asignaciones,
                     )
                 else:
-                    resultado = savings_service.registrar_rendimiento(activo["activo_id"], monto, fecha)
+                    resultado = savings_service.registrar_rendimiento(
+                        activo["activo_id"], monto, fecha, asignaciones=asignaciones, moneda_id=moneda_id,
+                    )
         except (SavingsError, ValueError) as err:
             _error(str(err))
             return
         on_exito(resultado)
 
-    contenido = _contenido_formulario([dropdown_tipo, campo_fecha, contenedor_campos, contenedor_vinculo, texto_error])
+    contenido = _contenido_formulario([
+        dropdown_tipo, campo_fecha, contenedor_campos, contenedor_vinculo, contenedor_objetivos, texto_error,
+    ])
     return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)
 
 
-def construir_objetivos_activo(
+def construir_objetivos_movimiento(
     page: ft.Page,
     savings_service: SavingsService,
-    activo: dict,
-    on_exito: Callable[[str], None],
+    iniciales: list[dict],
+    on_confirmar: Callable[[Optional[list[dict]]], None],
+    monto_minor: Optional[int] = None,
+    decimales: int = DECIMALES_DEFAULT,
+    simbolo: str = "",
+    con_proporcional: bool = False,
 ) -> FormularioCompraAhorro:
     """
-    Reparto del activo entre objetivos (ver docstring del módulo). `activo`:
-    una entrada de get_resumen_por_tipo() (activo_id, activo, objetivos).
-    on_exito recibe el mensaje para mostrar.
+    Objetivos de UN movimiento (ver docstring del módulo): el diálogo que
+    abre la celda OBJETIVOS de la tabla de ui/screens/ahorros.py, tanto en
+    la fila de alta como en un movimiento ya cargado. El editor arranca con
+    `iniciales` ([{"objetivo_id", "porcentaje"}]; sin iniciales, una fila
+    para elegir), deja crear un objetivo nuevo ahí mismo y muestra el monto
+    de cada fila si se pasa monto_minor.
+
+    on_confirmar(asignaciones): [{"objetivo_id", "porcentaje", "nombre"}]
+    ([] = sin objetivos), o None si se tocó "USAR REPARTO PROPORCIONAL"
+    (solo con con_proporcional: los rendimientos) — qué hacer con cada caso
+    lo decide el caller. Si on_confirmar lanza SavingsError / ValueError, el
+    mensaje queda en el diálogo (no se cierra).
     """
-    editor = construir_editor_asignaciones(page, savings_service.list_objetivos(), iniciales=activo["objetivos"])
+    editor = construir_editor_asignaciones(
+        page, savings_service.list_objetivos(), iniciales=iniciales, crear_objetivo=_creador_objetivo(savings_service),
+        monto_minor=monto_minor, decimales=decimales, simbolo=simbolo, con_resumen=True, una_fila_vacia=True,
+    )
     texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
 
     def _error(mensaje: str) -> None:
         texto_error.value = mensaje.upper()
         page.update()
+
+    def _entregar(asignaciones: Optional[list[dict]]) -> None:
+        try:
+            on_confirmar(asignaciones)
+        except (SavingsError, ValueError) as err:
+            _error(str(err))
 
     def _confirmar(e=None) -> None:
         texto_error.value = ""
@@ -976,30 +1333,119 @@ def construir_objetivos_activo(
         if _suma_supera_100(asignaciones):
             _error("LOS OBJETIVOS SUMAN MÁS DE 100%.")
             return
-        actuales = {o["objetivo_id"]: o["porcentaje"] for o in activo["objetivos"]}
-        nuevos = {a["objetivo_id"]: a["porcentaje"] for a in asignaciones}
-        try:
-            # Primero las bajas y las rebajas: así la suma nunca pasa de 100 a mitad de camino.
-            for objetivo_id in actuales.keys() - nuevos.keys():
-                savings_service.remove_objetivo(activo["activo_id"], objetivo_id)
-            cambios = sorted(
-                (item for item in nuevos.items() if actuales.get(item[0]) != item[1]),
-                key=lambda item: item[1] - actuales.get(item[0], 0),
-            )
-            for objetivo_id, porcentaje in cambios:
-                savings_service.assign_objetivo(activo["activo_id"], objetivo_id, porcentaje)
-        except (SavingsError, ValueError) as err:
-            _error(str(err))
-            return
-        on_exito(f"OBJETIVOS DE {activo['activo'].upper()} ACTUALIZADOS.")
+        _entregar(asignaciones)
 
-    contenido = _contenido_formulario([
+    partes: list[ft.Control] = [
         ft.Text(
-            f"{activo['activo'].upper()}: QUÉ PARTE ES DE CADA OBJETIVO (SUMA HASTA 100%). "
-            "VALE PARA LOS MOVIMIENTOS QUE CARGUES DESDE AHORA.",
+            "A QUÉ OBJETIVOS VA ESTE MOVIMIENTO Y EN QUÉ PORCENTAJE. LO QUE NO LLEGUE AL 100% QUEDA SIN ASIGNAR.",
             size=TypographyTokens.LABEL_SIZE,
         ),
         editor.contenido,
-        texto_error,
-    ])
+    ]
+    if con_proporcional:
+        partes.append(ft.TextButton(
+            content=ft.Text("USAR REPARTO PROPORCIONAL"), tooltip=TEXTO_REPARTO_PROPORCIONAL,
+            on_click=lambda e: _entregar(None),
+        ))
+    partes.append(texto_error)
+    contenido = ft.Container(
+        width=ANCHO_DIALOGO_OBJETIVOS,
+        content=ft.Column(partes, tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO),
+    )
+    return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)
+
+
+def _texto_parte_objetivo(parte: dict) -> str:
+    """'FCI COCOS · PESOS PLUS: 382,115.40 ARS' / 'CEDEAR BULL MARKET · NVDA: 103 UNIDADES' (+ aviso si quedó en cero)."""
+    nombre = f"{parte['broker']} · {parte['activo']}" if parte["broker"] else parte["activo"]
+    if parte["por_unidades"]:
+        tenencia = f"{parte['unidades'] or 0:g} UNIDADES"
+    else:
+        tenencia = f"{amount_display(parte['saldo_minor'], parte['decimales'], parte['simbolo'])} {parte['moneda']}"
+    aviso = " (EN CERO: SOLO CAMBIA EL HISTORIAL)" if parte["en_cero"] else ""
+    return f"{_tipo_activo_display(parte['tipo'])} {nombre}: {tenencia}{aviso}".upper()
+
+
+def construir_eliminar_objetivo(
+    page: ft.Page,
+    savings_service: SavingsService,
+    objetivo: dict,
+    on_exito: Callable[[SavingsResult], None],
+) -> FormularioCompraAhorro:
+    """
+    Eliminar un objetivo (docs/DATA_MODEL_DECISIONS.md sección 32): por cada
+    instrumento donde tiene algo (SavingsService.get_partes_de_objetivo()),
+    un editor para elegir a qué objetivos pasa su parte — lo que no llegue
+    al 100% queda sin asignar — y SavingsService.delete_objetivo() al
+    confirmar. `objetivo`: {"id", "nombre"}.
+
+    Un instrumento con algo arranca con una fila para elegir (sin elegir,
+    resolver() avisa: hay que elegir o quitarla con ✕, que es dejarlo sin
+    asignar a propósito). Uno donde el objetivo ya está en cero arranca sin
+    filas: solo cambia a quién figura el historial.
+
+    Sin "+ CREAR NUEVO OBJETIVO": cada instrumento tiene su editor con su
+    propia lista, y un objetivo creado desde uno no aparecería en los demás
+    (se crearía dos veces). Para pasar la parte a un objetivo nuevo, se crea
+    antes con + NUEVO OBJETIVO.
+    """
+    partes = savings_service.get_partes_de_objetivo(objetivo["id"])
+    otros = [o for o in savings_service.list_objetivos() if o["id"] != objetivo["id"]]
+    texto_error = ft.Text("", color=ft.Colors.ERROR, size=TypographyTokens.LABEL_SIZE)
+    editores: list[tuple[dict, EditorAsignaciones]] = []
+    controles: list[ft.Control] = []
+    if partes:
+        controles.append(ft.Text(
+            f"SE ELIMINA {objetivo['nombre'].upper()}. ELEGÍ A QUÉ OBJETIVOS PASA LO QUE TENÍA EN CADA INSTRUMENTO "
+            "(LO QUE NO LLEGUE AL 100% QUEDA SIN ASIGNAR). PARA PASARLO A UN OBJETIVO NUEVO, CREALO ANTES CON "
+            "+ NUEVO OBJETIVO.",
+            size=TypographyTokens.LABEL_SIZE,
+        ))
+    else:
+        controles.append(ft.Text(
+            f"{objetivo['nombre'].upper()} NO TIENE MOVIMIENTOS: SE ELIMINA DIRECTO.", size=TypographyTokens.LABEL_SIZE,
+        ))
+    for parte in partes:
+        editor = construir_editor_asignaciones(
+            page, otros,
+            monto_minor=parte["saldo_minor"] if not parte["por_unidades"] and parte["saldo_minor"] > 0 else None,
+            decimales=parte["decimales"], simbolo=parte["simbolo"], con_resumen=True,
+            una_fila_vacia=not parte["en_cero"],
+        )
+        editores.append((parte, editor))
+        controles += [
+            ft.Divider(height=1),
+            ft.Text(_texto_parte_objetivo(parte), size=TypographyTokens.LABEL_SIZE, weight=ft.FontWeight.BOLD),
+            editor.contenido,
+        ]
+    controles.append(texto_error)
+
+    def _error(mensaje: str) -> None:
+        texto_error.value = mensaje.upper()
+        page.update()
+
+    def _confirmar(e=None) -> None:
+        texto_error.value = ""
+        repartos: dict[str, list[dict]] = {}
+        for parte, editor in editores:
+            asignaciones, error_asignaciones = editor.resolver()
+            if error_asignaciones is None and _suma_supera_100(asignaciones):
+                error_asignaciones = "LOS OBJETIVOS SUMAN MÁS DE 100%."
+            if error_asignaciones is not None:
+                _error(f"{parte['activo']}: {error_asignaciones}")
+                return
+            repartos[parte["activo_id"]] = [
+                {"objetivo_id": a["objetivo_id"], "porcentaje": a["porcentaje"]} for a in asignaciones
+            ]
+        try:
+            resultado = savings_service.delete_objetivo(objetivo["id"], repartos)
+        except (SavingsError, ValueError) as err:
+            _error(str(err))
+            return
+        on_exito(resultado)
+
+    contenido = ft.Container(
+        width=ANCHO_DIALOGO_OBJETIVOS,
+        content=ft.Column(controles, tight=True, spacing=ESPACIADO_DIALOGO, scroll=ft.ScrollMode.AUTO),
+    )
     return FormularioCompraAhorro(contenido=contenido, confirmar=_confirmar)

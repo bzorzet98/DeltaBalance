@@ -1376,12 +1376,19 @@ class TablaPlanilla:
 
     # --- Filas: helpers de celda para construir_celdas() ---
 
-    def celda_lectura(self, clave: str, contenido: ft.Control) -> ft.Container:
-        """Celda de solo lectura (mismo alto y alineación que las editables)."""
+    def celda_lectura(
+        self, clave: str, contenido: ft.Control, on_click: Optional[Callable[[], None]] = None,
+    ) -> ft.Container:
+        """
+        Celda de solo lectura (mismo alto y alineación que las editables).
+        on_click: la pantalla decide qué hace el click (ej. abrir su propio
+        diálogo), en vez de la edición inline de celda_texto() y compañía.
+        """
         celda = self._contenedor_celda(clave)
         celda.content = ft.Container(
             content=contenido, alignment=self._por_clave[clave].alineacion,
             padding=ft.Padding.symmetric(horizontal=LayoutTokens.PADDING_CELDA),
+            on_click=(lambda e: on_click()) if on_click is not None else None,
         )
         return celda
 

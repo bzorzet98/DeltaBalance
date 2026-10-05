@@ -70,6 +70,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from utils.categorias import clave_categoria
 from utils.personas import normalizar_persona
 
 # El mismo DEFAULT de los `id` de db/schema.sql: un UUID v4 en texto,
@@ -158,6 +159,22 @@ MIGRACIONES_COLUMNA: list[MigracionColumna] = [
         tabla="movimientos_activo",
         columna="comision_minor",
         ddl_columna="comision_minor INTEGER DEFAULT 0",
+    ),
+    MigracionColumna(
+        # Moneda de cada movimiento (docs/DATA_MODEL_DECISIONS.md sección 33):
+        # en acciones / CEDEARs puede no ser la del activo (comprar en ARS,
+        # vender en USD). Nullable: el ALTER TABLE no admite un NOT NULL con
+        # FK sin default; SavingsService la escribe siempre. Las filas que ya
+        # existían toman la del activo. También está en DDL_MOVIMIENTOS_FINAL
+        # (ampliar_tipos_ahorro() corre después y reconstruye la tabla).
+        tabla="movimientos_activo",
+        columna="moneda_id",
+        ddl_columna="moneda_id INTEGER REFERENCES monedas(id)",
+        sql_backfill=(
+            "UPDATE movimientos_activo SET moneda_id = "
+            "(SELECT a.moneda_id FROM activos_financieros a WHERE a.id = movimientos_activo.activo_id) "
+            "WHERE moneda_id IS NULL;"
+        ),
     ),
     MigracionColumna(
         tabla="gastos_compartidos",
@@ -867,7 +884,8 @@ CREATE TABLE movimientos_activo_final (
     notas                       TEXT,
     creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     transaccion_id              TEXT REFERENCES transacciones(id),
-    comision_minor              INTEGER DEFAULT 0
+    comision_minor              INTEGER DEFAULT 0,
+    moneda_id                   INTEGER REFERENCES monedas(id)
 );
 """
 
@@ -1052,13 +1070,19 @@ def migrar_cargos_extra_a_compras(conn: sqlite3.Connection) -> None:
     ).fetchall()
     if not cargos:
         return
-    categorias: dict[str, str] = {}
-    for tipo, (principal, subcategoria) in CATEGORIA_DE_CARGO_MIGRACION.items():
-        fila = conn.execute(
-            "SELECT id FROM categorias WHERE categoria_principal = ? AND subcategoria = ?;", (principal, subcategoria),
-        ).fetchone()
-        if fila is not None:
-            categorias[tipo] = fila[0]
+    # Por nombre sin distinguir mayúsculas (utils/categorias.py): sirve antes y
+    # después de migration/reestructurar_categorias.py ("Impuesto tarjeta" →
+    # "IMPUESTO TARJETA"). Una activa gana sobre una inactiva.
+    id_por_clave: dict[tuple[str, str], str] = {}
+    for categoria_id, principal, subcategoria, activa in conn.execute(
+        "SELECT id, categoria_principal, subcategoria, activa FROM categorias ORDER BY activa;",
+    ).fetchall():
+        id_por_clave[clave_categoria(principal, subcategoria)] = categoria_id
+    categorias: dict[str, str] = {
+        tipo: id_por_clave[clave_categoria(*nombre)]
+        for tipo, nombre in CATEGORIA_DE_CARGO_MIGRACION.items()
+        if clave_categoria(*nombre) in id_por_clave
+    }
     movibles = [cargo for cargo in cargos if cargo[2] in categorias]
     if len(movibles) < len(cargos):
         print(
@@ -1176,6 +1200,9 @@ def aplicar_migraciones_columna(conn: sqlite3.Connection, exigir_uuid: bool = Tr
 #    así ningún service ni repositorio tiene que acordarse de avisar, y un
 #    borrado también viaja (a Supabase como fila marcada borrada).
 #    modificado_en (UTC, con milésimas) es el reloj de last-write-wins.
+#    Cada trigger borra la anotación anterior de la fila y escribe la nueva
+#    (DELETE + INSERT, ver _ddl_triggers_sync()), y preparar_sync() los
+#    rehace en cada inicializar().
 # 3. sync_estado: una marca (MARCA_ESCRITURA_SYNC) que la propia
 #    sincronización pone DENTRO de su transacción mientras escribe (marcar
 #    filas como subidas, aplicar filas bajadas). Los triggers no registran
@@ -1250,32 +1277,68 @@ def _expresion_clave(tabla: str, fila: str) -> str:
     return f" || '{SEPARADOR_CLAVE}' || ".join(f"CAST({fila}.{columna} AS TEXT)" for columna in claves_primarias(tabla))
 
 
-def _ddl_triggers_sync(tabla: str) -> list[str]:
+def _ddl_triggers_sync(tabla: str) -> list[tuple[str, str]]:
+    """(nombre, CREATE TRIGGER) de los 3 triggers de sync de la tabla (ver el bloque de arriba)."""
     cuando = f"WHEN NOT EXISTS (SELECT 1 FROM sync_estado WHERE clave = '{MARCA_ESCRITURA_SYNC}')"
     marca_tiempo = "strftime('%Y-%m-%d %H:%M:%f', 'now')"
 
     def _registrar(fila: str, operacion: str) -> str:
+        # DELETE + INSERT, y no INSERT OR REPLACE: dentro de un trigger,
+        # SQLite usa la política de conflicto de la sentencia que lo dispara
+        # cuando ésta tiene una — un upsert (INSERT … ON CONFLICT DO UPDATE)
+        # corre su UPDATE con ABORT, un INSERT OR IGNORE con IGNORE — y el
+        # OR REPLACE del trigger se pierde. Con un cambio todavía pendiente de
+        # esa fila, el INSERT chocaba con la clave de sync_cambios ("UNIQUE
+        # constraint failed: sync_cambios.tabla, sync_cambios.clave" al
+        # guardar dos veces los días de una tarjeta) o se ignoraba. Así no
+        # depende de quién lo dispara.
+        clave = _expresion_clave(tabla, fila)
         return (
-            "INSERT OR REPLACE INTO sync_cambios (tabla, clave, operacion, modificado_en) "
-            f"VALUES ('{tabla}', {_expresion_clave(tabla, fila)}, '{operacion}', {marca_tiempo});"
+            f"DELETE FROM sync_cambios WHERE tabla = '{tabla}' AND clave = {clave}; "
+            "INSERT INTO sync_cambios (tabla, clave, operacion, modificado_en) "
+            f"VALUES ('{tabla}', {clave}, '{operacion}', {marca_tiempo});"
         )
 
     return [
-        f"CREATE TRIGGER IF NOT EXISTS trg_sync_{tabla}_insert AFTER INSERT ON {tabla} {cuando} "
-        f"BEGIN {_registrar('NEW', 'guardado')} END;",
-        f"CREATE TRIGGER IF NOT EXISTS trg_sync_{tabla}_update AFTER UPDATE ON {tabla} {cuando} "
-        f"BEGIN {_registrar('NEW', 'guardado')} END;",
-        f"CREATE TRIGGER IF NOT EXISTS trg_sync_{tabla}_delete AFTER DELETE ON {tabla} {cuando} "
-        f"BEGIN {_registrar('OLD', 'borrado')} END;",
+        (
+            f"trg_sync_{tabla}_insert",
+            f"CREATE TRIGGER trg_sync_{tabla}_insert AFTER INSERT ON {tabla} {cuando} "
+            f"BEGIN {_registrar('NEW', 'guardado')} END;",
+        ),
+        (
+            f"trg_sync_{tabla}_update",
+            f"CREATE TRIGGER trg_sync_{tabla}_update AFTER UPDATE ON {tabla} {cuando} "
+            f"BEGIN {_registrar('NEW', 'guardado')} END;",
+        ),
+        (
+            f"trg_sync_{tabla}_delete",
+            f"CREATE TRIGGER trg_sync_{tabla}_delete AFTER DELETE ON {tabla} {cuando} "
+            f"BEGIN {_registrar('OLD', 'borrado')} END;",
+        ),
     ]
 
 
 def preparar_sync(conn: sqlite3.Connection) -> None:
-    """Columna sincronizado_en, sync_cambios / sync_estado y los triggers (ver el bloque de arriba)."""
+    """
+    Columna sincronizado_en, sync_cambios / sync_estado y los triggers (ver
+    el bloque de arriba). Los triggers se rehacen en cada corrida (DROP +
+    CREATE, no CREATE IF NOT EXISTS): una base que ya los tenía toma la
+    definición actual — ej. la que dejó de usar INSERT OR REPLACE.
+    """
     _aplicar_columnas(conn, MIGRACIONES_COLUMNA_SYNC)
     for ddl in DDL_TABLAS_SYNC:
         conn.execute(ddl)
-    for tabla in TABLAS_SINCRONIZADAS:
-        for ddl in _ddl_triggers_sync(tabla):
-            conn.execute(ddl)
     conn.commit()
+    # En una transacción: otra conexión (la app abierta, si esto corre desde
+    # un script de migration/) nunca ve una tabla sin su trigger — un cambio
+    # suyo en ese instante quedaría sin anotar en sync_cambios.
+    conn.execute("BEGIN;")
+    try:
+        for tabla in TABLAS_SINCRONIZADAS:
+            for nombre, ddl in _ddl_triggers_sync(tabla):
+                conn.execute(f"DROP TRIGGER IF EXISTS {nombre};")
+                conn.execute(ddl)
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise

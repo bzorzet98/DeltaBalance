@@ -62,7 +62,7 @@ def main() -> None:
     svc = FeesService(manager)
 
     usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
-    categoria = manager.fetchone("SELECT id FROM categorias WHERE subcategoria = 'Supermercado';")["id"]
+    categoria = manager.fetchone("SELECT id FROM categorias WHERE subcategoria = 'SUPERMERCADO';")["id"]
 
     print("--- Migración ---")
     columnas = {f["name"] for f in manager.fetchall("PRAGMA table_info(compras_cuotas);")}
@@ -131,7 +131,7 @@ def main() -> None:
     cargos = {c["concepto"]: c for c in svc.list_extra_charges_in_month(MES, ANIO)}
     caso("lista los 3 cargos del mes (no las compras)", {"IMPUESTO PAIS", "REINTEGRO", "RECARGO MORA"}, set(cargos))
     caso("IMPUESTO PAIS: fecha, moneda, tipo y categoría",
-         ("2026-07-20", "ARS", "impuesto", "Impuesto tarjeta"),
+         ("2026-07-20", "ARS", "impuesto", "IMPUESTO TARJETA"),
          tuple(cargos["IMPUESTO PAIS"][k] for k in ("fecha", "currency_code", "tipo", "category_name")))
     caso("REINTEGRO: monto con signo en USD", (-1000, "USD", 2), tuple(
         cargos["REINTEGRO"][k] for k in ("monto_minor", "currency_code", "decimales")

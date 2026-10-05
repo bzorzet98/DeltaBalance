@@ -96,6 +96,7 @@ from repositories.gastos_compartidos_repository import GastosCompartidosReposito
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
 from repositories.tarjetas_config_repository import TarjetasConfigRepository
 from repositories.tarjetas_resumenes_repository import TarjetasResumenesRepository
+from utils.categorias import clave_categoria
 
 # Mapeo nombre de categoría especial (categoria_principal, subcategoria —
 # ver services/categorias_service.py CATEGORIAS_PROTEGIDAS, que las
@@ -106,21 +107,30 @@ from repositories.tarjetas_resumenes_repository import TarjetasResumenesReposito
 # una regla de negocio real — "elegir esta categoría significa esto es un
 # cargo extra de tipo X, no una compra" — que un futuro script de lab/ que
 # importe datos históricos también podría necesitar (CLAUDE.md §2), no un
-# detalle de presentación. Keyed por (categoria_principal, subcategoria) y
-# no por id, mismo motivo que CATEGORIAS_PROTEGIDAS: el id varía entre
-# bases (dummy DB de verify/, DB real del usuario), el par de nombres es
-# la identidad estable. Quien consuma esto (ui/screens/compras_cuotas.py)
-# resuelve el id real una sola vez contra la lista de categorías ya
-# cargada en pantalla.
+# detalle de presentación. Keyed por utils/categorias.py clave_categoria()
+# (categoria_principal, subcategoria en MAYÚSCULAS — los nombres del
+# catálogo desde migration/reestructurar_categorias.py, sección 30) y no
+# por id, mismo motivo que CATEGORIAS_PROTEGIDAS: el id varía entre bases
+# (dummy DB de verify/, DB real del usuario), el par de nombres es la
+# identidad estable. Para buscar, charge_type_de_categoria(): compara sin
+# distinguir mayúsculas, así una base todavía sin reestructurar
+# ("Impuesto tarjeta") se reconoce igual. Quien consuma esto
+# (ui/screens/compras_cuotas.py) resuelve el id real una sola vez contra
+# la lista de categorías ya cargada en pantalla.
 CATEGORIAS_CARGO_EXTRA: dict[tuple[str, str], str] = {
-    ("TARJETA DE CRÉDITO", "Impuesto tarjeta"): "impuesto",
-    ("TARJETA DE CRÉDITO", "Recargo tarjeta"): "recargo",
-    ("TARJETA DE CRÉDITO", "Ajuste/Reintegro tarjeta"): "ajuste",
+    ("TARJETA DE CRÉDITO", "IMPUESTO TARJETA"): "impuesto",
+    ("TARJETA DE CRÉDITO", "RECARGO TARJETA"): "recargo",
+    ("TARJETA DE CRÉDITO", "AJUSTE/REINTEGRO TARJETA"): "ajuste",
 }
 # charge_type → (categoria_principal, subcategoria) de su categoría especial.
 CATEGORIA_POR_CHARGE_TYPE: dict[str, tuple[str, str]] = {tipo: nombre for nombre, tipo in CATEGORIAS_CARGO_EXTRA.items()}
 # subcategoria de una categoría especial → charge_type (las 3 subcategorías son distintas).
 _CHARGE_TYPE_POR_SUBCATEGORIA: dict[str, str] = {sub: tipo for (_, sub), tipo in CATEGORIAS_CARGO_EXTRA.items()}
+
+
+def charge_type_de_categoria(categoria_principal: Optional[str], subcategoria: Optional[str]) -> Optional[str]:
+    """El charge_type si la categoría es una especial de tarjeta (sin distinguir mayúsculas), o None."""
+    return CATEGORIAS_CARGO_EXTRA.get(clave_categoria(categoria_principal, subcategoria))
 
 # Fechas de resumen (docs/DATA_MODEL_DECISIONS.md sección 29).
 # suggest_first_fee(): resúmenes donde puede caer una compra, en meses desde
@@ -435,7 +445,10 @@ class FeesService:
             account_id:     The credit card account used for the purchase.
             category_id:    Category for classification.
             currency_code:  Currency of the purchase.
-            total_amount:   Full purchase price as a positive float.
+            total_amount:   Full purchase price, with its sign: negative is a
+                            refund / return (every fee negative too). Any
+                            category — the sign is up to the user (pedido
+                            explícito); only 0 is rejected.
             total_fees:     Number of installments (>= 1).
             amount_per_fee: Optional per-fee amount. If None, computed automatically.
             notes:          Optional description.
@@ -451,12 +464,12 @@ class FeesService:
             FeesResult with the purchase id and a summary of generated fees.
 
         Raises:
-            FeesError for invalid inputs (including only one of
+            FeesError for invalid inputs (a total of 0, only one of
                 first_fee_month/first_fee_year, or an invalid month/year).
             ValueError for invalid date or currency.
         """
-        if total_amount <= 0:
-            raise FeesError(f"Total amount must be positive. Received: {total_amount}.")
+        if total_amount == 0:
+            raise FeesError("Total amount cannot be 0.")
         if total_fees < 1:
             raise FeesError(f"Total fees must be >= 1. Received: {total_fees}.")
         if not concept or not concept.strip():
@@ -1198,7 +1211,7 @@ class FeesService:
             "concepto":        compra["concepto"],
             "categoria_id":    compra["categoria_id"],
             "category_name":   compra["category_name"],
-            "tipo":            _CHARGE_TYPE_POR_SUBCATEGORIA.get(compra["category_name"]),
+            "tipo":            _CHARGE_TYPE_POR_SUBCATEGORIA.get(clave_categoria("", compra["category_name"])[1]),
             "monto_minor":     compra["monto_total_minor"],
             "fecha":           compra["fecha_compra"],
             "moneda_id":       compra["moneda_id"],
@@ -1212,15 +1225,23 @@ class FeesService:
         }
 
     def _categoria_de_cargo(self, charge_type: str) -> sqlite3.Row:
-        """The special category of a charge type. FeesError if it is not in the database."""
-        principal, subcategoria = CATEGORIA_POR_CHARGE_TYPE[charge_type]
-        categoria = self._categorias_repo.obtener_por_nombre(principal, subcategoria)
-        if categoria is None:
+        """
+        The special category of a charge type, matched by name without
+        case (utils/categorias.py clave_categoria(): "Impuesto tarjeta" in a
+        database not restructured yet is the same one). An active one wins
+        over an inactive one. FeesError if it is not in the database.
+        """
+        clave = CATEGORIA_POR_CHARGE_TYPE[charge_type]
+        candidatas = [
+            c for c in self._categorias_repo.listar(incluir_inactivas=True)
+            if clave_categoria(c["categoria_principal"], c["subcategoria"]) == clave
+        ]
+        if not candidatas:
             raise FeesError(
-                f"Special category '{principal} · {subcategoria}' not found "
-                f"(see migration/agregar_categorias_tarjeta.py)."
+                f"Special category '{clave[0]} · {clave[1]}' not found "
+                f"(see migration/reestructurar_categorias.py)."
             )
-        return categoria
+        return max(candidatas, key=lambda c: c["activa"])
 
     def _moneda_de_cargo(self, cuenta_id: str, currency_code: Optional[str]) -> tuple[int, str]:
         """(moneda_id, codigo) of a charge: currency_code, or the card's only currency."""
