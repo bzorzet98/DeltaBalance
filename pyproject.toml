@@ -51,3 +51,11 @@ exclude = [
     ".pytest_cache",
     "__pycache__",
 ]
+
+# Paquetes Dart que flet build fuerza en el pubspec.yaml del proyecto
+# Flutter (sus entradas reemplazan a las del template de Flet). jni_flutter
+# 1.0.4+1 (1/10/2026) pide jni ^1.1.0, pero el template de Flet 0.86.5 fija
+# jni 1.0.0: sin esto, flet build falla al resolver dependencias. Sacarlo
+# cuando se actualice Flet.
+[tool.flet.flutter.pubspec.dependency_overrides]
+jni_flutter = "1.0.3"
