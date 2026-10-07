@@ -3,36 +3,28 @@ verify/dashboard/verify_resumen_mes.py
 
 Verifica DashboardService.get_resumen_mes() (pantalla DASHBOARD,
 ui/screens/resumen_mes.py; docs/DATA_MODEL_DECISIONS.md sección 34) con un
-escenario de octubre 2026 inspirado en el pedido (BRUNO y NOELIA comparten
-un hogar):
+escenario de octubre 2026 (BRUNO y NOELIA comparten un hogar):
 
-1. Ingresos estimados vs. cobrados del mes.
-2. Egresos fijos: estimado, pagado y lo que FALTA pagar (informativo).
-3. Cuotas por tarjeta.
-4. Gastos del Registro por categoría con su estimado: sin PAGO TARJETA ni
-   AUTOTRANSFERENCIA (CATEGORIAS_EXCLUIDAS_GASTOS), un compartido que pagó
-   BRUNO cuenta solo su parte, una categoría con presupuesto y sin gasto
-   aparece en 0, nada de otro mes ni de otra moneda; VIVIENDA (donde se
-   paga el alquiler) marcada como categoría de fijos (CATEGORIAS_DE_FIJOS).
-5. Gastos compartidos: la parte de BRUNO de lo que pagó NOELIA en el mes.
-6. Deudas ACUMULADAS hasta el 31/10: informales por persona (un saldo
-   negativo pasa al otro lado), compartidos pendientes (lo que pagó BRUNO
-   se lo debe NOELIA; lo que pagó NOELIA se lo debe BRUNO; descuenta pagos
-   parciales; sin los saldados ni los posteriores al corte).
-7. Balance en sus dos modos (switch ESTIMADO / REAL de la pantalla):
-   ESTIMADO = ingresos estimados − fijos estimados − cuotas − variables
-   estimados + neto de deudas; REAL = cobrados − fijos pagados − cuotas −
-   variables reales + neto de deudas. Variables: GASTOS DEL MES sin las
-   categorías de fijos; los gastos compartidos no entran. En ESTIMADO cada
-   categoría resta lo gastado + lo que falta de su presupuesto (sin
-   presupuesto, lo gastado). Y los totales de cada tarjeta.
-7b. Calculadora de escenarios: el detalle por ítem (ingresos y fijos por
-   concepto, cuotas por tarjeta, variables por categoría), que en cada modo
-   suma exacto el DISPONIBLE, y DashboardService.calcular_escenario():
-   excluir ítems o un grupo entero, ajuste manual, ids ajenos ignorados.
-7c. ESTIMADO con una categoría pasada de su presupuesto (diciembre): resta
-   lo gastado, no el presupuesto.
-8. Otra moneda (USD) y sin usuario local; errores.
+1. Ingresos fijos: estimado vs. real (cobrado), por concepto y subtotal.
+2. Ingresos variables: los ingresos del Registro en categorías de ingreso,
+   sin SUELDO / BECA (ya está en los fijos), sin AUTOTRANSFERENCIA (no es
+   una categoría de ingreso), sin otro mes ni otra moneda. Uno por tag (sin
+   distinguir mayúsculas ni espacios); los sin tag, uno por categoría. Solo
+   real: estimado 0.
+3. Egresos fijos: estimado vs. pagado.
+4. Egresos variables con presupuesto (estimado = presupuesto; una categoría
+   pasada proyecta lo gastado) y sin presupuesto (estimado = real). Un
+   compartido que pagó BRUNO cuenta solo su parte. Afuera: las categorías
+   excluidas (PAGO TARJETA, AUTOTRANSFERENCIA, CAMBIO MONEDA,
+   AHORRO/INVERSIÓN, …) y VIVIENDA (categoría de fijos: se informa aparte).
+5. Tarjeta: a pagar por tarjeta, pagos realizados (PAGO TARJETA del mes),
+   total y falta pagar.
+6. Deudas ACUMULADAS al 31/10: informales y compartidos, por persona.
+7. DISPONIBLE HOY vs. PROYECTADO: la tarjeta resta su TOTAL en los dos.
+8. Calculadora de escenarios: los grupos de cada modo suman exacto su
+   DISPONIBLE; excluir ítems, ajuste manual, ids ajenos ignorados.
+9. Otra moneda (USD), sin usuario local, tarjeta pagada de más
+   (noviembre: falta pagar nunca negativo) y errores.
 
 Correlo con:
     python verify/dashboard/verify_resumen_mes.py
@@ -48,7 +40,13 @@ from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
 from repositories.transacciones_repository import TransaccionesRepository
-from services.dashboard_service import CATEGORIAS_DE_FIJOS, CATEGORIAS_EXCLUIDAS_GASTOS, MODOS_BALANCE, DashboardService
+from services.dashboard_service import (
+    CATEGORIAS_DE_FIJOS,
+    CATEGORIAS_EXCLUIDAS_GASTOS,
+    CATEGORIAS_INGRESOS_FIJOS,
+    MODOS_DISPONIBLE,
+    DashboardService,
+)
 from services.debts_service import DebtsService
 from services.fees_service import FeesService
 from services.ingresos_service import IngresosService
@@ -97,40 +95,75 @@ def main() -> None:
 
     cuentas = CuentasRepository(manager)
     banco = cuentas.crear(nombre="BANCO", tipo="debito", moneda_codigo="ARS")
-    tarjeta = cuentas.crear(nombre="CREDICOOP CABAL", tipo="credito", moneda_codigo="ARS")
+    cabal = cuentas.crear(nombre="CREDICOOP CABAL", tipo="credito", moneda_codigo="ARS")
+    nacion = cuentas.crear(nombre="NACION MASTERCARD", tipo="credito", moneda_codigo="ARS")
     transacciones = TransaccionesRepository(manager)
 
-    def egreso(fecha: str, subcategoria: str, monto_minor: int, moneda_id: int = ars) -> str:
+    def movimiento(tipo: str, fecha: str, subcategoria: str, monto_minor: int, tag=None, moneda_id: int = ars) -> str:
         return transacciones.crear(
             fecha=fecha, concepto=f"{subcategoria} {fecha}", cuenta_id=banco, categoria_id=categoria(subcategoria),
-            moneda_id=moneda_id, tipo_movimiento="egreso", monto_minor=monto_minor,
+            moneda_id=moneda_id, tipo_movimiento=tipo, monto_minor=monto_minor, tag=tag,
         )
 
-    # --- Escenario ---
-    ingresos = IngresosService(manager)
-    ingresos.create("SUELDO", 129546000, 121739300, ars, MES, ANIO)
-    ingresos.create("FREELANCE", 50000, 50000, usd, MES, ANIO)
+    def egreso(fecha: str, subcategoria: str, monto_minor: int, moneda_id: int = ars) -> str:
+        return movimiento("egreso", fecha, subcategoria, monto_minor, moneda_id=moneda_id)
 
+    def ingreso(fecha: str, subcategoria: str, monto_minor: int, tag=None, moneda_id: int = ars) -> str:
+        return movimiento("ingreso", fecha, subcategoria, monto_minor, tag=tag, moneda_id=moneda_id)
+
+    # --- Escenario: ingresos ---
+    ingresos_svc = IngresosService(manager)
+    ingresos_svc.create("BECA DOCTORAL", 121739300, 121739300, ars, MES, ANIO)
+    ingresos_svc.create("CARGO JTP", 17684600, 0, ars, MES, ANIO)
+    ingresos_svc.create("FREELANCE", 50000, 50000, usd, MES, ANIO)
+
+    ingreso("2026-10-01", "SUELDO / BECA", 121739300)                  # no: el sueldo ya está en los fijos
+    ingreso("2026-10-05", "COBRO DEUDA", 2900000, "Cobro deuda Noe")
+    ingreso("2026-10-08", "INGRESO VARIABLE", 100000, "regalo papá")
+    ingreso("2026-10-20", "INGRESO VARIABLE", 50000, " REGALO PAPÁ ")   # el mismo tag, escrito distinto
+    ingreso("2026-10-12", "REINTEGRO", 30000)                           # sin tag: uno por categoría
+    ingreso("2026-10-16", "AUTOTRANSFERENCIA", 5000000)                 # no: categoría 'movimiento'
+    ingreso("2026-09-30", "INGRESO VARIABLE", 70000, "OTRO MES")        # no: otro mes
+    ingreso("2026-10-09", "INGRESO VARIABLE", 1000, "CLASES", moneda_id=usd)  # no en ARS: otra moneda
+
+    # --- Escenario: egresos ---
     presupuestos = PresupuestosService(manager)
-    presupuestos.create_fijo("ALQUILER", 18000000, ars, MES, ANIO, monto_real_minor=17850000)
-    presupuestos.create_fijo("SEGURO", 3000000, ars, MES, ANIO, monto_real_minor=3500000)  # pagó de más
+    presupuestos.create_fijo("ALQUILER", 15000000, ars, MES, ANIO, monto_real_minor=15000000)
+    presupuestos.create_fijo("SEGURO AUTO", 6237400, ars, MES, ANIO)
+    presupuestos.create_fijo("GAS", 8000000, ars, MES, ANIO)
     presupuestos.create_variable(categoria("SUPERMERCADO"), 8000000, ars, MES, ANIO)
+    presupuestos.create_variable(categoria("GASTRONOMÍA"), 4000000, ars, MES, ANIO)
     presupuestos.create_variable(categoria("TRANSPORTE / AUTO"), 5000000, ars, MES, ANIO)
+    presupuestos.create_variable(categoria("OCIO"), 1000000, ars, MES, ANIO)        # se va a pasar
 
-    FeesService(manager).create_purchase(
-        date_str="2026-10-05", concept="TV", account_id=tarjeta, category_id=categoria("HOGAR"),
-        currency_code="ARS", total_amount=145230.0, total_fees=1, first_fee_month=MES, first_fee_year=ANIO,
-    )
-
-    egreso("2026-10-03", "SUPERMERCADO", 6532000)
-    tx_compartida = egreso("2026-10-04", "SUPERMERCADO", 2000000)  # BRUNO la comparte 50/50
-    egreso("2026-10-06", "OCIO", 3200000)
-    egreso("2026-10-01", "VIVIENDA", 17850000)                     # el alquiler, pagado desde el Registro
-    egreso("2026-10-15", "PAGO TARJETA", 10000000)                 # excluida: ya está en CUOTAS
-    egreso("2026-10-16", "AUTOTRANSFERENCIA", 5000000)             # excluida: no es un gasto
+    egreso("2026-10-03", "SUPERMERCADO", 4000000)
+    tx_compartida = egreso("2026-10-04", "SUPERMERCADO", 2000000)  # BRUNO la comparte 50/50: cuenta 10.000
+    egreso("2026-10-06", "GASTRONOMÍA", 1600000)
+    egreso("2026-10-07", "TRANSPORTE / AUTO", 4800000)
+    egreso("2026-10-10", "OCIO", 2500000)                          # presupuesto 10.000: se pasó
+    egreso("2026-10-11", "MASCOTAS", 982100)                       # sin presupuesto
+    egreso("2026-10-12", "REGALOS", 500000)                        # sin presupuesto
+    egreso("2026-10-01", "VIVIENDA", 15000000)                     # categoría de fijos: ya está en ALQUILER
+    egreso("2026-10-15", "PAGO TARJETA", 14523000)                 # pago de la CABAL: va a TARJETA
+    egreso("2026-09-30", "PAGO TARJETA", 1000000)                  # otro mes
+    egreso("2026-10-16", "AUTOTRANSFERENCIA", 5000000)             # excluidas: no son gasto
+    egreso("2026-10-17", "CAMBIO MONEDA", 1000000)
+    egreso("2026-10-18", "AHORRO/INVERSIÓN", 3000000)
     egreso("2026-09-30", "SUPERMERCADO", 100000)                   # otro mes
     egreso("2026-10-07", "SUPERMERCADO", 1000, moneda_id=usd)      # otra moneda
 
+    # --- Escenario: tarjetas ---
+    fees = FeesService(manager)
+    fees.create_purchase(
+        date_str="2026-10-05", concept="TV", account_id=cabal, category_id=categoria("HOGAR"),
+        currency_code="ARS", total_amount=145230.0, total_fees=1, first_fee_month=MES, first_fee_year=ANIO,
+    )
+    fees.create_purchase(
+        date_str="2026-10-06", concept="HELADERA", account_id=nacion, category_id=categoria("HOGAR"),
+        currency_code="ARS", total_amount=30000.0, total_fees=1, first_fee_month=MES, first_fee_year=ANIO,
+    )
+
+    # --- Escenario: compartidos y deudas ---
     compartidos = SharedExpensesService(manager)
     gastos_repo = GastosCompartidosRepository(manager)
     hogar = compartidos.create_hogar(nombre_creador_local="BRUNO", nombre_hogar="CASA")
@@ -146,60 +179,90 @@ def main() -> None:
     compartido("NOELIA", "tx-noelia-1", "HOGAR", 5700000, "2026-10-10")             # BRUNO le debe 28.500
     parcial = compartido("NOELIA", "tx-noelia-2", "ALIMENTOS", 3000000, "2026-10-12")  # 15.000, pagó 10.000
     gastos_repo.actualizar_monto_pendiente(parcial, 500000, "pendiente")
-    compartido("NOELIA", "tx-noelia-3", "OCIO", 2000000, "2026-09-15")              # septiembre, pendiente
+    compartido("NOELIA", "tx-noelia-3", "HOGAR", 2000000, "2026-09-15")             # septiembre, pendiente
     saldado = compartido("BRUNO", "tx-bruno-viejo", "HOGAR", 4000000, "2026-08-01")
     gastos_repo.marcar_saldado(saldado)
-    compartido("NOELIA", "tx-noelia-4", "OCIO", 9000000, "2026-11-02")              # después del corte
+    compartido("NOELIA", "tx-noelia-4", "HOGAR", 9000000, "2026-11-02")             # después del corte
 
-    deudas = DebtsService(manager)
-    deudas.create("N. RIVERA", "PRÉSTAMO", "me_deben", 47131200, ars, "2026-09-01")
-    deudas.create("JUAN", "PRÉSTAMO", "me_deben", 1000000, ars, "2026-11-05")      # después del corte
-    deudas.create("PEDRO", "PRÉSTAMO", "me_deben", 500000, ars, "2026-07-01")
-    deudas.create("PEDRO", "DEVOLVIÓ DE MÁS", "me_deben", -700000, ars, "2026-08-01")
-    deudas.create("N. RIVERA", "PRÉSTAMO", "debo", 47060000, ars, "2026-10-01")
-    deudas.create("PAPI", "PRÉSTAMO", "debo", 4358500, ars, "2026-08-01")
+    deudas_svc = DebtsService(manager)
+    deudas_svc.create("N. RIVERA", "PRÉSTAMO", "me_deben", 47131200, ars, "2026-09-01")
+    deudas_svc.create("JUAN", "PRÉSTAMO", "me_deben", 1000000, ars, "2026-11-05")      # después del corte
+    deudas_svc.create("PEDRO", "PRÉSTAMO", "me_deben", 500000, ars, "2026-07-01")
+    deudas_svc.create("PEDRO", "DEVOLVIÓ DE MÁS", "me_deben", -700000, ars, "2026-08-01")
+    deudas_svc.create("N. RIVERA", "PRÉSTAMO", "debo", 47060000, ars, "2026-10-01")
+    deudas_svc.create("PAPI", "PRÉSTAMO", "debo", 4358500, ars, "2026-08-01")
 
     r = dashboard.get_resumen_mes(MES, ANIO, usuario_local="bruno")
-
-    print("--- 1. Ingresos ---")
-    caso("ingresos ARS: estimado y cobrado", (129546000, 121739300),
-         (r["ingresos"]["estimado_minor"], r["ingresos"]["real_minor"]))
     caso("el resumen es en ARS y hay datos también en USD", ("ARS", ["ARS", "USD"]),
          (r["moneda_codigo"], r["monedas_disponibles"]))
 
-    print("\n--- 2. Egresos fijos ---")
-    fijos = r["egresos_fijos"]
-    caso("estimado 180.000 + 30.000", 21000000, fijos["estimado_minor"])
-    caso("pagado 178.500 + 35.000", 21350000, fijos["real_minor"])
-    caso("falta pagar: 1.500 del alquiler (el seguro, pagado de más, no suma negativo)", 150000, fijos["pendiente_minor"])
+    print("\n--- 1. Ingresos fijos ---")
+    ing = r["ingresos"]
+    caso("por concepto (estimado, real) — el de USD no",
+         [("BECA DOCTORAL", 121739300, 121739300), ("CARGO JTP", 17684600, 0)],
+         sorted((i["concepto"], i["estimado_minor"], i["real_minor"]) for i in ing["fijos"]))
+    caso("subtotal fijos: 1.217.393 + 176.846 estimado, 1.217.393 cobrado",
+         {"estimado_minor": 139423900, "real_minor": 121739300}, ing["subtotal_fijos"])
 
-    print("\n--- 3. Cuotas por tarjeta ---")
-    caso("CREDICOOP CABAL: la cuota de octubre", [("CREDICOOP CABAL", 14523000)],
-         [(c["cuenta"], c["monto_minor"]) for c in r["cuotas"]])
-
-    print("\n--- 4. Gastos del Registro ---")
-    caso("categorías excluidas: autotransferencia y pago de tarjeta",
-         {("MOVIMIENTO CAPITAL", "AUTOTRANSFERENCIA"), ("TARJETA DE CRÉDITO", "PAGO TARJETA")},
-         set(CATEGORIAS_EXCLUIDAS_GASTOS))
-    caso("por categoría (real, estimado), la mayor primero",
+    print("\n--- 2. Ingresos variables ---")
+    caso("categorías de ingreso que ya son fijos: SUELDO / BECA", {("INGRESOS", "SUELDO / BECA")},
+         set(CATEGORIAS_INGRESOS_FIJOS))
+    caso("uno por tag, el mayor primero (id, tag, concepto, estimado, real); el sin tag, por categoría",
          [
-             ("VIVIENDA", 17850000, None),
-             ("SUPERMERCADO", 7532000, 8000000),       # 65.320 + 10.000 (su parte del compartido)
-             ("OCIO", 3200000, None),
-             ("TRANSPORTE / AUTO", 0, 5000000),        # presupuesto sin gasto
+             ("ingreso_variable:COBRO DEUDA NOE", "COBRO DEUDA NOE", "COBRO DEUDA NOE", 0, 2900000),
+             ("ingreso_variable:REGALO PAPÁ", "REGALO PAPÁ", "REGALO PAPÁ", 0, 150000),
+             (f"ingreso_sin_tag:{categoria('REINTEGRO')}", None, "REINTEGRO (SIN TAG)", 0, 30000),
          ],
-         [(g["categoria"], g["real_minor"], g["estimado_minor"]) for g in r["gastos_registro"]])
+         [(i["id"], i["tag"], i["concepto"], i["estimado_minor"], i["real_minor"]) for i in ing["variables"]])
+    caso("subtotal variables: solo real (29.000 + 1.500 + 300)", {"estimado_minor": 0, "real_minor": 3080000},
+         ing["subtotal_variables"])
+    caso("total ingresos: el estimado no suma los variables", {"estimado_minor": 139423900, "real_minor": 124819300},
+         ing["total"])
+
+    print("\n--- 3. Egresos fijos ---")
+    eg = r["egresos"]
+    caso("por concepto (estimado, pagado)",
+         [("ALQUILER", 15000000, 15000000), ("GAS", 8000000, 0), ("SEGURO AUTO", 6237400, 0)],
+         sorted((f["concepto"], f["estimado_minor"], f["real_minor"]) for f in eg["fijos"]))
+    caso("subtotal fijos", {"estimado_minor": 29237400, "real_minor": 15000000}, eg["subtotal_fijos"])
+
+    print("\n--- 4. Egresos variables ---")
+    caso("categorías excluidas: las del pedido",
+         {
+             ("MOVIMIENTO CAPITAL", "AUTOTRANSFERENCIA"), ("TARJETA DE CRÉDITO", "PAGO TARJETA"),
+             ("MOVIMIENTO CAPITAL", "CAMBIO MONEDA"), ("MOVIMIENTO CAPITAL", "DEUDA"),
+             ("MOVIMIENTO CAPITAL", "AHORRO/INVERSIÓN"), ("MOVIMIENTO CAPITAL", "INVERSIONES"),
+         },
+         set(CATEGORIAS_EXCLUIDAS_GASTOS))
+    caso("con presupuesto (categoría, estimado = presupuesto, proyectado, real), el mayor real primero",
+         [
+             ("SUPERMERCADO", 8000000, 8000000, 5000000),           # 40.000 + 10.000 (su parte del compartido)
+             ("TRANSPORTE / AUTO", 5000000, 5000000, 4800000),
+             ("OCIO", 1000000, 2500000, 2500000),                   # se pasó: proyecta lo gastado
+             ("GASTRONOMÍA", 4000000, 4000000, 1600000),
+         ],
+         [(v["categoria"], v["estimado_minor"], v["proyectado_minor"], v["real_minor"])
+          for v in eg["variables_con_presupuesto"]])
+    caso("sin presupuesto: estimado = proyectado = real",
+         [("MASCOTAS", 982100, 982100, 982100), ("REGALOS", 500000, 500000, 500000)],
+         [(v["categoria"], v["estimado_minor"], v["proyectado_minor"], v["real_minor"])
+          for v in eg["variables_sin_presupuesto"]])
     caso("categorías de fijos: vivienda, servicios básicos y seguros",
          {("EGRESOS", "VIVIENDA"), ("EGRESOS", "SERVICIOS BÁSICOS"), ("EGRESOS", "SEGUROS")},
          set(CATEGORIAS_DE_FIJOS))
-    caso("solo VIVIENDA marcada como categoría de fijos",
-         [("VIVIENDA", True), ("SUPERMERCADO", False), ("OCIO", False), ("TRANSPORTE / AUTO", False)],
-         [(g["categoria"], g["categoria_de_fijos"]) for g in r["gastos_registro"]])
+    caso("VIVIENDA no es variable: se informa aparte", [("VIVIENDA", 15000000)],
+         [(g["categoria"], g["real_minor"]) for g in eg["en_categorias_de_fijos"]])
+    caso("subtotal variables: el estimado suma los proyectados (OCIO con lo gastado)",
+         {"estimado_minor": 20982100, "real_minor": 15382100}, eg["subtotal_variables"])
+    caso("total egresos", {"estimado_minor": 50219500, "real_minor": 30382100}, eg["total"])
 
-    print("\n--- 5. Gastos compartidos (la parte de BRUNO de lo que pagó NOELIA en octubre) ---")
-    caso("HOGAR 28.500 y ALIMENTOS 15.000 (el de septiembre y el de noviembre, no)",
-         [("HOGAR", 2850000), ("ALIMENTOS", 1500000)],
-         [(g["categoria"], g["monto_minor"]) for g in r["gastos_compartidos"]])
+    print("\n--- 5. Tarjeta ---")
+    t = r["tarjeta"]
+    caso("a pagar por tarjeta (id, cuenta, monto)",
+         [(f"cuota:{cabal}", "CREDICOOP CABAL", 14523000), (f"cuota:{nacion}", "NACION MASTERCARD", 3000000)],
+         [(c["id"], c["cuenta"], c["a_pagar_minor"]) for c in t["por_cuenta"]])
+    caso("pagos realizados: el PAGO TARJETA de octubre (el de septiembre no)", 14523000, t["pagos_realizados_minor"])
+    caso("total a pagar y falta pagar", (17523000, 3000000), (t["total_a_pagar_minor"], t["falta_pagar_minor"]))
 
     print("\n--- 6. Deudas acumuladas al 31/10 ---")
     d = r["deudas"]
@@ -207,7 +270,7 @@ def main() -> None:
     caso("ME DEBEN: N. RIVERA (informal) y NOELIA (compartidos: lo que pagó BRUNO)",
          [("N. RIVERA", "informal", 47131200), ("NOELIA", "compartidos", 1000000)],
          [(x["persona"], x["tipo"], x["monto_minor"]) for x in d["me_deben"]])
-    caso("DEBO: N. RIVERA, NOELIA (28.500 + 5.000 pendiente + 10.000 de septiembre), PAPI y PEDRO (le debe lo que devolvió de más)",
+    caso("DEBO: N. RIVERA, NOELIA (28.500 + 5.000 pendiente + 10.000 de septiembre), PAPI y PEDRO (devolvió de más)",
          [
              ("N. RIVERA", "informal", 47060000),
              ("NOELIA", "compartidos", 4350000),
@@ -218,100 +281,64 @@ def main() -> None:
     caso("subtotales y neto", (48131200, 55968500, -7837300),
          (d["subtotal_me_deben_minor"], d["subtotal_debo_minor"], d["neto_minor"]))
 
-    print("\n--- 7. Balance en sus dos modos ---")
-    def componentes(modo: str) -> tuple:
-        b = r["balance"][modo]
-        return (b["ingresos_minor"], b["egresos_fijos_minor"], b["cuotas_minor"],
-                b["gastos_variables_minor"], b["neto_deudas_minor"])
+    print("\n--- 7. DISPONIBLE ---")
+    disponible = r["disponible"]
+    caso("HOY = 1.248.193 − 303.821 − 175.230 (tarjeta, el total) − 78.373", 69076900, disponible["hoy_minor"])
+    caso("PROYECTADO = 1.394.239 + 30.800 − 502.195 − 175.230 − 78.373", 66924100, disponible["proyectado_minor"])
 
-    caso("el balance trae los dos modos", ["estimado", "real"], list(r["balance"]))
-    caso("los modos son los del service", list(MODOS_BALANCE), list(r["balance"]))
-    caso("totales de las tarjetas: cuotas, gastos del mes (VIVIENDA incluida) y compartidos",
-         (14523000, 28582000, 4350000),
-         (r["totales"]["cuotas_minor"], r["totales"]["gastos_registro_minor"], r["totales"]["gastos_compartidos_minor"]))
-    # ESTIMADO: variables = gastado + lo que falta del presupuesto — SUPERMERCADO 75.320 + 4.680 = 80.000,
-    # TRANSPORTE / AUTO 0 + 50.000 = 50.000 — y OCIO, sin presupuesto, lo gastado: 32.000.
-    caso("ESTIMADO: ingresos, fijos estimados, cuotas, variables estimados, neto de deudas",
-         (129546000, 21000000, 14523000, 16200000, -7837300), componentes("estimado"))
-    caso("ESTIMADO: DISPONIBLE = 1.295.460 − 210.000 − 145.230 − 162.000 − 78.373",
-         69985700, r["balance"]["estimado"]["disponible_minor"])
-    # REAL: variables = SUPERMERCADO 75.320 + OCIO 32.000 + TRANSPORTE 0; VIVIENDA (fijo) y compartidos, no.
-    caso("REAL: cobrados, fijos pagados, cuotas, variables reales, neto de deudas",
-         (121739300, 21350000, 14523000, 10732000, -7837300), componentes("real"))
-    caso("REAL: DISPONIBLE = 1.217.393 − 213.500 − 145.230 − 107.320 − 78.373",
-         67297000, r["balance"]["real"]["disponible_minor"])
-
-    print("\n--- 7b. Detalle por ítem y calculadora de escenarios ---")
-    caso("ingresos por concepto (el de USD no)", [("SUELDO", 129546000, 121739300)],
-         [(i["concepto"], i["estimado_minor"], i["real_minor"]) for i in r["ingresos"]["items"]])
-    caso("fijos por concepto (estimado, pagado, falta pagar)",
-         [("ALQUILER", 18000000, 17850000, 150000), ("SEGURO", 3000000, 3500000, 0)],
-         [(f["concepto"], f["estimado_minor"], f["real_minor"], f["pendiente_minor"]) for f in r["egresos_fijos"]["items"]])
-    caso("cuotas con el id de su tarjeta", [tarjeta], [c["cuenta_id"] for c in r["cuotas"]])
-    for modo in MODOS_BALANCE:
-        balance_modo = r["balance"][modo]
-        caso(f"{modo.upper()}: los grupos, en el orden del DISPONIBLE",
-             ["ingresos", "egresos_fijos", "cuotas", "gastos_variables", "neto_deudas"],
-             [g["clave"] for g in balance_modo["grupos"]])
-        caso(f"{modo.upper()}: la suma de todos los aportes es el DISPONIBLE", balance_modo["disponible_minor"],
-             sum(i["aporte_minor"] for g in balance_modo["grupos"] for i in g["items"]))
-    variables = next(g for g in r["balance"]["estimado"]["grupos"] if g["clave"] == "gastos_variables")
-    caso("ESTIMADO: los variables sin VIVIENDA (fijo), en negativo; OCIO, sin presupuesto, con lo gastado (no 0)",
-         [(f"variable:{categoria('SUPERMERCADO')}", -8000000), (f"variable:{categoria('OCIO')}", -3200000),
-          (f"variable:{categoria('TRANSPORTE / AUTO')}", -5000000)],
-         [(i["id"], i["aporte_minor"]) for i in variables["items"]])
-
-    estimado, real = r["balance"]["estimado"], r["balance"]["real"]
-    id_cuota = f"cuota:{tarjeta}"
-    id_super = f"variable:{categoria('SUPERMERCADO')}"
-    id_sueldo = f"ingreso:{r['ingresos']['items'][0]['id']}"
-    sin_nada = dashboard.calcular_escenario(estimado, [], 0)
-    caso("sin excluir nada ni ajuste: el DISPONIBLE de siempre, no es escenario", (69985700, False),
+    print("\n--- 8. Calculadora de escenarios ---")
+    caso("los modos del DISPONIBLE", ["hoy", "proyectado"], list(MODOS_DISPONIBLE))
+    for modo in MODOS_DISPONIBLE:
+        grupos = disponible["grupos"][modo]
+        caso(f"{modo.upper()}: los grupos, en el orden de la pantalla",
+             ["ingresos_fijos", "ingresos_variables", "egresos_fijos", "egresos_variables", "tarjeta", "neto_deudas"],
+             [g["clave"] for g in grupos])
+        caso(f"{modo.upper()}: la suma de todos los aportes es el DISPONIBLE", disponible[f"{modo}_minor"],
+             sum(i["aporte_minor"] for g in grupos for i in g["items"]))
+    hoy, proyectado = disponible["grupos"]["hoy"], disponible["grupos"]["proyectado"]
+    id_cabal = f"cuota:{cabal}"
+    id_ocio = f"variable:{categoria('OCIO')}"
+    sin_nada = dashboard.calcular_escenario(hoy, [], 0)
+    caso("sin excluir nada ni ajuste: el DISPONIBLE de siempre, no es escenario", (69076900, False),
          (sin_nada["disponible_minor"], sin_nada["es_escenario"]))
-    sin_cuota = dashboard.calcular_escenario(estimado, [id_cuota], 0)
-    caso("sin la cuota de CREDICOOP: +145.230, el grupo CUOTAS en 0", (84508700, 0, True),
-         (sin_cuota["disponible_minor"], sin_cuota["grupos"]["cuotas"], sin_cuota["es_escenario"]))
-    sin_cuota_ni_super = dashboard.calcular_escenario(estimado, [id_cuota, id_super], 0)
-    caso("y sin SUPERMERCADO: +80.000; los variables quedan en OCIO + TRANSPORTE / AUTO", (92508700, -8200000),
-         (sin_cuota_ni_super["disponible_minor"], sin_cuota_ni_super["grupos"]["gastos_variables"]))
-    con_ajuste = dashboard.calcular_escenario(estimado, [id_cuota, id_super], -30000000)
-    caso("con un ajuste de −300.000", 62508700, con_ajuste["disponible_minor"])
-    caso("sin el grupo INGRESOS entero (su único ítem)", -59560300,
-         dashboard.calcular_escenario(estimado, [id_sueldo], 0)["disponible_minor"])
-    caso("REAL: el mismo id excluye SUPERMERCADO también ahí (+75.320)", 74829000,
-         dashboard.calcular_escenario(real, [id_super], 0)["disponible_minor"])
-    ajeno = dashboard.calcular_escenario(estimado, ["variable:no-existe"], 0)
-    caso("un id que no es de este balance se ignora: no es escenario", (69985700, False),
+    sin_cabal = dashboard.calcular_escenario(hoy, [id_cabal], 0)
+    caso("HOY sin la CABAL: +145.230; el grupo tarjeta queda en la NACION", (83599900, -3000000, True),
+         (sin_cabal["disponible_minor"], sin_cabal["grupos"]["tarjeta"], sin_cabal["es_escenario"]))
+    caso("HOY sin la CABAL ni OCIO: +25.000 más (lo gastado)", 86099900,
+         dashboard.calcular_escenario(hoy, [id_cabal, id_ocio], 0)["disponible_minor"])
+    caso("PROYECTADO sin la CABAL ni OCIO: +145.230 + 25.000 (su proyectado)", 83947100,
+         dashboard.calcular_escenario(proyectado, [id_cabal, id_ocio], 0)["disponible_minor"])
+    caso("con un ajuste de −300.000", 56099900,
+         dashboard.calcular_escenario(hoy, [id_cabal, id_ocio], -30000000)["disponible_minor"])
+    caso("sin NETO DEUDAS: +78.373", 76914200, dashboard.calcular_escenario(hoy, ["neto_deudas"], 0)["disponible_minor"])
+    caso("sin un ingreso variable (REGALO PAPÁ): −1.500", 68926900,
+         dashboard.calcular_escenario(hoy, ["ingreso_variable:REGALO PAPÁ"], 0)["disponible_minor"])
+    ajeno = dashboard.calcular_escenario(hoy, ["variable:no-existe"], 0)
+    caso("un id que no es de estos grupos se ignora: no es escenario", (69076900, False),
          (ajeno["disponible_minor"], ajeno["es_escenario"]))
-    caso("solo el ajuste ya es escenario", (70085700, True),
-         tuple(dashboard.calcular_escenario(estimado, [], 100000)[k] for k in ("disponible_minor", "es_escenario")))
+    caso("solo el ajuste ya es escenario", (69176900, True),
+         tuple(dashboard.calcular_escenario(hoy, [], 100000)[k] for k in ("disponible_minor", "es_escenario")))
 
-    print("\n--- 7c. ESTIMADO con una categoría pasada de su presupuesto (diciembre) ---")
-    # Mes aparte (los presupuestos no se copian solos entre meses): OCIO con presupuesto 10.000 y 25.000 gastados.
-    presupuestos.create_variable(categoria("OCIO"), 1000000, ars, 12, ANIO)
-    egreso("2026-12-05", "OCIO", 2500000)
-    r_dic = dashboard.get_resumen_mes(12, ANIO, usuario_local="bruno")
-    caso("OCIO en diciembre: (real, presupuesto)", [("OCIO", 2500000, 1000000)],
-         [(g["categoria"], g["real_minor"], g["estimado_minor"]) for g in r_dic["gastos_registro"]])
-    caso("se pasó: ESTIMADO resta lo gastado (25.000), no el presupuesto (10.000); REAL también 25.000",
-         (2500000, 2500000),
-         (r_dic["balance"]["estimado"]["gastos_variables_minor"], r_dic["balance"]["real"]["gastos_variables_minor"]))
-
-    print("\n--- 8. Otra moneda, sin usuario local y errores ---")
-    r_usd = dashboard.get_resumen_mes(MES, ANIO, usuario_local="BRUNO", moneda_codigo="USD")
-    caso("USD: solo lo de USD (ingreso 500 y el gasto de 10, sin presupuesto en USD)",
-         (50000, [("SUPERMERCADO", 1000, None)], []),
-         (r_usd["ingresos"]["estimado_minor"],
-          [(g["categoria"], g["real_minor"], g["estimado_minor"]) for g in r_usd["gastos_registro"]],
-          r_usd["cuotas"]))
+    print("\n--- 9. Otra moneda, sin usuario local, tarjeta pagada de más y errores ---")
+    r_usd = dashboard.get_resumen_mes(MES, ANIO, moneda="USD", usuario_local="BRUNO")
+    caso("USD: ingreso fijo, ingreso variable, el gasto sin presupuesto (el presupuesto es en ARS), sin tarjetas",
+         ([("FREELANCE", 50000, 50000)], [("CLASES", 1000)], [("SUPERMERCADO", 1000, 1000)], []),
+         ([(i["concepto"], i["estimado_minor"], i["real_minor"]) for i in r_usd["ingresos"]["fijos"]],
+          [(i["concepto"], i["real_minor"]) for i in r_usd["ingresos"]["variables"]],
+          [(v["categoria"], v["estimado_minor"], v["real_minor"]) for v in r_usd["egresos"]["variables_sin_presupuesto"]],
+          r_usd["tarjeta"]["por_cuenta"]))
     r_sin = dashboard.get_resumen_mes(MES, ANIO)
-    caso("sin usuario local: lo avisa y no hay compartidos", (True, []),
-         (r_sin["sin_usuario_local"], r_sin["gastos_compartidos"]))
-    caso("sin usuario local: DEUDAS solo informales",
-         (["informal"], ["informal", "informal", "informal"]),
-         ([x["tipo"] for x in r_sin["deudas"]["me_deben"]], [x["tipo"] for x in r_sin["deudas"]["debo"]]))
+    caso("sin usuario local: lo avisa y las DEUDAS son solo informales",
+         (True, ["informal"], ["informal", "informal", "informal"]),
+         (r_sin["sin_usuario_local"], [x["tipo"] for x in r_sin["deudas"]["me_deben"]],
+          [x["tipo"] for x in r_sin["deudas"]["debo"]]))
+    egreso("2026-11-10", "PAGO TARJETA", 5000000)  # noviembre: no vence nada y se paga igual
+    r_nov = dashboard.get_resumen_mes(11, ANIO, usuario_local="bruno")
+    caso("noviembre: nada a pagar, pagos 50.000, falta pagar 0 (nunca negativo)", ([], 0, 5000000, 0),
+         (r_nov["tarjeta"]["por_cuenta"], r_nov["tarjeta"]["total_a_pagar_minor"],
+          r_nov["tarjeta"]["pagos_realizados_minor"], r_nov["tarjeta"]["falta_pagar_minor"]))
     caso_excepcion("moneda desconocida → ValueError", ValueError,
-                   lambda: dashboard.get_resumen_mes(MES, ANIO, moneda_codigo="XYZ"))
+                   lambda: dashboard.get_resumen_mes(MES, ANIO, moneda="XYZ"))
     caso_excepcion("mes 13 → ValueError", ValueError, lambda: dashboard.get_resumen_mes(13, ANIO))
 
     print(f"\n{casos_ok}/{casos_total} casos OK")

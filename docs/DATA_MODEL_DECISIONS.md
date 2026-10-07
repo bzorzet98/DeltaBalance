@@ -1406,92 +1406,101 @@ seleccionados sin mirar su moneda.
 
 Verify: `verify/ahorros/verify_moneda_movimiento.py`.
 
-## 34. Dashboard: resumen del mes y balance DISPONIBLE — ✅ implementado (sin cambio de schema)
+## 34. Dashboard: resumen del mes y DISPONIBLE HOY / PROYECTADO — ✅ implementado (sin cambio de schema)
 
 Pantalla DASHBOARD (`ui/screens/resumen_mes.py`, la que abre la app; `ui/screens/
 dashboard.py` es, por historia, la del Registro) alimentada por
-`DashboardService.get_resumen_mes(mes, anio, usuario_local, moneda_codigo)`. Solo
-lectura: compone los services de cada dominio y no duplica sus reglas.
+`DashboardService.get_resumen_mes(mes, anio, moneda, usuario_local)`. Solo lectura:
+compone los services de cada dominio y no duplica sus reglas.
+
+**Rediseño (pedido del usuario).** La primera versión era una sola tarjeta BALANCE con
+grupos y un switch ESTIMADO / REAL. Ahora el resumen tiene cuatro secciones —
+INGRESOS, EGRESOS, TARJETA y DEUDAS —, cada una con su detalle y subtotales en dos
+columnas, y un DISPONIBLE arriba con [HOY] [PROYECTADO]. `usuario_local` se mantuvo
+en la firma aunque el pedido no lo nombraba: sin él no se sabe qué compartidos pagó
+cada uno (deudas de compartidos y la parte propia de un gasto compartido).
 
 **Una moneda por resumen.** Nunca se suman pesos con dólares: el resumen es de una
 moneda (ARS por defecto) y `monedas_disponibles` lista las que tienen datos ese mes
 (la pantalla muestra pills para cambiar).
 
-**De dónde sale cada número (decisiones del usuario):**
+**De dónde sale cada número:**
 
-- **Ingresos:** `IngresosService.list_by_month()`, estimado y cobrado, en total y por
-  concepto.
+- **Ingresos fijos:** `IngresosService.list_by_month()`, estimado y cobrado, por concepto.
+- **Ingresos variables:** los ingresos del Registro del mes en categorías de tipo
+  `ingreso`, salvo `CATEGORIAS_INGRESOS_FIJOS` (constante editable en
+  `services/dashboard_service.py`: hoy SUELDO / BECA, que ya está en los fijos). Las
+  categorías `movimiento` (autotransferencias, rescates de ahorro, cambio de moneda) no
+  entran. **Detalle por tag** (pedido del usuario), comparado sin espacios de más y en
+  mayúsculas; los sin tag, uno por categoría ("REINTEGRO (SIN TAG)"). Solo real:
+  estimado 0. Cuenta el monto completo de cada movimiento: si se compartió, la parte
+  del otro ya resta en las deudas. Un COBRO DEUDA entra acá; si el pago también se
+  carga en Deudas, el neto de deudas baja lo mismo y el DISPONIBLE no cambia.
 - **Egresos fijos:** presupuestos `fijo` del mes, estimado y pagado (real cargado a
-  mano), en total y por concepto; lo que **falta pagar** de cada uno (estimado − real,
-  nunca negativo) se muestra como dato.
-- **Cuotas:** `FeesService.resumen_por_tarjeta()`, el total de cada tarjeta.
-- **Gastos del Registro:** egresos del mes por categoría, salvo
-  `CATEGORIAS_EXCLUIDAS_GASTOS` (constante en `services/dashboard_service.py`, pedido
-  del usuario para poder editarla: hoy AUTOTRANSFERENCIA y PAGO TARJETA — este último
-  ya está en las cuotas). El real es el de `PresupuestosService.get_real_variable()`:
-  un gasto compartido que pagó el usuario cuenta solo su parte. Estimado: el
-  presupuesto variable de la categoría, si tiene; las categorías con presupuesto y sin
-  gasto aparecen en 0. Las de `CATEGORIAS_DE_FIJOS` (otra constante editable: hoy
-  VIVIENDA, SERVICIOS BÁSICOS y SEGUROS — donde el usuario paga sus fijos) se muestran
-  como información de EGRESOS FIJOS pero no son "gastos variables" del balance: ya
-  cuentan como egresos fijos.
-- **Gastos compartidos:** la parte del usuario de lo que pagó el OTRO miembro en el mes
-  (`monto_adeudado_minor` con pagador ≠ usuario local), por categoría — la regla del
-  ítem COMPARTIDOS de Presupuestos. **Informativo: no entra en el balance** (lo que
-  debe de eso ya está en las deudas).
+  mano), por concepto.
+- **Egresos variables:** egresos del Registro del mes por categoría de tipo `egreso`,
+  salvo `CATEGORIAS_EXCLUIDAS_GASTOS` (AUTOTRANSFERENCIA, PAGO TARJETA, CAMBIO MONEDA,
+  DEUDA, AHORRO/INVERSIÓN, INVERSIONES) y salvo `CATEGORIAS_DE_FIJOS` (VIVIENDA,
+  SERVICIOS BÁSICOS, SEGUROS: donde se pagan los fijos — se informan aparte en
+  `en_categorias_de_fijos`; si no, se restarían dos veces). El real es el de
+  `PresupuestosService.get_real_variable()`: un gasto compartido que pagó el usuario
+  cuenta solo su parte. Se separan en:
+  - **con presupuesto** (las categorías con presupuesto variable, también sin gasto
+    todavía): estimado = el presupuesto; **proyectado = lo mayor entre presupuesto y
+    gastado** (decisión del usuario, la misma que tenía el balance anterior: si ya se
+    pasó, el PROYECTADO resta lo gastado);
+  - **sin presupuesto:** estimado = proyectado = real.
+
+  El estimado del subtotal de variables suma los proyectados.
+- **Tarjeta:** a pagar por tarjeta, `FeesService.resumen_por_tarjeta()` (lo que vence en
+  el mes); pagos realizados, las transacciones del mes en PAGO TARJETA; falta pagar,
+  total − pagos, nunca negativo.
 - **Deudas — ACUMULADO hasta el último día del mes, sin filtro de mes** (la pantalla lo
   aclara): informales, `DebtsService.summary_by_person()` de cada tab; compartidos, el
   pendiente (`monto_pendiente_minor`, ya descuenta pagos parciales) de los gastos
   `pendiente`: los que pagó el usuario se los deben (persona: los otros miembros del
   hogar), los que pagó otro los debe él (persona: quien pagó). Un saldo negativo pasa
   al otro lado (alguien que pagó de más: se le debe).
-- **DISPONIBLE, en dos modos** (switch ESTIMADO / REAL de la pantalla; el service
-  devuelve los dos en `balance[modo]`):
-  - ESTIMADO = ingresos estimados − fijos estimados − cuotas − gastos variables
-    estimados + neto de deudas;
-  - REAL = ingresos cobrados − fijos pagados − cuotas − gastos variables reales + neto
-    de deudas.
 
-  Gastos variables = GASTOS DEL MES sin las categorías de fijos. En REAL, lo gastado
-  de cada categoría. En ESTIMADO (decisión del usuario, para ver lo real y lo
-  proyectado juntos), lo gastado **más lo que falta** de su presupuesto (presupuesto −
-  gastado, nunca negativo) — en la práctica el mayor de los dos: si ya se pasó, resta
-  lo gastado; **sin presupuesto, resta lo gastado** (antes, 0: lo gastado en
-  categorías sin presupuesto no aparecía en el ESTIMADO).
-  `DashboardService._gasto_variable()`. (La primera versión restaba los fijos que
-  faltaban pagar, los gastos del Registro y los compartidos; se reemplazó por estas
-  fórmulas.)
+**DISPONIBLE, en dos modos** (`disponible.hoy_minor` / `proyectado_minor`):
 
-**Doble conteo que queda.** Un gasto compartido que pagó el usuario cuenta en GASTOS solo
-con su parte, y lo que le debe el otro de ese gasto suma además en las deudas
-(acumuladas): el DISPONIBLE queda por encima por esa parte del otro mientras esté
-pendiente. Lo que pagó el otro ya no se cuenta dos veces (los gastos compartidos
-salieron del balance). Se dejó así: el usuario eligió deudas con todo lo acumulado.
+- HOY = ingresos reales (fijos + variables) − egresos reales (fijos + variables) −
+  **total a pagar de la tarjeta** + neto de deudas;
+- PROYECTADO = ingresos fijos estimados + ingresos variables reales − egresos fijos
+  estimados − egresos variables proyectados − **total a pagar de la tarjeta** + neto
+  de deudas.
 
-**Calculadora de escenarios.** Cada modo trae además `grupos` — el DISPONIBLE desarmado
-en ítems: ingresos y fijos por concepto, cuotas por tarjeta, variables por categoría y
-el neto de deudas — con `aporte_minor` con signo (la suma es el DISPONIBLE) e ids que no
-dependen del modo. `DashboardService.calcular_escenario(balance_modo, excluidos,
-ajuste_minor)` (función pura) da el DISPONIBLE sin los ítems excluidos y con un ajuste
-manual. La pantalla guarda lo excluido y el ajuste en `.deltabalance_prefs.json` bajo
-`balance_escenario_{mes}_{anio}_{moneda}` (por moneda: la misma tarjeta puede tener
-cuotas en ARS y en USD; se guarda lo EXCLUIDO, así lo nuevo aparece marcado). Es un
-"qué pasaría si" de la pantalla: no cambia ningún dato.
+**La tarjeta resta su TOTAL, no lo que falta pagar** (decisión del usuario, contra el
+pedido original, que restaba solo FALTA PAGAR): las compras con tarjeta no están en el
+Registro (viven en `compras_cuotas`) y PAGO TARJETA no es un egreso, así que restando
+solo lo que falta el DISPONIBLE subía al pagar el resumen. PAGOS REALIZADOS y FALTA
+PAGAR se muestran como información.
+
+**Doble conteo que queda.** Un gasto compartido que pagó el usuario cuenta en los
+egresos solo con su parte, y lo que le debe el otro de ese gasto suma además en las
+deudas (acumuladas): el DISPONIBLE queda por encima por esa parte del otro mientras
+esté pendiente. Se dejó así: el usuario eligió deudas con todo lo acumulado.
+
+**Calculadora de escenarios** (se mantuvo en el rediseño, decisión del usuario).
+`disponible.grupos[modo]` desarma cada DISPONIBLE en ítems — ingresos fijos por
+concepto, ingresos variables por tag, egresos fijos por concepto, egresos variables por
+categoría, cada tarjeta y el neto de deudas — con `aporte_minor` con signo (la suma es
+el DISPONIBLE) e ids que no dependen del modo. `DashboardService.calcular_escenario(
+grupos, excluidos, ajuste_minor)` (función pura) da el DISPONIBLE sin los ítems
+excluidos y con un ajuste manual, y lo que aporta cada grupo (la pantalla saca de ahí
+los subtotales con lo marcado). Los ids de fila de antes del rediseño (`ingreso:`,
+`fijo:`, `variable:`, `cuota:`, `neto_deudas`) se mantuvieron, y la pantalla guarda lo
+excluido y el ajuste bajo la misma clave de `.deltabalance_prefs.json`
+(`balance_escenario_{mes}_{anio}_{moneda}`): lo ya guardado sigue valiendo. Es un "qué
+pasaría si" de la pantalla: no cambia ningún dato.
 
 **Moneda de un gasto compartido** sin origen en esta base (lo pagó el otro con una
 transacción que no se sincroniza): `MONEDA_SIN_ORIGEN_CODIGO`, como Presupuestos.
 `SnapshotsService` en cambio los saltea: el SALDO ANTERIOR de Compartidos no los
 cuenta (inconsistencia previa, no se tocó).
 
-**Sin usuario local** no se sabe qué pagó cada uno: no hay gastos compartidos y las
-deudas son solo las informales (`sin_usuario_local`).
-
-**Pantalla: una sola tarjeta** (pedido del usuario). No hay tarjetas aparte por dominio:
-el BALANCE expandido es el dashboard entero. Cada grupo muestra sus ítems con checkbox y,
-debajo, en gris, lo que no suma al DISPONIBLE: COBRADOS / ESTIMADOS de los ingresos,
-PAGADOS · FALTA de los fijos (y lo del Registro en categorías de fijos), la barra real /
-presupuesto de cada gasto variable, y ME DEBEN / DEBO por persona bajo el neto de deudas.
-Todo sale del mismo `get_resumen_mes()`; el service no cambió.
+**Sin usuario local** no se sabe qué pagó cada uno: las deudas son solo las informales
+(`sin_usuario_local`).
 
 Verify: `verify/dashboard/verify_resumen_mes.py`.
 
