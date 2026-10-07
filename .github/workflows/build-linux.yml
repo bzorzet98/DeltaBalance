@@ -20,7 +20,7 @@ jobs:
 
       - name: Install Python dependencies
         run: |
-          pip install flet==0.86.5 flet-cli==0.86.5 supabase python-dotenv
+          pip install flet==0.86.5 flet-cli supabase python-dotenv
 
       - name: Install Linux build dependencies
         run: |
@@ -46,9 +46,16 @@ jobs:
 
       - name: Fix jni conflict
         run: |
-          rm -rf ~/.pub-cache/hosted/pub.dev/jni_flutter-1.0.4+1 2>/dev/null || true
-          rm -rf ~/.pub-cache/hosted/pub.dev/jni-1.0.* 2>/dev/null || true
-          echo "pub-cache limpiado"
+          # Forzar versión compatible de jni antes del build
+          mkdir -p ~/.pub-cache/hosted/pub.dev
+          pip show flet | grep Location
+          FLET_PATH=$(pip show flet | grep Location | cut -d' ' -f2)
+          if [ -f "$FLET_PATH/flet/build/flutter/pubspec.yaml" ]; then
+            echo "dependency_overrides:" >> "$FLET_PATH/flet/build/flutter/pubspec.yaml"
+            echo "  jni: ^1.1.0" >> "$FLET_PATH/flet/build/flutter/pubspec.yaml"
+          fi
+          # Eliminar versión conflictiva del cache global
+          find ~/.pub-cache -name "jni_flutter*" -type d | xargs rm -rf 2>/dev/null || true
 
       - name: Build Linux
         run: |
