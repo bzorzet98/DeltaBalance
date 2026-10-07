@@ -36,7 +36,7 @@ BASE_DIR    = Path(__file__).resolve().parent.parent
 DATA_DIR    = BASE_DIR / "data"
 SCHEMA_PATH = BASE_DIR / "db" / "schema.sql"
 SEED_PATH   = BASE_DIR / "db" / "seed.sql"
-DB_PATH     = DATA_DIR / "deltabalanceBZ.db"
+DB_PATH     = DATA_DIR / "deltabalance.db"
 
 # App empaquetada (flet build): la base va en la carpeta de datos de la app.
 VARIABLE_DATOS_APP = "FLET_APP_STORAGE_DATA"  # la define Flet
