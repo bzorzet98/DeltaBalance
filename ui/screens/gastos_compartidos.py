@@ -16,7 +16,8 @@ Saldo anterior: al final de la tabla, una fila "SALDO ANTERIOR" (FilaPie)
 por (pagador, moneda) del hogar elegido con pendiente al cierre del mes
 anterior distinto de cero (SnapshotsService.get_saldos_anteriores_
 compartidos(); snapshot, o en vivo si falta), con el fondo verde/rojo
-desde tu punto de vista (lo que pagaste vos te lo deben). Respeta los
+y el signo desde tu punto de vista, como la columna Adeudado (lo que
+pagaste vos te lo deben: +; lo que pagó otro miembro lo debés: −). Respeta los
 filtros de Pagador, Moneda y Estado. Se cachea por (hogar, período). El
 botón ↻ de la barra recalcula todos los snapshots
 (ui/components/saldo_anterior.py). Ojo: el snapshot usa el pendiente de
@@ -60,7 +61,12 @@ origen no viaja.
 
 Desde el punto de vista del usuario local: un gasto que pagaste vos suma
 (te deben su pendiente), uno que pagó otro miembro resta (debés). Por
-moneda, nunca mezcladas, sobre los gastos 'pendiente' del hogar.
+moneda, nunca mezcladas, sobre los gastos 'pendiente' del hogar con fecha
+<= último día del mes elegido: el saldo al cierre de ese mes, sin meses
+futuros (mismo criterio que Deudas, el Registro y los snapshots de
+SnapshotsService, "compartidos_mensuales"). Mismo límite que los
+snapshots: usa el pendiente de HOY, así que un pago con fecha posterior
+al mes elegido ya lo descuenta.
 SharedExpensesService.get_net_balance() no se usa: suma todas las monedas
 juntas y no mira quién pagó.
 
@@ -99,11 +105,17 @@ vacía = vuelve al concepto del origen) y Fecha en cualquier estado; Monto
 base y Coeficiente (en %) solo con el gasto 'pendiente' — el service
 además los bloquea si ya tiene pagos (CLAUDE.md §4). Adeudado se
 recalcula solo; si hubo pagos parciales, el pendiente va en su tooltip.
+Adeudado (y su tooltip) se muestra con signo desde tu punto de vista,
+igual que el saldo neto: lo pagaste vos → + verde (te deben); lo pagó
+otro miembro → − rojo (debés). El orden y los filtros usan ese mismo
+valor con signo.
 
-Barra flotante: Eliminar (delete_shared_expense(): solo sin pagos) y
+Barra flotante: Eliminar (delete_shared_expense(): solo sin pagos),
 Registrar pago (un solo gasto pendiente: monto — precargado con el
 pendiente —, tipo de pago y fecha; aplicar_pago() ajusta un sobrepago al
-pendiente exacto).
+pendiente exacto) y la suma (Σ) del adeudado de las filas seleccionadas,
+con el mismo signo que la columna (neto, una por moneda — igual que el
+Registro).
 
 --- Límite conocido (services/, fuera de alcance) ---
 
@@ -373,9 +385,17 @@ def build(
             mes = f"{ui['anio']:04d}-{ui['mes']:02d}"
             return [g for g in datos["gastos"] if (g["fecha"] or "")[:7] == mes]
 
+        def _fin_de_mes() -> str:
+            ultimo = calendar.monthrange(ui["anio"], ui["mes"])[1]
+            return f"{ui['anio']:04d}-{ui['mes']:02d}-{ultimo:02d}"
+
         def _signo_mio(g: dict) -> int:
             """+1 si lo pagaste vos (te deben), -1 si lo pagó otro miembro (debés)."""
             return 1 if g["pagador"] == usuario else -1
+
+        def _adeudado_mio(g: dict) -> int:
+            """Adeudado desde tu punto de vista: + te deben, − debés (columna Adeudado y Σ)."""
+            return _signo_mio(g) * g["monto_adeudado_minor"]
 
         def _concepto(g: dict) -> str:
             return g["descripcion"] or g["concepto_origen"]
@@ -399,7 +419,7 @@ def build(
             if columna == "coeficiente":
                 return f"{_texto_coeficiente(g)}%"
             if columna == "adeudado":
-                return _monto(g, g["monto_adeudado_minor"])
+                return _monto(g, _adeudado_mio(g))
             if columna == "moneda":
                 return g["currency_code"] or ""
             if columna == "fecha":
@@ -410,7 +430,7 @@ def build(
             if columna == "monto_base":
                 return g["monto_base_minor"] / (10 ** g["decimales"])
             if columna == "adeudado":
-                return g["monto_adeudado_minor"] / (10 ** g["decimales"])
+                return _adeudado_mio(g) / (10 ** g["decimales"])
             if columna == "coeficiente":
                 return g["coeficiente_deuda"]
             return _valor_columna(g, columna).lower()
@@ -450,7 +470,11 @@ def build(
             codigo_sel = ui["moneda_saldo"]
             netos: dict[str, int] = {}
             formato: dict[str, tuple[int, str]] = {}
+            # Al cierre del mes elegido: los gastos con fecha posterior no cuentan (ver docstring, "Saldo neto").
+            fin_de_mes = _fin_de_mes()
             for g in datos["pendientes"]:
+                if (g["fecha"] or "") > fin_de_mes:
+                    continue
                 netos[g["currency_code"]] = netos.get(g["currency_code"], 0) + _signo_mio(g) * g["monto_pendiente_minor"]
                 formato[g["currency_code"]] = (g["decimales"], g["currency_symbol"])
             neto = netos.get(codigo_sel, 0)
@@ -505,17 +529,17 @@ def build(
                 pendiente = entrada["monto_minor"]
                 if not pendiente:
                     continue
-                # Desde tu punto de vista, como la columna Adeudado: lo que pagaste vos te lo deben.
-                a_favor = (1 if entrada["pagador"] == usuario else -1) * pendiente > 0
+                # Desde tu punto de vista, como la columna Adeudado: lo que pagaste vos te lo deben (+).
+                pendiente_mio = (1 if entrada["pagador"] == usuario else -1) * pendiente
                 filas.append(FilaPie(
                     textos={
                         "concepto": TEXTO_SALDO_ANTERIOR,
                         "pagador": entrada["pagador"],
-                        "adeudado": _texto_monto(pendiente, entrada["decimales"], entrada["moneda_simbolo"]),
+                        "adeudado": _texto_monto(pendiente_mio, entrada["decimales"], entrada["moneda_simbolo"]),
                         "moneda": entrada["moneda_codigo"],
                         "estado": ESTADO_ALTA,
                     },
-                    positiva=a_favor,
+                    positiva=pendiente_mio > 0,
                     valores_filtro={
                         "pagador": entrada["pagador"], "moneda": entrada["moneda_codigo"], "estado": ESTADO_ALTA,
                     },
@@ -872,12 +896,12 @@ def build(
                     texto, color=color, size=TypographyTokens.REGISTRO_FONT_MONTO, weight=PESO_MONTO, tooltip=tooltip,
                 ))
 
-            # Adeudado desde tu punto de vista: verde si te deben, rojo si debés.
-            a_favor = _signo_mio(g) * g["monto_adeudado_minor"] > 0
+            # Adeudado desde tu punto de vista: + verde si te deben, − rojo si debés.
+            a_favor = _adeudado_mio(g) > 0
             color_adeudado = TEXT_MUTED if not pendiente else (TEXT_POSITIVO if a_favor else TEXT_NEGATIVO)
             tooltip_adeudado = None
             if g["monto_pendiente_minor"] != g["monto_adeudado_minor"]:
-                tooltip_adeudado = f"PENDIENTE: {_monto(g, g['monto_pendiente_minor'])}"
+                tooltip_adeudado = f"PENDIENTE: {_monto(g, _signo_mio(g) * g['monto_pendiente_minor'])}"
 
             texto_base = _valor_columna(g, "monto_base")
             texto_coeficiente = _valor_columna(g, "coeficiente")
@@ -1021,6 +1045,8 @@ def build(
             filas_pie=_filas_pie,
             errores_esperados=(SharedExpensesError,),
             texto_vacio="NO HAY GASTOS COMPARTIDOS PARA ESTE PERÍODO.",
+            columna_suma="monto_adeudado_minor",
+            signo_suma=_signo_mio,  # como la columna Adeudado: + te deben, − debés
         )
         control_tabla = tabla.construir()
         contenedor_resumen.content = _barra_hogar()
