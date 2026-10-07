@@ -13,6 +13,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: 'stable'
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -43,19 +49,6 @@ jobs:
               for nombre in ("SUPABASE_URL", "SUPABASE_ANON_KEY"):
                   f.write(f"{nombre} = {os.environ[nombre]!r}\n")
           EOF
-
-      - name: Fix jni conflict
-        run: |
-          # Forzar versión compatible de jni antes del build
-          mkdir -p ~/.pub-cache/hosted/pub.dev
-          pip show flet | grep Location
-          FLET_PATH=$(pip show flet | grep Location | cut -d' ' -f2)
-          if [ -f "$FLET_PATH/flet/build/flutter/pubspec.yaml" ]; then
-            echo "dependency_overrides:" >> "$FLET_PATH/flet/build/flutter/pubspec.yaml"
-            echo "  jni: ^1.1.0" >> "$FLET_PATH/flet/build/flutter/pubspec.yaml"
-          fi
-          # Eliminar versión conflictiva del cache global
-          find ~/.pub-cache -name "jni_flutter*" -type d | xargs rm -rf 2>/dev/null || true
 
       - name: Build Linux
         run: |
