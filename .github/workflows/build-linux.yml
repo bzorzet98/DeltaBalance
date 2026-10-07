@@ -18,9 +18,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      # flet-cli fijado a la MISMA versión que flet: arma el proyecto Flutter
-      # del build, y uno más nuevo pide versiones de paquetes Dart (ej. jni)
-      # que chocan con las de flet 0.86.5.
       - name: Install Python dependencies
         run: |
           pip install flet==0.86.5 flet-cli==0.86.5 supabase python-dotenv
@@ -30,10 +27,6 @@ jobs:
           sudo apt update
           sudo apt install -y cmake clang ninja-build pkg-config libgtk-3-dev
 
-      # flet build no mete las variables de entorno del build en el bundle:
-      # las credenciales viajan en un .py generado (fuera de git, ver
-      # sync/supabase_client.py). Sin los secrets, el build falla acá en vez
-      # de producir una app sin Supabase.
       - name: Write Supabase credentials
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -50,6 +43,12 @@ jobs:
               for nombre in ("SUPABASE_URL", "SUPABASE_ANON_KEY"):
                   f.write(f"{nombre} = {os.environ[nombre]!r}\n")
           EOF
+
+      - name: Fix jni conflict
+        run: |
+          rm -rf ~/.pub-cache/hosted/pub.dev/jni_flutter-1.0.4+1 2>/dev/null || true
+          rm -rf ~/.pub-cache/hosted/pub.dev/jni-1.0.* 2>/dev/null || true
+          echo "pub-cache limpiado"
 
       - name: Build Linux
         run: |
