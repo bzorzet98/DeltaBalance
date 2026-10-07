@@ -18,9 +18,12 @@ jobs:
         with:
           python-version: '3.11'
 
+      # flet-cli fijado a la MISMA versión que flet: arma el proyecto Flutter
+      # del build, y uno más nuevo pide versiones de paquetes Dart (ej. jni)
+      # que chocan con las de flet 0.86.5.
       - name: Install Python dependencies
         run: |
-          pip install flet==0.86.5 flet-cli supabase python-dotenv
+          pip install flet==0.86.5 flet-cli==0.86.5 supabase python-dotenv
 
       - name: Install Linux build dependencies
         run: |
