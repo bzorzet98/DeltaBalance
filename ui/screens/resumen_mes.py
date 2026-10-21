@@ -2,65 +2,91 @@
 DeltaBalance — ui/screens/resumen_mes.py
 
 Pantalla DASHBOARD: el resumen del mes en una moneda, con pills de moneda y
-un selector de mes "‹ OCTUBRE 2026 ›" en la barra superior. Es la pantalla
-que abre la app (ui/app.py). Se llama resumen_mes.py porque
-ui/screens/dashboard.py es, por historia, la pantalla del Registro.
+un selector de mes "‹ OCTUBRE 2026 ›" en la barra superior (valen para las
+dos pestañas). Es la pantalla que abre la app (ui/app.py). Se llama
+resumen_mes.py porque ui/screens/dashboard.py es, por historia, la pantalla
+del Registro.
 
-Layout (rediseño, pedido del usuario):
-- DISPONIBLE arriba, siempre visible y en fuente grande; [HOY] [PROYECTADO]
-  elige cuál. Verde si es positivo, rojo si es negativo. Ahí también el
-  ajuste manual y ↺ de los escenarios.
+Dos pestañas (rediseño, pedido del usuario), con subrayado en la activa —
+hechas a mano como en ui/screens/ahorros.py: la API de ft.Tabs cambió en
+Flet 0.80+ y no está confirmada en este proyecto (docs/FLET_API_NOTES.md).
+
+[RESUMEN]
+- DISPONIBLE arriba, en fuente grande; [HOY] [PROYECTADO] elige cuál.
+  Verde si es positivo, rojo si es negativo. Ahí también el ajuste manual
+  y ↺ de los escenarios.
 - Debajo, en una tarjeta y separadas por ━━━:
   INGRESOS (ESTIMADO / REAL): FIJOS, VARIABLES, sus subtotales y TOTAL
-  INGRESOS. Los variables no tienen estimado ("—").
-  EGRESOS (ESTIMADO / REAL): FIJOS, VARIABLES con presupuesto y debajo
+  INGRESOS. El ESTIMADO sale de la pantalla Ingresos y el REAL, del
+  Registro: en FIJOS cada concepto de Ingresos tiene solo su estimado y
+  cada categoría del Registro donde se cobran (SUELDO / BECA), solo su real
+  — "(REGISTRO)" en la etiqueta. Los variables no tienen estimado ("—").
+  EGRESOS (ESTIMADO / REAL): igual, con los presupuestos 'fijo' y las
+  categorías de fijos del Registro; VARIABLES con presupuesto y debajo
   ── SIN PRESUPUESTO ── (estimado = real), sus subtotales y TOTAL EGRESOS.
   TARJETA DE CRÉDITO (A PAGAR / PAGADO): cada tarjeta, TOTAL A PAGAR, los
   pagos realizados y FALTA PAGAR.
+  MOVIMIENTOS DE CAPITAL (NETO): una fila por categoría. Las neutras
+  (AUTOTRANSFERENCIA, CAMBIO MONEDA) en gris: no suman ni restan. DEUDA sí
+  cuenta (con su checkbox): se compensa con su fila en Deudas.
   DEUDAS (acumulado al último día del mes, no solo lo del mes): ME DEBEN y
   DEBO por persona con su subtotal, y NETO DEUDAS.
   Subsecciones separadas por ──; montos alineados a la derecha; "—" cuando
-  el valor es 0 o no aplica; SUBTOTAL / TOTAL en negrita; en DEUDAS, verde
-  lo positivo y rojo lo negativo.
-- En gris, lo que no suma aparte: lo gastado en el Registro en categorías de
-  fijos (ya está en los fijos), las categorías que se pasaron de su
+  el valor es 0 o no aplica; SUBTOTAL / TOTAL en negrita; en DEUDAS y
+  MOVIMIENTOS DE CAPITAL, verde lo positivo y rojo lo negativo.
+- En gris, lo que no suma aparte: las categorías que se pasaron de su
   presupuesto (su REAL en rojo: el estimado del subtotal y el PROYECTADO
-  usan lo gastado), qué resta la tarjeta y el aviso sin usuario local.
+  usan lo gastado), qué resta la tarjeta, las neutras y el aviso sin
+  usuario local.
+
+[GRÁFICO]: dos tortas lado a lado, INGRESOS y EGRESOS: lo real del mes por
+categoría (get_resumen_mes()["grafico"]; en EGRESOS la tarjeta es su TOTAL
+A PAGAR, sin PAGO TARJETA, para no contarla dos veces). Hasta
+MAX_PORCIONES porciones: con más categorías, las mayores y OTROS. Debajo
+de cada torta, la leyenda con TODAS las categorías (las de OTROS,
+indentadas), su monto y su porcentaje: la identidad nunca queda solo en el
+color. Colores: la paleta categórica para fondo oscuro de la skill de
+visualización (orden fijo, por tamaño de la porción). El % encima de una
+porción, solo si es de al menos PORCENTAJE_MINIMO_ETIQUETA. flet_charts:
+mismo uso que ui/screens/estadisticas.py, sin confirmar contra una
+instalación real (docs/FLET_API_NOTES.md).
 
 Escenarios (calculadora del DISPONIBLE, pedido del usuario; se mantuvo en
-el rediseño): cada fila que suma al DISPONIBLE tiene su checkbox, y cada
+los rediseños): cada fila que suma al DISPONIBLE tiene su checkbox, y cada
 subsección (FIJOS / VARIABLES de ingresos y de egresos, las tarjetas) uno
 de tres estados: ☑ todas, ☐ ninguna, ▣ algunas; clickearlo desmarca todas
-si estaban todas, si no las marca todas. NETO DEUDAS es un solo ítem, con
-el checkbox en su fila. Lo desmarcado se ve en gris y no cuenta ni en los
-subtotales ni en los DISPONIBLE: los dos salen de
-DashboardService.calcular_escenario() sobre los grupos de cada modo
-(get_resumen_mes()["disponible"]["grupos"]), y los subtotales, de lo que
-aporta cada grupo (_subtotales()). Las filas sin checkbox — PAGOS
-REALIZADOS, FALTA PAGAR y cada persona de DEUDAS — son información: no
-cambian con lo marcado. "+ AJUSTE MANUAL" es un CampoMonto
+si estaban todas, si no las marca todas. NETO DEUDAS y cada DEUDA de
+MOVIMIENTOS DE CAPITAL tienen el checkbox en su fila. Lo desmarcado se ve
+en gris y no cuenta ni en los subtotales ni en los DISPONIBLE: los dos
+salen de DashboardService.calcular_escenario() sobre los grupos de cada
+modo (get_resumen_mes()["disponible"]["grupos"]), y los subtotales, de lo
+que aporta cada grupo (_subtotales()). Las filas sin checkbox — PAGOS
+REALIZADOS, FALTA PAGAR, las neutras y cada persona de DEUDAS — son
+información: no cambian con lo marcado. "+ AJUSTE MANUAL" es un CampoMonto
 (fórmulas con =; negativo resta; vacío no cambia nada) que suma a los dos
 DISPONIBLE. Dice "(ESCENARIO)" si hay algo desmarcado o ajuste; ↺ vuelve
 todo a marcado y ajuste 0. Lo desmarcado (ids de fila, los mismos en HOY y
 PROYECTADO) y el ajuste se guardan en .deltabalance_prefs.json
 (ui/utils/prefs.py, CLAUDE.md §12) bajo
 "balance_escenario_{mes}_{anio}_{moneda}" — la misma clave y los mismos ids
-que antes del rediseño, así lo ya guardado sigue valiendo. Se guarda lo
-EXCLUIDO, así un ítem nuevo aparece marcado.
+que antes de los rediseños, así lo ya guardado sigue valiendo. Se guarda lo
+EXCLUIDO, así un ítem nuevo aparece marcado. Las tortas no cambian con los
+escenarios: son lo real del mes.
 
 Todos los datos salen de UNA llamada: DashboardService.get_resumen_mes() —
-las reglas de cada número (qué categorías no cuentan, la parte del usuario
-en los compartidos, el proyectado de cada variable, qué resta la tarjeta,
-las deudas acumuladas) viven ahí, ver su docstring y
-docs/DATA_MODEL_DECISIONS.md sección 34. Esta pantalla solo dibuja; cambiar
-de modo o tocar un checkbox redibuja sin volver a pedir datos.
+las reglas de cada número (qué categorías no cuentan, de dónde sale el
+real, la parte del usuario en los compartidos, el proyectado de cada
+variable, qué resta la tarjeta, las deudas acumuladas) viven ahí, ver su
+docstring y docs/DATA_MODEL_DECISIONS.md secciones 34 y 36. Esta pantalla
+solo dibuja; cambiar de pestaña o de modo, o tocar un checkbox, redibuja
+sin volver a pedir datos.
 
 Moneda: el resumen es de una sola moneda (nunca se suman pesos con
 dólares). Por defecto ARS; si en el mes hay datos en otra
 (monedas_disponibles), aparecen pills para cambiar.
 
-Estado propio (mes, año, moneda, modo) en un almacén por página: se conserva
-cuando ui/app.py reconstruye la pantalla porque otra cambió datos.
+Estado propio (mes, año, moneda, modo, pestaña) en un almacén por página: se
+conserva cuando ui/app.py reconstruye la pantalla porque otra cambió datos.
 
 Reglas de arquitectura: solo DashboardService (CLAUDE.md §2/§3). El
 usuario local (para los compartidos) sale de ui/components/usuario_local.py
@@ -71,8 +97,9 @@ from datetime import date
 from typing import Callable, Optional
 
 import flet as ft
+import flet_charts as fc
 
-from services.dashboard_service import ID_ITEM_NETO_DEUDAS, MODOS_DISPONIBLE, DashboardService
+from services.dashboard_service import ID_ITEM_NETO_DEUDAS, MODOS_DISPONIBLE, ORIGEN_REGISTRO, DashboardService
 from ui.components.campo_monto import CampoMonto
 from ui.components.tabla_planilla import mostrar_mensaje, pantalla_planilla
 from ui.components.usuario_local import leer_usuario_local
@@ -83,6 +110,7 @@ from ui.theme.tabla_tokens import (
     BTN_COMPARTIR,
     PESO_HEADER,
     PESO_MONTO,
+    TEXT_ACCENT,
     TEXT_MUTED,
     TEXT_NEGATIVO,
     TEXT_POSITIVO,
@@ -133,8 +161,35 @@ RADIO_PILL = 14
 
 SIN_VALOR = "—"                # un monto 0 o que no aplica
 TEXTO_NADA = "NADA ESTE MES."
-SEPARADOR_INFO = "   ·   "     # entre los ítems de una línea de información
 TIPO_DEUDA_TEXTO = {"informal": "INFORMAL", "compartidos": "COMPARTIDOS"}
+SUFIJO_REGISTRO = " (REGISTRO)"  # una fila de FIJOS cuyo real sale del Registro
+
+# Pestañas (tabs con subrayado, como ui/screens/ahorros.py).
+TABS = (("resumen", "RESUMEN"), ("grafico", "GRÁFICO"))
+TAB_DEFAULT = "resumen"
+TAMANIO_TAB = TypographyTokens.REGISTRO_FONT_SALDO_BAR
+PADDING_TAB_H = 16
+PADDING_TAB_V = 10
+ALTO_INDICADOR_TAB = 2
+
+# Tortas (pestaña GRÁFICO).
+ALTO_TORTA = 220
+RADIO_TORTA = 80               # el aro: de RADIO_CENTRO_TORTA a RADIO_CENTRO_TORTA + RADIO_TORTA
+RADIO_CENTRO_TORTA = 28
+ESPACIO_PORCIONES = 2          # separación entre porciones
+MAX_PORCIONES = 6              # con más categorías: las MAX_PORCIONES − 1 mayores y OTROS
+PORCENTAJE_MINIMO_ETIQUETA = 8  # % encima de la porción solo desde acá (el resto, en la leyenda)
+# Paleta categórica para fondo oscuro (skill de visualización: orden fijo, validado para
+# daltonismo entre vecinos). Una por porción, en orden; OTROS, gris.
+PALETA_TORTA = ("#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#008300")
+COLOR_OTROS = TEXT_MUTED
+TEXTO_OTROS = "OTROS"
+TAMANIO_ETIQUETA_TORTA = TypographyTokens.LABEL_SIZE
+LADO_PUNTO_LEYENDA = 10
+RADIO_PUNTO_LEYENDA = LADO_PUNTO_LEYENDA // 2
+ANCHO_MONTO_LEYENDA = 110
+ANCHO_PORCENTAJE = 44
+SANGRIA_LEYENDA_OTROS = LADO_PUNTO_LEYENDA + ESPACIADO_FILAS  # las categorías de OTROS, bajo su etiqueta
 
 # Switch del DISPONIBLE (claves = DashboardService.MODOS_DISPONIBLE).
 MODOS_DISPONIBLE_TEXTO = (("hoy", "HOY"), ("proyectado", "PROYECTADO"))
@@ -143,7 +198,7 @@ MODO_DISPONIBLE_DEFAULT = "hoy"
 # al DISPONIBLE (los egresos y la tarjeta restan): para mostrar sus subtotales en positivo.
 SIGNO_GRUPO = {
     "ingresos_fijos": 1, "ingresos_variables": 1, "egresos_fijos": -1, "egresos_variables": -1,
-    "tarjeta": -1, "neto_deudas": 1,
+    "tarjeta": -1, "capital": 1, "neto_deudas": 1,
 }
 
 # Calculadora de escenarios (ver docstring, "Escenarios").
@@ -164,7 +219,10 @@ def _estado_ui(page: ft.Page) -> dict:
     ui = _ESTADOS_UI.get(id(page))
     if ui is None:
         hoy = date.today()
-        ui = {"mes": hoy.month, "anio": hoy.year, "moneda": MONEDA_DEFAULT, "modo": MODO_DISPONIBLE_DEFAULT}
+        ui = {
+            "mes": hoy.month, "anio": hoy.year, "moneda": MONEDA_DEFAULT, "modo": MODO_DISPONIBLE_DEFAULT,
+            "tab": TAB_DEFAULT,
+        }
         _ESTADOS_UI[id(page)] = ui
     return ui
 
@@ -249,9 +307,12 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
 
     def _fila(etiqueta: str, valores: tuple[str, str], colores: tuple[str, str] = (TEXT_PRIMARY, TEXT_PRIMARY),
               check: Optional[ft.Control] = None, negrita: bool = False, apagada: bool = False,
-              sangria: int = SANGRIA_ITEM) -> ft.Control:
-        """[checkbox] etiqueta ··· valor 1 | valor 2. Apagada (desmarcada en el escenario): todo en gris."""
-        color_etiqueta = TEXT_MUTED if apagada else TEXT_PRIMARY
+              informativa: bool = False, sangria: int = SANGRIA_ITEM) -> ft.Control:
+        """
+        [checkbox] etiqueta ··· valor 1 | valor 2. Apagada (desmarcada en el escenario): todo en
+        gris. Informativa (no suma ni resta): la etiqueta en gris.
+        """
+        color_etiqueta = TEXT_MUTED if apagada else (TEXT_SECONDARY if informativa else TEXT_PRIMARY)
         colores = (TEXT_MUTED, TEXT_MUTED) if apagada else colores
         return ft.Container(
             padding=ft.Padding.only(left=sangria),
@@ -449,7 +510,7 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
         return _tarjeta([cabecera, monto, _fila_ajuste(r, escenario)])
 
     # ------------------------------------------------------------
-    # Secciones
+    # Secciones del RESUMEN
     # ------------------------------------------------------------
 
     def _filas_items(r: dict, items: list[dict], etiqueta: Callable[[dict], str], excluidos: set[str],
@@ -464,6 +525,10 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
             for item in items
         ]
 
+    def _etiqueta_fijo(item: dict) -> str:
+        """El concepto, y "(REGISTRO)" si su real sale del Registro."""
+        return item["concepto"] + (SUFIJO_REGISTRO if item["origen"] == ORIGEN_REGISTRO else "")
+
     def _fila_subtotal(r: dict, etiqueta: str, valores: tuple[int, int], sangria: int = SANGRIA_ITEM) -> ft.Control:
         return _fila(etiqueta, (_monto(r, valores[0]), _monto(r, valores[1])), negrita=True, sangria=sangria)
 
@@ -472,8 +537,9 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
         fijos, variables = subtotales["ingresos_fijos"], subtotales["ingresos_variables"]
         return [
             _cabecera_seccion("INGRESOS", ("ESTIMADO", "REAL")),
+            _info("ESTIMADO: PANTALLA INGRESOS · REAL: EL REGISTRO."),
             _separador("FIJOS", _check_grupo(ingresos["fijos"], excluidos)),
-            *(_filas_items(r, ingresos["fijos"], lambda i: i["concepto"], excluidos) or [_info(TEXTO_NADA)]),
+            *(_filas_items(r, ingresos["fijos"], _etiqueta_fijo, excluidos) or [_info(TEXTO_NADA)]),
             _fila_subtotal(r, "SUBTOTAL FIJOS", fijos),
             _separador("VARIABLES", _check_grupo(ingresos["variables"], excluidos)),
             *(_filas_items(r, ingresos["variables"], lambda i: i["concepto"], excluidos) or [_info(TEXTO_NADA)]),
@@ -491,15 +557,10 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
 
         filas = [
             _cabecera_seccion("EGRESOS", ("ESTIMADO", "REAL")),
+            _info("ESTIMADO: PRESUPUESTOS · REAL: EL REGISTRO."),
             _separador("FIJOS", _check_grupo(egresos["fijos"], excluidos)),
-            *(_filas_items(r, egresos["fijos"], lambda f: f["concepto"], excluidos) or [_info(TEXTO_NADA)]),
+            *(_filas_items(r, egresos["fijos"], _etiqueta_fijo, excluidos) or [_info(TEXTO_NADA)]),
             _fila_subtotal(r, "SUBTOTAL FIJOS", fijos),
-        ]
-        if egresos["en_categorias_de_fijos"]:
-            filas.append(_info("EN EL REGISTRO, EN CATEGORÍAS DE FIJOS (YA ESTÁ EN LOS FIJOS): " + SEPARADOR_INFO.join(
-                f"{g['categoria']} {_monto(r, g['real_minor'])}" for g in egresos["en_categorias_de_fijos"]
-            )))
-        filas += [
             _separador("VARIABLES", _check_grupo(con_presupuesto + sin_presupuesto, excluidos)),
             # Pasada de su presupuesto: el REAL en rojo.
             *_filas_items(
@@ -545,6 +606,26 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
         ]
         return filas
 
+    def _seccion_capital(r: dict, excluidos: set[str]) -> list[ft.Control]:
+        items = r["movimientos_capital"]["items"]
+        filas = [_cabecera_seccion("MOVIMIENTOS DE CAPITAL", ("", "NETO"))]
+        for c in items:
+            neto = _monto_con_signo(r, c["neto_minor"])
+            if c["cuenta"]:
+                filas.append(_fila(
+                    c["categoria"], ("", neto), colores=(TEXT_PRIMARY, _color_signo(c["neto_minor"])),
+                    check=_check_item(c["id"], excluidos), apagada=c["id"] in excluidos,
+                ))
+            else:
+                filas.append(_fila(c["categoria"], ("", neto), colores=(TEXT_SECONDARY, TEXT_SECONDARY), informativa=True))
+        if not items:
+            filas.append(_info(TEXTO_NADA))
+        if any(not c["cuenta"] for c in items):
+            filas.append(_info("EN GRIS: NO SUMAN NI RESTAN (UNA AUTOTRANSFERENCIA SUMA CERO; UN CAMBIO DE MONEDA ES UNA CONVERSIÓN)."))
+        if any(c["cuenta"] for c in items):
+            filas.append(_info("DEUDA SUMA O RESTA Y SE COMPENSA CON SU FILA EN DEUDAS: PRESTAR NO MUEVE EL DISPONIBLE."))
+        return filas
+
     def _seccion_deudas(r: dict, excluidos: set[str]) -> list[ft.Control]:
         deudas = r["deudas"]
         anio, mes, dia = r["fecha_corte"].split("-")
@@ -582,12 +663,7 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
             filas.append(_info("SIN USUARIO LOCAL: SOLO LAS DEUDAS INFORMALES (FALTAN LAS DE COMPARTIDOS)."))
         return filas
 
-    # ------------------------------------------------------------
-    # Dibujo
-    # ------------------------------------------------------------
-
-    def _pintar() -> None:
-        r = datos["resumen"]
+    def _pestania_resumen(r: dict) -> ft.Control:
         escenario = _escenario()
         excluidos = escenario["excluidos"]
         calculos = {
@@ -604,12 +680,165 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
             _linea_seccion(),
             *_seccion_tarjeta(r, subtotales, excluidos),
             _linea_seccion(),
+            *_seccion_capital(r, excluidos),
+            _linea_seccion(),
             *_seccion_deudas(r, excluidos),
         ]
-        contenedor.content = ft.Column(
+        return ft.Column(
             [_tarjeta_disponible(r, calculos, escenario), _tarjeta(secciones)],
             spacing=ESPACIO_ENTRE_TARJETAS,
         )
+
+    # ------------------------------------------------------------
+    # GRÁFICO (dos tortas)
+    # ------------------------------------------------------------
+
+    def _texto_porcentaje(minor: int, total: int) -> str:
+        porcentaje = minor * 100 / total
+        return "<1%" if porcentaje < 1 else f"{porcentaje:.0f}%"
+
+    def _porciones(items: list[dict]) -> list[dict]:
+        """
+        Las porciones de una torta (items: la mayor primero): hasta MAX_PORCIONES, cada una con su
+        color de PALETA_TORTA; con más categorías, las mayores y OTROS, que lleva las demás en
+        "detalle" (para la leyenda).
+        """
+        if len(items) > MAX_PORCIONES:
+            mayores, resto = items[:MAX_PORCIONES - 1], items[MAX_PORCIONES - 1:]
+        else:
+            mayores, resto = items, []
+        porciones = [{**item, "color": PALETA_TORTA[n], "detalle": []} for n, item in enumerate(mayores)]
+        if resto:
+            porciones.append({
+                "categoria": TEXTO_OTROS, "monto_minor": sum(i["monto_minor"] for i in resto),
+                "color": COLOR_OTROS, "detalle": resto,
+            })
+        return porciones
+
+    def _fila_leyenda(r: dict, color: Optional[str], etiqueta: str, minor: int, total: int,
+                      sangria: int = 0) -> ft.Control:
+        """● ETIQUETA ··· $monto  %. Sin color: una categoría dentro de OTROS (gris, indentada)."""
+        color_texto = TEXT_PRIMARY if color else TEXT_SECONDARY
+        punto = ft.Container(
+            width=LADO_PUNTO_LEYENDA, height=LADO_PUNTO_LEYENDA, border_radius=RADIO_PUNTO_LEYENDA, bgcolor=color,
+        )
+        return ft.Container(
+            padding=ft.Padding.only(left=sangria),
+            content=ft.Row(
+                [
+                    punto,
+                    _texto(etiqueta, color_texto, expand=True),
+                    ft.Container(
+                        width=ANCHO_MONTO_LEYENDA, alignment=ft.Alignment.CENTER_RIGHT,
+                        content=_texto(_monto(r, minor), color_texto),
+                    ),
+                    ft.Container(
+                        width=ANCHO_PORCENTAJE, alignment=ft.Alignment.CENTER_RIGHT,
+                        content=_texto(_texto_porcentaje(minor, total), TEXT_SECONDARY),
+                    ),
+                ],
+                spacing=ESPACIADO_FILAS,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+
+    def _torta(r: dict, titulo: str, items: list[dict]) -> ft.Control:
+        """Una torta con su total y su leyenda (todas las categorías, monto y %)."""
+        total = sum(i["monto_minor"] for i in items)
+        cabecera = ft.Row(
+            [
+                _texto(titulo, TEXT_PRIMARY, TypographyTokens.SECTION_TITLE_WEIGHT,
+                       TypographyTokens.SECTION_TITLE_SIZE, expand=True),
+                _texto(_monto(r, total), TEXT_PRIMARY, PESO_MONTO),
+            ],
+            spacing=ESPACIADO_FILAS,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
+        if not items:
+            return _tarjeta([cabecera, _texto(TEXTO_NADA, TEXT_SECONDARY, size=TAMANIO_INFO)])
+
+        porciones = _porciones(items)
+        secciones = [
+            fc.PieChartSection(
+                value=p["monto_minor"],
+                title=(
+                    _texto_porcentaje(p["monto_minor"], total)
+                    if p["monto_minor"] * 100 >= PORCENTAJE_MINIMO_ETIQUETA * total else ""
+                ),
+                title_style=ft.TextStyle(size=TAMANIO_ETIQUETA_TORTA, color=TEXT_SOBRE_BOTON, weight=PESO_MONTO),
+                color=p["color"],
+                radius=RADIO_TORTA,
+            )
+            for p in porciones
+        ]
+        grafico = ft.Container(
+            height=ALTO_TORTA,
+            content=fc.PieChart(
+                sections=secciones,
+                sections_space=ESPACIO_PORCIONES,
+                center_space_radius=RADIO_CENTRO_TORTA,
+                expand=True,
+            ),
+        )
+        leyenda: list[ft.Control] = []
+        for p in porciones:
+            leyenda.append(_fila_leyenda(r, p["color"], p["categoria"], p["monto_minor"], total))
+            leyenda += [
+                _fila_leyenda(r, None, d["categoria"], d["monto_minor"], total, sangria=SANGRIA_LEYENDA_OTROS)
+                for d in p["detalle"]
+            ]
+        return _tarjeta([cabecera, grafico, *leyenda])
+
+    def _pestania_grafico(r: dict) -> ft.Control:
+        grafico = r["grafico"]
+        tortas = ft.Row(
+            [
+                ft.Container(expand=True, content=_torta(r, "INGRESOS", grafico["ingresos"])),
+                ft.Container(expand=True, content=_torta(r, "EGRESOS", grafico["egresos"])),
+            ],
+            spacing=ESPACIO_ENTRE_TARJETAS,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        )
+        return ft.Column(
+            [
+                tortas,
+                _texto(
+                    "LO REAL DEL MES POR CATEGORÍA (EL REGISTRO). EN EGRESOS, LA TARJETA ES SU TOTAL A PAGAR "
+                    "(PAGO TARJETA NO SE CUENTA DOS VECES). SIN AUTOTRANSFERENCIA, CAMBIO MONEDA NI DEUDA.",
+                    TEXT_SECONDARY, size=TAMANIO_INFO,
+                ),
+            ],
+            spacing=ESPACIO_ENTRE_TARJETAS,
+        )
+
+    # ------------------------------------------------------------
+    # Dibujo
+    # ------------------------------------------------------------
+
+    def _barra_tabs() -> ft.Control:
+        """Tabs con subrayado en la activa (ver docstring)."""
+        tabs: list[ft.Control] = []
+        for clave, texto in TABS:
+            activa = clave == ui["tab"]
+            tabs.append(ft.Container(
+                padding=ft.Padding.symmetric(horizontal=PADDING_TAB_H, vertical=PADDING_TAB_V),
+                border=ft.Border.only(bottom=ft.BorderSide(
+                    width=ALTO_INDICADOR_TAB, color=TEXT_ACCENT if activa else ft.Colors.TRANSPARENT,
+                )),
+                on_click=lambda e, c=clave: _cambiar_tab(c),
+                content=ft.Text(
+                    texto, size=TAMANIO_TAB, weight=PESO_HEADER, color=TEXT_PRIMARY if activa else TEXT_SECONDARY,
+                ),
+            ))
+        return ft.Container(
+            border=ft.Border.only(bottom=ft.BorderSide(width=ANCHO_BORDE, color=BORDER_DEFAULT)),
+            content=ft.Row(tabs, spacing=0),
+        )
+
+    def _pintar() -> None:
+        r = datos["resumen"]
+        pestania = _pestania_grafico(r) if ui["tab"] == "grafico" else _pestania_resumen(r)
+        contenedor.content = ft.Column([_barra_tabs(), pestania], spacing=ESPACIO_ENTRE_TARJETAS)
 
     def _repintar() -> None:
         _pintar()
@@ -619,6 +848,12 @@ def build(page: ft.Page, dashboard_service: DashboardService) -> ft.Control:
         if modo == ui["modo"]:
             return
         ui["modo"] = modo
+        _repintar()
+
+    def _cambiar_tab(tab: str) -> None:
+        if tab == ui["tab"]:
+            return
+        ui["tab"] = tab
         _repintar()
 
     # ------------------------------------------------------------

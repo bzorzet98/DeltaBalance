@@ -1408,6 +1408,12 @@ Verify: `verify/ahorros/verify_moneda_movimiento.py`.
 
 ## 34. Dashboard: resumen del mes y DISPONIBLE HOY / PROYECTADO — ✅ implementado (sin cambio de schema)
 
+> **Rediseñado en la sección 36:** el REAL sale solo del Registro (lo cobrado / pagado
+> cargado a mano ya no se usa), AHORRO/INVERSIÓN y DEUDA cuentan, hay una sección
+> MOVIMIENTOS DE CAPITAL y una pestaña GRÁFICO. Lo de abajo que la 36 no cambia sigue
+> vigente (la tarjeta resta su TOTAL, deudas acumuladas, proyectado de los variables,
+> calculadora de escenarios).
+
 Pantalla DASHBOARD (`ui/screens/resumen_mes.py`, la que abre la app; `ui/screens/
 dashboard.py` es, por historia, la del Registro) alimentada por
 `DashboardService.get_resumen_mes(mes, anio, moneda, usuario_local)`. Solo lectura:
@@ -1539,3 +1545,73 @@ lo que se reserve después queda en un instrumento escondido.
 
 Verify: `verify/ahorros/verify_eliminar_instrumento.py`,
 `verify/ahorros/verify_editar_instrumento.py`.
+
+## 36. Dashboard: el REAL solo del Registro, movimientos de capital y tortas — ✅ implementado (sin cambio de schema)
+
+Pedido del usuario: el DISPONIBLE no cuadraba con el Registro. Rediseño de
+`DashboardService.get_resumen_mes()` y de `ui/screens/resumen_mes.py`, que pasa a tener
+dos pestañas: RESUMEN y GRÁFICO.
+
+**Diagnóstico.** El pedido decía que los movimientos de capital se sumaban como ingresos
+o egresos: no era así (ya se excluían). Lo que inflaba el DISPONIBLE HOY era que el REAL
+de los ingresos fijos era lo "cobrado" cargado a mano en la pantalla Ingresos
+(`ingresos_proyectados.monto_real_minor`), que puede no estar en el Registro.
+
+**Decisiones del usuario:**
+
+- **El REAL sale solo del Registro; el ESTIMADO, de Ingresos y Presupuestos.** Las filas
+  de `ingresos_proyectados` y los presupuestos `'fijo'` no tienen categoría: no se pueden
+  cruzar una a una con el Registro. En FIJOS cada fila de Ingresos o presupuesto `'fijo'`
+  lleva solo su estimado (origen `estimado`), y cada categoría del Registro donde se
+  cobran o pagan los fijos lleva su real (origen `registro`, "(REGISTRO)" en la
+  pantalla): `CATEGORIAS_INGRESOS_FIJOS` (SUELDO / BECA) y `CATEGORIAS_DE_FIJOS`
+  (VIVIENDA, SERVICIOS BÁSICOS, SEGUROS). Lo cobrado o pagado que se carga a mano en esas
+  pantallas ya no entra al dashboard. Un presupuesto variable de una categoría de fijos
+  es el estimado de la fila del Registro de esa categoría.
+- **Cada transacción del mes va a un solo lugar**, según su categoría y su
+  `tipo_movimiento` (`DashboardService._rol()`): PAGO TARJETA → TARJETA; las neutras →
+  MOVIMIENTOS DE CAPITAL (información); DEUDA → MOVIMIENTOS DE CAPITAL (cuenta); otro
+  ingreso → ingresos variables; otro egreso → egresos variables. Antes, un ingreso en una
+  categoría de egreso (una devolución) o al revés no entraba en ningún lado.
+- **Neutras** (`CATEGORIAS_NEUTRAS`: AUTOTRANSFERENCIA y CAMBIO MONEDA, más cualquier
+  otra categoría de tipo `movimiento` que no sea de ahorro ni deuda, y toda transacción
+  con `tipo_movimiento = 'movimiento'`): no suman ni restan; se muestran en gris con su
+  neto.
+- **AHORRO/INVERSIÓN e INVERSIONES cuentan según su tipo de movimiento** (pedido
+  explícito, `CATEGORIAS_AHORRO`): un egreso es un egreso variable (salió plata) y un
+  ingreso, un ingreso variable (ej. una venta). Entran en las tortas.
+- **DEUDA cuenta según su tipo de movimiento** (`CATEGORIAS_DEUDA`; decidido en esta
+  tarea, el pedido la hacía neutra): el routing "Deuda" del Registro crea además la fila
+  en Deudas, que suma al neto de deudas. Neutra, prestar subía el DISPONIBLE lo prestado.
+  Contando, se compensan, igual que COBRO DEUDA. Queda fuera de las tortas.
+- **La tarjeta sigue restando su TOTAL** en HOY y en PROYECTADO (sección 34). El pedido
+  volvía a proponer restar solo FALTA PAGAR, lo que borraba del DISPONIBLE lo ya pagado.
+- La calculadora de escenarios se mantiene: grupo nuevo `capital` (ids
+  `capital:<categoria_id>`), ids nuevos `ingreso_registro:` y `fijo_registro:`. Los ids
+  anteriores siguen valiendo.
+
+**Pestaña GRÁFICO** (pedido: dos tortas lado a lado, en lugar del gráfico de barras que
+se había propuesto primero). Los datos están en `get_resumen_mes()["grafico"]`:
+
+- **INGRESOS:** los ingresos del Registro por categoría.
+- **EGRESOS:** los egresos por categoría, contando solo la parte propia de un gasto
+  compartido como en el RESUMEN, más la tarjeta con su TOTAL A PAGAR.
+
+Ninguna incluye las neutras, DEUDA ni PAGO TARJETA, y suman lo mismo que el REAL del
+resumen (más la tarjeta, en EGRESOS). La pantalla muestra hasta 6 porciones (las mayores
+y OTROS) y una leyenda con todas las categorías, su monto y su porcentaje.
+
+**Límites conocidos:**
+
+- CAMBIO MONEDA es neutro en cada moneda: comprar dólares no resta del DISPONIBLE en
+  pesos (la otra punta aparece en el resumen en USD).
+- El PROYECTADO usa los estimados de los fijos: lo pagado en el Registro en una categoría
+  de fijos sin presupuesto no resta ahí.
+- Una devolución (ingreso en una categoría de egreso) suma como ingreso variable: no
+  descuenta el gasto de su categoría, porque `get_real_variable()` solo suma egresos.
+- Un ingreso fijo de la pantalla Ingresos que se cobra en el Registro en una categoría
+  que no está en `CATEGORIAS_INGRESOS_FIJOS` (ej. un SAVING que vuelve como
+  AHORRO/INVERSIÓN, o CARGO JTP cargado como INGRESO VARIABLE) cuenta dos veces en el
+  PROYECTADO: su estimado en fijos y su real en variables. HOY no tiene este problema.
+
+Verify: `verify/dashboard/verify_resumen_mes.py`.

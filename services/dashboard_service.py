@@ -38,17 +38,18 @@ Purpose:
 
     get_resumen_mes() (pantalla DASHBOARD, ui/screens/resumen_mes.py — el
     "dashboard.py" de ui/screens/ es la pantalla del Registro): todo lo del
-    mes en una sola moneda — INGRESOS, EGRESOS, TARJETA y DEUDAS, cada uno
-    con su detalle y subtotales — y el DISPONIBLE HOY / PROYECTADO. Compone
-    los services de cada dominio — IngresosService (ingresos fijos),
-    TransactionService (ingresos variables y pagos de tarjeta del
-    Registro), CategoriasService (el tipo de cada categoría),
-    PresupuestosService (fijos, y el real de cada categoría ya neto de
-    compartidos), FeesService (lo que vence de cada tarjeta), DebtsService
-    (deudas informales) — y agrega una query propia sobre
-    gastos_compartidos (ver _gastos_compartidos_hasta()). Decisiones del
-    usuario, ver docstring del método y docs/DATA_MODEL_DECISIONS.md
-    sección 34.
+    mes en una sola moneda — INGRESOS, EGRESOS, TARJETA, MOVIMIENTOS DE
+    CAPITAL y DEUDAS, cada uno con su detalle y subtotales —, el DISPONIBLE
+    HOY / PROYECTADO y los datos de las dos tortas de la pestaña GRÁFICO.
+    El ESTIMADO sale de las pantallas Ingresos y Presupuestos; el REAL, solo
+    del Registro. Compone los services de cada dominio — IngresosService y
+    PresupuestosService (los estimados, y el real de cada categoría ya neto
+    de compartidos), TransactionService (las transacciones del mes),
+    CategoriasService (las categorías de tipo 'movimiento'), FeesService (lo
+    que vence de cada tarjeta), DebtsService (deudas informales) — y agrega
+    una query propia sobre gastos_compartidos (ver
+    _gastos_compartidos_hasta()). Decisiones del usuario, ver docstring del
+    método y docs/DATA_MODEL_DECISIONS.md secciones 34 y 36.
 """
 
 import sqlite3
@@ -68,50 +69,81 @@ from services.transaction_service import TransactionService
 from utils.categorias import clave_categoria
 from utils.personas import normalizar_persona
 
-# get_resumen_mes(): categorías del Registro que NO son egresos variables
-# (decisión del usuario): los movimientos de capital — autotransferencias,
-# cambio de moneda, deudas, ahorro e inversiones — no son un gasto, y el
-# pago de la tarjeta va en la sección TARJETA (PAGOS REALIZADOS). Pares
-# (categoria_principal, subcategoria), comparados sin distinguir mayúsculas
-# (utils/categorias.py clave_categoria()). Para dejar afuera otra
-# categoría, agregarla acá.
-CATEGORIAS_EXCLUIDAS_GASTOS: tuple[tuple[str, str], ...] = (
+# --- get_resumen_mes(): qué hace cada categoría del Registro ---
+# Pares (categoria_principal, subcategoria), comparados sin distinguir
+# mayúsculas ni espacios de más (utils/categorias.py clave_categoria()). Para
+# cambiar una categoría de lugar, agregarla o sacarla de su lista.
+#
+# Neutras (decisión del usuario): no suman ni restan al DISPONIBLE ni entran
+# en los gráficos — una autotransferencia suma cero y un cambio de moneda es
+# una conversión, no un ingreso ni un egreso. Se informan en MOVIMIENTOS DE
+# CAPITAL. Lo mismo cualquier otra categoría de tipo 'movimiento' que no
+# esté en CATEGORIAS_AHORRO ni en CATEGORIAS_DEUDA, y toda transacción con
+# tipo_movimiento 'movimiento'.
+CATEGORIAS_NEUTRAS: tuple[tuple[str, str], ...] = (
     ("MOVIMIENTO CAPITAL", "AUTOTRANSFERENCIA"),
-    ("TARJETA DE CRÉDITO", "PAGO TARJETA"),
     ("MOVIMIENTO CAPITAL", "CAMBIO MONEDA"),
-    ("MOVIMIENTO CAPITAL", "DEUDA"),
+)
+# Ahorro e inversiones (decisión del usuario): cuentan según su
+# tipo_movimiento — un egreso es un egreso variable (salió plata), un ingreso
+# es un ingreso variable (entró plata, ej. una venta). Entran en los gráficos.
+CATEGORIAS_AHORRO: tuple[tuple[str, str], ...] = (
     ("MOVIMIENTO CAPITAL", "AHORRO/INVERSIÓN"),
     ("MOVIMIENTO CAPITAL", "INVERSIONES"),
 )
-# get_resumen_mes(): categorías del Registro donde se pagan los egresos FIJOS
-# (decisión del usuario: los fijos también se pagan desde el Registro). No
-# son egresos variables — ya cuentan como egresos fijos (estimados o
-# pagados), si no se restarían dos veces —; se informan aparte
-# (egresos.en_categorias_de_fijos). Mismo formato que
-# CATEGORIAS_EXCLUIDAS_GASTOS; para sumar otra, agregarla acá.
+# DEUDA (decisión del usuario): cuenta según su tipo_movimiento — el ingreso
+# suma y el egreso resta —, en MOVIMIENTOS DE CAPITAL. El routing "Deuda" del
+# Registro le crea además su fila en Deudas (prestar: egreso + ME DEBEN; que
+# te presten: ingreso + DEBO), así que prestar o recibir un préstamo no mueve
+# el DISPONIBLE. No es gasto ni ingreso: fuera de los gráficos.
+CATEGORIAS_DEUDA: tuple[tuple[str, str], ...] = (
+    ("MOVIMIENTO CAPITAL", "DEUDA"),
+)
+# Donde se pagan los egresos FIJOS (decisión del usuario: los fijos también
+# se pagan desde el Registro): lo gastado en el Registro en estas categorías
+# es el REAL de los egresos fijos — el ESTIMADO son los presupuestos 'fijo'.
 CATEGORIAS_DE_FIJOS: tuple[tuple[str, str], ...] = (
     ("EGRESOS", "VIVIENDA"),
     ("EGRESOS", "SERVICIOS BÁSICOS"),
     ("EGRESOS", "SEGUROS"),
 )
-# get_resumen_mes(): categorías de ingreso del Registro que ya están en los
-# INGRESOS FIJOS (IngresosService): no son ingresos variables, si no se
-# sumarían dos veces. Mismo formato que CATEGORIAS_DE_FIJOS.
+# Donde se cobran los ingresos FIJOS: lo cobrado en el Registro en estas
+# categorías es el REAL de los ingresos fijos — el ESTIMADO, la pantalla
+# Ingresos (sus filas no tienen categoría: no se pueden cruzar una a una).
 CATEGORIAS_INGRESOS_FIJOS: tuple[tuple[str, str], ...] = (
     ("INGRESOS", "SUELDO / BECA"),
 )
-# get_resumen_mes(): la categoría de los pagos de la tarjeta (sección TARJETA, PAGOS REALIZADOS).
+# Los pagos de la tarjeta (sección TARJETA, PAGOS REALIZADOS): no son un
+# egreso — las compras con tarjeta ya restan con el TOTAL A PAGAR.
 CATEGORIA_PAGO_TARJETA: tuple[str, str] = ("TARJETA DE CRÉDITO", "PAGO TARJETA")
+# Rol de una transacción del mes en get_resumen_mes() (ver _rol()).
+ROL_NEUTRO = "neutro"
+ROL_DEUDA = "deuda"
+ROL_PAGO_TARJETA = "pago_tarjeta"
+ROL_INGRESO_FIJO = "ingreso_fijo"
+ROL_INGRESO_VARIABLE = "ingreso_variable"
+ROL_EGRESO_FIJO = "egreso_fijo"
+ROL_EGRESO_VARIABLE = "egreso_variable"
+# De dónde sale una fila de FIJOS: el estimado (pantalla Ingresos o un
+# presupuesto 'fijo') o el real (el Registro, por categoría).
+ORIGEN_ESTIMADO = "estimado"
+ORIGEN_REGISTRO = "registro"
 # Ingresos variables sin tag: uno por categoría, "<CATEGORÍA> (SIN TAG)".
 TEXTO_SIN_TAG = "SIN TAG"
+# La porción de la tarjeta en la torta de egresos (su TOTAL A PAGAR).
+CATEGORIA_GRAFICO_TARJETA = "TARJETA DE CRÉDITO"
 # Ids de las filas de get_resumen_mes() (calculadora de escenarios): prefijo + id, tag o categoría.
-# Los de antes del rediseño (ingreso:, fijo:, variable:, cuota:) se mantienen: lo excluido ya guardado sigue valiendo.
+# Los de antes de los rediseños (ingreso:, fijo:, variable:, cuota:) se mantienen: lo excluido ya guardado sigue valiendo.
 PREFIJO_ID_INGRESO = "ingreso:"
+PREFIJO_ID_INGRESO_REGISTRO = "ingreso_registro:"
 PREFIJO_ID_INGRESO_VARIABLE = "ingreso_variable:"
 PREFIJO_ID_INGRESO_SIN_TAG = "ingreso_sin_tag:"
 PREFIJO_ID_FIJO = "fijo:"
+PREFIJO_ID_FIJO_REGISTRO = "fijo_registro:"
 PREFIJO_ID_VARIABLE = "variable:"
 PREFIJO_ID_TARJETA = "cuota:"
+PREFIJO_ID_CAPITAL = "capital:"   # DEUDA: cuenta en el DISPONIBLE
+PREFIJO_ID_NEUTRO = "neutro:"     # neutras: solo información
 # Id del único ítem del grupo neto_deudas.
 ID_ITEM_NETO_DEUDAS = "neto_deudas"
 # Filas por página al recorrer las transacciones del mes (TransactionService.list_transactions()).
@@ -126,6 +158,11 @@ TIPO_DEUDA_COMPARTIDOS = "compartidos"
 # Persona de lo que te deben por un gasto compartido que pagaste vos, si el
 # hogar no tiene otros miembros cargados en esta base.
 PERSONA_HOGAR_SIN_MIEMBROS = "HOGAR"
+
+
+def _normalizado(texto: Optional[str]) -> str:
+    """Sin espacios de más y en MAYÚSCULAS: el nombre de una categoría o un tag."""
+    return " ".join((texto or "").split()).upper()
 
 
 class DashboardService:
@@ -408,22 +445,25 @@ class DashboardService:
             sin_usuario_local (True: sin él no se sabe qué compartidos pagó
                 cada uno — las deudas de compartidos quedan afuera),
             ingresos: {
-                fijos:     [{id, concepto, estimado_minor, real_minor}],
+                fijos:     [{id, concepto, origen, estimado_minor, real_minor}],
                 variables: [{id, tag, concepto, estimado_minor (0), real_minor}],
                 subtotal_fijos, subtotal_variables, total: {estimado_minor, real_minor},
             },
             egresos: {
-                fijos: [{id, concepto, estimado_minor, real_minor}],
+                fijos: [{id, concepto, origen, estimado_minor, real_minor}],
                 variables_con_presupuesto: [{id, categoria_id, categoria,
                     estimado_minor (el presupuesto), proyectado_minor, real_minor}],
                 variables_sin_presupuesto: [{id, categoria_id, categoria,
                     estimado_minor (= real), proyectado_minor (= real), real_minor}],
-                en_categorias_de_fijos: [{categoria, real_minor}],
                 subtotal_fijos, subtotal_variables, total: {estimado_minor, real_minor},
             },
             tarjeta: {
                 por_cuenta: [{id, cuenta_id, cuenta, a_pagar_minor}],
                 pagos_realizados_minor, total_a_pagar_minor, falta_pagar_minor,
+            },
+            movimientos_capital: {
+                items: [{id, categoria, neto_minor, cuenta}],
+                neto_que_cuenta_minor,
             },
             deudas: {me_deben: [{persona, tipo, monto_minor, moneda}],
                      debo: [{persona, tipo, monto_minor, moneda}],
@@ -431,34 +471,52 @@ class DashboardService:
             disponible: {hoy_minor, proyectado_minor,
                          grupos: {modo: [{clave, items: [{id, aporte_minor}]}]}
                          para cada modo de MODOS_DISPONIBLE (calcular_escenario())},
+            grafico: {ingresos: [{categoria, monto_minor}],
+                      egresos:  [{categoria, monto_minor}]},
         }
 
-        De dónde sale cada cosa (decisiones del usuario,
-        docs/DATA_MODEL_DECISIONS.md sección 34):
-        - ingresos.fijos: IngresosService.list_by_month() — estimado y cobrado.
-        - ingresos.variables: los ingresos del Registro del mes en categorías
-          de tipo 'ingreso', salvo CATEGORIAS_INGRESOS_FIJOS (ya están en los
-          fijos). Un ítem por tag; los sin tag, uno por categoría (ver
-          _ingresos_variables()). Solo real: estimado 0. El monto completo
-          de cada movimiento: si se compartió, la parte del otro ya resta en
-          las deudas.
-        - egresos.fijos: los presupuestos 'fijo' del mes (estimado y el real
-          cargado a mano).
-        - egresos.variables_*: los egresos del Registro del mes por categoría
-          de tipo 'egreso', salvo CATEGORIAS_EXCLUIDAS_GASTOS, con el real de
-          PresupuestosService.get_real_variable() (un gasto compartido que
-          pagaste vos cuenta solo tu parte), más las categorías con
-          presupuesto variable sin gasto todavía (real 0). Con presupuesto:
-          estimado = el presupuesto; proyectado = lo mayor entre presupuesto
-          y gastado (decisión del usuario: si ya se pasó, el PROYECTADO resta
-          lo gastado). Sin presupuesto: estimado = proyectado = real.
+        El ESTIMADO sale de las pantallas Ingresos y Presupuestos; el REAL,
+        solo del Registro (decisión del usuario: "no mezclarlos"). Cada
+        transacción del mes va a UN lugar según su categoría y su
+        tipo_movimiento (_rol(); docs/DATA_MODEL_DECISIONS.md sección 36):
+        - PAGO TARJETA: tarjeta.pagos_realizados_minor (un ingreso — un pago
+          devuelto — resta).
+        - CATEGORIAS_NEUTRAS, otra categoría de tipo 'movimiento' o
+          tipo_movimiento 'movimiento': movimientos_capital, solo
+          información (cuenta False).
+        - CATEGORIAS_DEUDA: movimientos_capital con cuenta True — el ingreso
+          suma y el egreso resta; su fila en Deudas lo compensa.
+        - un ingreso en CATEGORIAS_INGRESOS_FIJOS: el REAL de los ingresos
+          fijos, una fila por categoría (origen 'registro', estimado 0).
+        - cualquier otro ingreso — también AHORRO/INVERSIÓN y un ingreso en
+          una categoría de egreso (ej. una devolución) —: ingresos
+          variables, uno por tag (sin distinguir mayúsculas ni espacios de
+          más); los sin tag, uno por categoría ("REINTEGRO (SIN TAG)"). Solo
+          real: estimado 0. El monto completo: si se compartió, la parte del
+          otro ya resta en las deudas.
+        - un egreso en CATEGORIAS_DE_FIJOS: el REAL de los egresos fijos,
+          una fila por categoría (origen 'registro').
+        - cualquier otro egreso — también AHORRO/INVERSIÓN —: egresos
+          variables por categoría.
+        El real de un egreso es el de PresupuestosService.get_real_variable():
+        un gasto compartido que pagaste vos cuenta solo tu parte.
+
+        De dónde sale el resto:
+        - ingresos.fijos: además de las filas del Registro, las de
+          IngresosService.list_by_month() con su ESTIMADO (origen
+          'estimado', real 0: lo "cobrado" que se carga ahí no se usa).
+        - egresos.fijos: igual, con los presupuestos 'fijo' (su "pagado"
+          tampoco se usa). Un presupuesto variable de una categoría de
+          CATEGORIAS_DE_FIJOS es el estimado de la fila del Registro de esa
+          categoría.
+        - egresos.variables_*: con presupuesto variable (también las que no
+          tienen gasto todavía, real 0): estimado = el presupuesto;
+          proyectado = lo mayor entre presupuesto y gastado (decisión del
+          usuario: si ya se pasó, el PROYECTADO resta lo gastado). Sin
+          presupuesto: estimado = proyectado = real.
           subtotal_variables.estimado_minor suma los proyectados.
-        - egresos.en_categorias_de_fijos: lo gastado en el Registro en
-          CATEGORIAS_DE_FIJOS — informativo: ya está en los fijos (no es
-          egreso variable, si no se restaría dos veces).
         - tarjeta: a pagar, FeesService.resumen_por_tarjeta() (lo que vence
-          en el mes); pagos realizados, las transacciones del mes en
-          CATEGORIA_PAGO_TARJETA; falta pagar, total − pagos (nunca negativo).
+          en el mes); falta pagar, total − pagos (nunca negativo).
         - deudas, ACUMULADO hasta el último día del mes (sin filtro de mes):
           informales: DebtsService.summary_by_person() de cada tab;
           compartidos: el pendiente (monto_pendiente_minor, ya descuenta los
@@ -466,17 +524,23 @@ class DashboardService:
           te los deben (la persona: los otros miembros del hogar), los que
           pagó otro se los debés (la persona: quien pagó). Un saldo negativo
           pasa al otro lado (ej. alguien que te pagó de más: se lo debés).
-        - disponible:
-            hoy:        ingresos reales (fijos + variables) − egresos reales
-                        (fijos + variables) − total a pagar de la tarjeta +
-                        neto de deudas;
+        - disponible (la suma de los grupos, _grupos_disponible()):
+            hoy:        ingresos reales − egresos reales − total a pagar de
+                        la tarjeta + DEUDA del Registro + neto de deudas;
             proyectado: ingresos fijos estimados + ingresos variables
                         reales − egresos fijos estimados − egresos variables
-                        proyectados − total a pagar de la tarjeta + neto de
-                        deudas.
-          La tarjeta resta su TOTAL en los dos (decisión del usuario): las
-          compras con tarjeta no están en el Registro y PAGO TARJETA no es un
-          egreso, así que pagar el resumen no mueve el disponible.
+                        proyectados − total a pagar de la tarjeta + DEUDA
+                        del Registro + neto de deudas.
+          La tarjeta resta su TOTAL en los dos (decisión del usuario,
+          confirmada otra vez en este rediseño): las compras con tarjeta no
+          están en el Registro y PAGO TARJETA no es un egreso, así que pagar
+          el resumen no mueve el disponible.
+        - grafico (las dos tortas): lo real del mes por categoría, la mayor
+          primero, sin montos <= 0. ingresos: los ingresos fijos y variables
+          del Registro (suman ingresos.total.real_minor). egresos: los
+          egresos fijos y variables del Registro más la tarjeta
+          (CATEGORIA_GRAFICO_TARJETA, su TOTAL A PAGAR). Sin neutras, DEUDA
+          ni PAGO TARJETA (no se cuenta dos veces).
 
         Raises:
             ValueError si el mes está fuera de rango o la moneda no existe.
@@ -491,61 +555,47 @@ class DashboardService:
         moneda_id = datos_moneda["id"]
         yo = normalizar_persona(usuario_local)
         usadas: set[str] = set()  # monedas con algún dato este mes (monedas_disponibles)
-        transacciones = self._transacciones_del_mes(inicio, fecha_corte)
+        reglas = self._reglas_categorias()
+        registro = self._registro_del_mes(
+            self._transacciones_del_mes(inicio, fecha_corte), moneda_id, reglas, usadas,
+        )
 
-        # --- Ingresos (fijos: filas + una de total por moneda, IngresosService.list_by_month()) ---
+        # --- Ingresos (fijos: el estimado de IngresosService.list_by_month() y el real del Registro) ---
         filas_ingresos = self._ingresos_service.list_by_month(mes, anio)
         usadas.update(f["currency_code"] for f in filas_ingresos if f.get(CLAVE_TOTAL))
         ingresos_fijos = [
             {
                 "id": f"{PREFIJO_ID_INGRESO}{f['id']}", "concepto": (f["concepto"] or "").upper(),
-                "estimado_minor": f["monto_estimado_minor"], "real_minor": f["monto_real_minor"],
+                "origen": ORIGEN_ESTIMADO, "estimado_minor": f["monto_estimado_minor"], "real_minor": 0,
             }
             for f in filas_ingresos
             if not f.get(CLAVE_TOTAL) and f["moneda_id"] == moneda_id
-        ]
-        ingresos_variables = self._ingresos_variables(transacciones, moneda_id, usadas)
+        ] + registro["ingresos_fijos"]
+        ingresos_variables = registro["ingresos_variables"]
         ingresos = self._con_subtotales(
             {"fijos": ingresos_fijos, "variables": ingresos_variables},
             fijos=ingresos_fijos, variables=ingresos_variables,
         )
 
-        # --- Egresos (fijos: presupuestos 'fijo'; variables: el Registro) ---
+        # --- Egresos (fijos: presupuestos 'fijo' y el Registro en categorías de fijos; variables: el Registro) ---
         presupuestos = self._presupuestos_service.list_by_month(mes, anio, usuario_local)
         usadas.update(p["currency_code"] for p in presupuestos["fijos"])
+        fijos_registro, con_presupuesto, sin_presupuesto = self._egresos_registro(
+            mes, anio, moneda_id, registro["egresos"], presupuestos["variables"], reglas,
+        )
         egresos_fijos = [
             {
                 "id": f"{PREFIJO_ID_FIJO}{p['id']}", "concepto": (p["nombre"] or "").upper(),
-                "estimado_minor": p["monto_estimado_minor"], "real_minor": p["real_minor"] or 0,
+                "origen": ORIGEN_ESTIMADO, "estimado_minor": p["monto_estimado_minor"], "real_minor": 0,
             }
             for p in presupuestos["fijos"]
             if p["moneda_id"] == moneda_id
-        ]
-        con_presupuesto: list[dict] = []
-        sin_presupuesto: list[dict] = []
-        en_categorias_de_fijos: list[dict] = []
-        for g in self._gastos_registro(mes, anio, moneda_id, presupuestos["variables"], usadas, codigos_por_id):
-            if g["categoria_de_fijos"]:
-                if g["real_minor"]:
-                    en_categorias_de_fijos.append({"categoria": g["categoria"], "real_minor": g["real_minor"]})
-                continue
-            fila = {
-                "id": f"{PREFIJO_ID_VARIABLE}{g['categoria_id']}", "categoria_id": g["categoria_id"],
-                "categoria": g["categoria"], "real_minor": g["real_minor"],
-            }
-            if g["presupuesto_minor"] is None:
-                sin_presupuesto.append({**fila, "estimado_minor": g["real_minor"], "proyectado_minor": g["real_minor"]})
-            else:
-                con_presupuesto.append({
-                    **fila, "estimado_minor": g["presupuesto_minor"],
-                    "proyectado_minor": max(g["presupuesto_minor"], g["real_minor"]),
-                })
+        ] + fijos_registro
         egresos = self._con_subtotales(
             {
                 "fijos": egresos_fijos,
                 "variables_con_presupuesto": con_presupuesto,
                 "variables_sin_presupuesto": sin_presupuesto,
-                "en_categorias_de_fijos": en_categorias_de_fijos,
             },
             fijos=egresos_fijos, variables=con_presupuesto + sin_presupuesto, campo_estimado_variables="proyectado_minor",
         )
@@ -562,12 +612,18 @@ class DashboardService:
             if t["moneda_id"] == moneda_id and t["monto_total_minor"] != 0
         ]
         total_a_pagar = sum(t["a_pagar_minor"] for t in por_cuenta)
-        pagos_realizados = self._pagos_tarjeta(transacciones, moneda_id, usadas)
+        pagos_realizados = registro["pagos_tarjeta_minor"]
         tarjeta = {
             "por_cuenta": por_cuenta,
             "pagos_realizados_minor": pagos_realizados,
             "total_a_pagar_minor": total_a_pagar,
             "falta_pagar_minor": max(total_a_pagar - pagos_realizados, 0),
+        }
+
+        # --- Movimientos de capital (neutras: información; DEUDA: cuenta) ---
+        movimientos_capital = {
+            "items": registro["capital"],
+            "neto_que_cuenta_minor": sum(c["neto_minor"] for c in registro["capital"] if c["cuenta"]),
         }
 
         # --- Deudas (acumuladas al último día del mes) ---
@@ -609,20 +665,25 @@ class DashboardService:
             "neto_minor": subtotal_me_deben - subtotal_debo,
         }
 
-        # --- Disponible (ver docstring) ---
-        neto_deudas = deudas["neto_minor"]
+        # --- Disponible (ver docstring): la suma de los grupos de cada modo ---
+        grupos = {
+            modo: self._grupos_disponible(modo, ingresos, egresos, tarjeta, movimientos_capital, deudas["neto_minor"])
+            for modo in MODOS_DISPONIBLE
+        }
         disponible = {
-            "hoy_minor": (
-                ingresos["total"]["real_minor"] - egresos["total"]["real_minor"] - total_a_pagar + neto_deudas
+            "hoy_minor": self.calcular_escenario(grupos["hoy"], ())["disponible_minor"],
+            "proyectado_minor": self.calcular_escenario(grupos["proyectado"], ())["disponible_minor"],
+            "grupos": grupos,
+        }
+
+        # --- Gráfico (las dos tortas: lo real del mes por categoría) ---
+        grafico = {
+            "ingresos": self._porciones(registro["ingresos_por_categoria"]),
+            "egresos": self._porciones(
+                [{"categoria": f["concepto"], "monto_minor": f["real_minor"]} for f in fijos_registro]
+                + [{"categoria": v["categoria"], "monto_minor": v["real_minor"]} for v in con_presupuesto + sin_presupuesto]
+                + [{"categoria": CATEGORIA_GRAFICO_TARJETA, "monto_minor": total_a_pagar}]
             ),
-            "proyectado_minor": (
-                ingresos["subtotal_fijos"]["estimado_minor"] + ingresos["subtotal_variables"]["real_minor"]
-                - egresos["total"]["estimado_minor"] - total_a_pagar + neto_deudas
-            ),
-            "grupos": {
-                modo: self._grupos_disponible(modo, ingresos, egresos, tarjeta, neto_deudas)
-                for modo in MODOS_DISPONIBLE
-            },
         }
 
         usadas.add(moneda)
@@ -637,8 +698,10 @@ class DashboardService:
             "ingresos": ingresos,
             "egresos": egresos,
             "tarjeta": tarjeta,
+            "movimientos_capital": movimientos_capital,
             "deudas": deudas,
             "disponible": disponible,
+            "grafico": grafico,
         }
 
     @staticmethod
@@ -669,15 +732,22 @@ class DashboardService:
         }
 
     @staticmethod
-    def _grupos_disponible(modo: str, ingresos: dict, egresos: dict, tarjeta: dict, neto_deudas: int) -> list[dict]:
+    def _grupos_disponible(
+        modo: str, ingresos: dict, egresos: dict, tarjeta: dict, movimientos_capital: dict, neto_deudas: int,
+    ) -> list[dict]:
         """
         El DISPONIBLE de un modo desarmado en ítems, para la calculadora de
         escenarios: [{clave, items: [{id, aporte_minor}]}] en el orden de la
         pantalla. aporte_minor: lo que suma el ítem, con su signo (los
-        egresos y la tarjeta en negativo). Los ids son los de cada fila de
-        get_resumen_mes(), no dependen del modo (un ítem excluido sigue
-        excluido al pasar de HOY a PROYECTADO) y no se repiten entre grupos.
-        La suma de todos los aportes es el disponible del modo.
+        egresos y la tarjeta en negativo). Un fijo aporta su real en HOY y
+        su estimado en PROYECTADO: una fila de la pantalla Ingresos o un
+        presupuesto 'fijo' aporta 0 en HOY, y una fila del Registro, su
+        estimado (casi siempre 0) en PROYECTADO. De movimientos de capital,
+        solo lo que cuenta (DEUDA), igual en los dos modos. Los ids son los
+        de cada fila de get_resumen_mes(), no dependen del modo (un ítem
+        excluido sigue excluido al pasar de HOY a PROYECTADO) y no se
+        repiten entre grupos. La suma de todos los aportes es el disponible
+        del modo.
         """
         hoy = modo == "hoy"
         variables = egresos["variables_con_presupuesto"] + egresos["variables_sin_presupuesto"]
@@ -699,6 +769,9 @@ class DashboardService:
             ]},
             {"clave": "tarjeta", "items": [
                 {"id": t["id"], "aporte_minor": -t["a_pagar_minor"]} for t in tarjeta["por_cuenta"]
+            ]},
+            {"clave": "capital", "items": [
+                {"id": c["id"], "aporte_minor": c["neto_minor"]} for c in movimientos_capital["items"] if c["cuenta"]
             ]},
             {"clave": "neto_deudas", "items": [{"id": ID_ITEM_NETO_DEUDAS, "aporte_minor": neto_deudas}]},
         ]
@@ -735,6 +808,14 @@ class DashboardService:
             "es_escenario": hay_excluidos or ajuste_minor != 0,
         }
 
+    @staticmethod
+    def _porciones(items: list[dict]) -> list[dict]:
+        """Las porciones de una torta: {categoria, monto_minor} sin los <= 0, la mayor primero."""
+        return sorted(
+            ({"categoria": i["categoria"], "monto_minor": i["monto_minor"]} for i in items if i["monto_minor"] > 0),
+            key=lambda i: (-i["monto_minor"], i["categoria"]),
+        )
+
     def _transacciones_del_mes(self, inicio: str, fecha_corte: str) -> list[sqlite3.Row]:
         """Todas las transacciones del Registro entre `inicio` y `fecha_corte` (inclusive), de a LOTE_TRANSACCIONES."""
         filas: list[sqlite3.Row] = []
@@ -748,107 +829,180 @@ class DashboardService:
                 return filas
             pagina += 1
 
-    def _ingresos_variables(self, transacciones: list[sqlite3.Row], moneda_id: int, usadas: set[str]) -> list[dict]:
+    def _reglas_categorias(self) -> dict:
         """
-        INGRESOS VARIABLES de get_resumen_mes(): de `transacciones` (las del
-        mes), los ingresos en categorías de tipo 'ingreso' que no son
-        CATEGORIAS_INGRESOS_FIJOS, en la moneda pedida, sumados por tag. El
-        tag se compara sin espacios de más y en MAYÚSCULAS ("clases" y
-        "CLASES " son el mismo ítem); los sin tag, uno por categoría
-        ("REINTEGRO (SIN TAG)"). El mayor primero; anota en `usadas` las
-        monedas con alguno.
+        Las listas de categorías de arriba como claves de clave_categoria(),
+        y los ids de las categorías de tipo 'movimiento' (también las
+        inactivas: una transacción vieja puede usar una), para _rol().
         """
-        de_ingreso = {c["id"] for c in self._categorias_service.list_categories(tipo="ingreso", incluir_inactivas=True)}
-        fijas = {clave_categoria(principal, sub) for principal, sub in CATEGORIAS_INGRESOS_FIJOS}
-        por_id: dict[str, dict] = {}
+        def claves(pares: tuple[tuple[str, str], ...]) -> set[tuple[str, str]]:
+            return {clave_categoria(principal, sub) for principal, sub in pares}
+
+        return {
+            "neutras": claves(CATEGORIAS_NEUTRAS),
+            "ahorro": claves(CATEGORIAS_AHORRO),
+            "deuda": claves(CATEGORIAS_DEUDA),
+            "de_fijos": claves(CATEGORIAS_DE_FIJOS),
+            "ingresos_fijos": claves(CATEGORIAS_INGRESOS_FIJOS),
+            "pago_tarjeta": clave_categoria(*CATEGORIA_PAGO_TARJETA),
+            "de_movimiento": {
+                c["id"] for c in self._categorias_service.list_categories(tipo="movimiento", incluir_inactivas=True)
+            },
+        }
+
+    @staticmethod
+    def _rol(
+        reglas: dict, categoria_id: str, categoria_principal: str, subcategoria: str, tipo_movimiento: str,
+    ) -> str:
+        """
+        Dónde va una transacción (o un presupuesto variable, como egreso) en
+        get_resumen_mes(): uno de los ROL_*. Ver el docstring de
+        get_resumen_mes() y las listas de categorías de arriba.
+        """
+        clave = clave_categoria(categoria_principal, subcategoria)
+        if clave == reglas["pago_tarjeta"]:
+            return ROL_PAGO_TARJETA
+        if tipo_movimiento not in ("ingreso", "egreso") or clave in reglas["neutras"]:
+            return ROL_NEUTRO
+        if clave in reglas["deuda"]:
+            return ROL_DEUDA
+        if categoria_id in reglas["de_movimiento"] and clave not in reglas["ahorro"]:
+            return ROL_NEUTRO
+        if tipo_movimiento == "ingreso":
+            return ROL_INGRESO_FIJO if clave in reglas["ingresos_fijos"] else ROL_INGRESO_VARIABLE
+        return ROL_EGRESO_FIJO if clave in reglas["de_fijos"] else ROL_EGRESO_VARIABLE
+
+    def _registro_del_mes(
+        self, transacciones: list[sqlite3.Row], moneda_id: int, reglas: dict, usadas: set[str],
+    ) -> dict:
+        """
+        Reparte `transacciones` (las del mes) en la moneda pedida según su
+        rol (_rol()). Anota en `usadas` la moneda de todas. Devuelve:
+            ingresos_fijos:         [{id, concepto, origen 'registro', estimado_minor 0, real_minor}];
+            ingresos_variables:     [{id, tag, concepto, estimado_minor 0, real_minor}], uno por tag;
+                                    los sin tag, uno por categoría;
+            ingresos_por_categoria: [{categoria, monto_minor}] de todos los ingresos (fijos y variables);
+            egresos:                {categoria_id: (rol, categoría)} — el real lo calcula _egresos_registro();
+            pagos_tarjeta_minor:    PAGOS REALIZADOS;
+            capital:                [{id, categoria, neto_minor, cuenta}] por categoría (el ingreso
+                                    suma, el egreso resta), en orden alfabético.
+        Las listas de ingresos, la mayor primero.
+        """
+        ingresos_fijos: dict[str, dict] = {}
+        ingresos_variables: dict[str, dict] = {}
+        ingresos_por_categoria: dict[str, dict] = {}
+        egresos: dict[str, tuple[str, str]] = {}
+        capital: dict[str, dict] = {}
+        pagos_tarjeta = 0
         for t in transacciones:
-            if t["tipo_movimiento"] != "ingreso" or t["categoria_id"] not in de_ingreso:
-                continue
-            if clave_categoria(t["categoria_principal"], t["category_name"]) in fijas:
-                continue
             usadas.add(t["currency_code"])
             if t["moneda_id"] != moneda_id:
                 continue
-            tag = " ".join((t["tag"] or "").split()).upper()
-            if tag:
-                id_, concepto = f"{PREFIJO_ID_INGRESO_VARIABLE}{tag}", tag
+            rol = self._rol(reglas, t["categoria_id"], t["categoria_principal"], t["category_name"], t["tipo_movimiento"])
+            categoria = _normalizado(t["category_name"])
+            monto = t["monto_minor"]
+            if rol == ROL_PAGO_TARJETA:
+                pagos_tarjeta += -monto if t["tipo_movimiento"] == "ingreso" else monto
+            elif rol in (ROL_NEUTRO, ROL_DEUDA):
+                cuenta = rol == ROL_DEUDA
+                id_ = f"{PREFIJO_ID_CAPITAL if cuenta else PREFIJO_ID_NEUTRO}{t['categoria_id']}"
+                item = capital.setdefault(id_, {"id": id_, "categoria": categoria, "neto_minor": 0, "cuenta": cuenta})
+                item["neto_minor"] += -monto if t["tipo_movimiento"] == "egreso" else monto
+            elif rol in (ROL_EGRESO_FIJO, ROL_EGRESO_VARIABLE):
+                egresos[t["categoria_id"]] = (rol, categoria)
             else:
-                categoria = " ".join((t["category_name"] or "").split()).upper()
-                id_, concepto = f"{PREFIJO_ID_INGRESO_SIN_TAG}{t['categoria_id']}", f"{categoria} ({TEXTO_SIN_TAG})"
-            item = por_id.setdefault(id_, {
-                "id": id_, "tag": tag or None, "concepto": concepto, "estimado_minor": 0, "real_minor": 0,
-            })
-            item["real_minor"] += t["monto_minor"]
-        return sorted(por_id.values(), key=lambda i: (-i["real_minor"], i["concepto"]))
+                por_categoria = ingresos_por_categoria.setdefault(
+                    t["categoria_id"], {"categoria": categoria, "monto_minor": 0},
+                )
+                por_categoria["monto_minor"] += monto
+                if rol == ROL_INGRESO_FIJO:
+                    id_ = f"{PREFIJO_ID_INGRESO_REGISTRO}{t['categoria_id']}"
+                    item = ingresos_fijos.setdefault(id_, {
+                        "id": id_, "concepto": categoria, "origen": ORIGEN_REGISTRO,
+                        "estimado_minor": 0, "real_minor": 0,
+                    })
+                else:
+                    tag = _normalizado(t["tag"])
+                    if tag:
+                        id_, concepto = f"{PREFIJO_ID_INGRESO_VARIABLE}{tag}", tag
+                    else:
+                        id_, concepto = f"{PREFIJO_ID_INGRESO_SIN_TAG}{t['categoria_id']}", f"{categoria} ({TEXTO_SIN_TAG})"
+                    item = ingresos_variables.setdefault(id_, {
+                        "id": id_, "tag": tag or None, "concepto": concepto, "estimado_minor": 0, "real_minor": 0,
+                    })
+                item["real_minor"] += monto
 
-    @staticmethod
-    def _pagos_tarjeta(transacciones: list[sqlite3.Row], moneda_id: int, usadas: set[str]) -> int:
-        """
-        PAGOS REALIZADOS de la tarjeta: de `transacciones` (las del mes), la
-        suma de las de CATEGORIA_PAGO_TARJETA en la moneda pedida (un
-        ingreso en esa categoría — un pago devuelto — resta). Anota en
-        `usadas` las monedas con alguno.
-        """
-        clave_pago = clave_categoria(*CATEGORIA_PAGO_TARJETA)
-        total = 0
-        for t in transacciones:
-            if clave_categoria(t["categoria_principal"], t["category_name"]) != clave_pago:
-                continue
-            usadas.add(t["currency_code"])
-            if t["moneda_id"] == moneda_id:
-                total += -t["monto_minor"] if t["tipo_movimiento"] == "ingreso" else t["monto_minor"]
-        return total
+        def mayor_primero(items) -> list[dict]:
+            return sorted(items, key=lambda i: (-i["real_minor"], i["concepto"]))
 
-    def _gastos_registro(
-        self, mes: int, anio: int, moneda_id: int, variables: list[dict],
-        usadas: set[str], codigos_por_id: dict[int, str],
-    ) -> list[dict]:
+        return {
+            "ingresos_fijos": mayor_primero(ingresos_fijos.values()),
+            "ingresos_variables": mayor_primero(ingresos_variables.values()),
+            "ingresos_por_categoria": list(ingresos_por_categoria.values()),
+            "egresos": egresos,
+            "pagos_tarjeta_minor": pagos_tarjeta,
+            "capital": sorted(capital.values(), key=lambda c: (c["categoria"], c["cuenta"])),
+        }
+
+    def _egresos_registro(
+        self, mes: int, anio: int, moneda_id: int, egresos: dict[str, tuple[str, str]],
+        variables: list[dict], reglas: dict,
+    ) -> tuple[list[dict], list[dict], list[dict]]:
         """
-        Los egresos del Registro del mes por categoría de tipo 'egreso'
-        (get_gasto_por_categoria()) más las que tienen presupuesto variable,
-        en la moneda pedida, sin CATEGORIAS_EXCLUIDAS_GASTOS. El real, de
+        Los egresos del Registro del mes por categoría (`egresos`, de
+        _registro_del_mes()) más las categorías con presupuesto variable en
+        la moneda pedida (también sin gasto todavía), con el real de
         PresupuestosService.get_real_variable() (no se duplica su regla de
-        compartidos); presupuesto_minor, el del presupuesto variable de la
-        categoría en esa moneda, o None; categoria_de_fijos, si está en
-        CATEGORIAS_DE_FIJOS. La mayor primero; anota en `usadas` las monedas
-        con gasto.
+        compartidos). Devuelve (fijos_registro, con_presupuesto,
+        sin_presupuesto), cada una con la mayor primero:
+        - fijos_registro: las de CATEGORIAS_DE_FIJOS — {id, concepto, origen
+          'registro', estimado_minor (su presupuesto variable, o 0), real_minor};
+        - con_presupuesto: {id, categoria_id, categoria, estimado_minor (el
+          presupuesto), proyectado_minor (lo mayor entre presupuesto y
+          real), real_minor};
+        - sin_presupuesto: igual, con estimado = proyectado = real.
+        No cuenta el presupuesto de COMPARTIDOS (sin categoría) ni el de una
+        categoría que no es un egreso (neutra, DEUDA, PAGO TARJETA).
         """
-        excluidas = {clave_categoria(principal, sub) for principal, sub in CATEGORIAS_EXCLUIDAS_GASTOS}
-        de_fijos = {clave_categoria(principal, sub) for principal, sub in CATEGORIAS_DE_FIJOS}
-        de_egreso = {c["id"] for c in self._categorias_service.list_categories(tipo="egreso", incluir_inactivas=True)}
-        categorias: dict[str, tuple[str, str]] = {}
-        for gasto in self.get_gasto_por_categoria(mes, anio):
-            if gasto["categoria_id"] not in de_egreso:
-                continue
-            if clave_categoria(gasto["categoria_principal"], gasto["categoria_nombre"]) in excluidas:
-                continue
-            usadas.add(codigos_por_id.get(gasto["moneda_id"], ""))
-            if gasto["moneda_id"] == moneda_id:
-                categorias[gasto["categoria_id"]] = (gasto["categoria_principal"], gasto["categoria_nombre"])
-        presupuestos: dict[str, int] = {}
+        categorias = dict(egresos)
+        presupuesto_por_categoria: dict[str, int] = {}
         for p in variables:
             if p["categoria_id"] is None or p["moneda_id"] != moneda_id:
                 continue  # COMPARTIDOS (sin categoría) no es una categoría; otra moneda, en su resumen
-            if clave_categoria(p["categoria_principal"], p["subcategoria"]) in excluidas:
+            rol = self._rol(reglas, p["categoria_id"], p["categoria_principal"], p["subcategoria"], "egreso")
+            if rol not in (ROL_EGRESO_FIJO, ROL_EGRESO_VARIABLE):
                 continue
-            presupuestos[p["categoria_id"]] = p["monto_estimado_minor"]
-            categorias.setdefault(p["categoria_id"], (p["categoria_principal"], p["subcategoria"]))
+            presupuesto_por_categoria[p["categoria_id"]] = p["monto_estimado_minor"]
+            categorias.setdefault(p["categoria_id"], (rol, _normalizado(p["subcategoria"])))
 
-        filas = []
-        for categoria_id, (principal, subcategoria) in categorias.items():
+        fijos: list[dict] = []
+        con_presupuesto: list[dict] = []
+        sin_presupuesto: list[dict] = []
+        for categoria_id, (rol, categoria) in categorias.items():
             real = self._presupuestos_service.get_real_variable(categoria_id, moneda_id, mes, anio)
-            presupuesto = presupuestos.get(categoria_id)
+            presupuesto = presupuesto_por_categoria.get(categoria_id)
             if real == 0 and presupuesto is None:
                 continue  # todo su gasto era la parte del otro de un compartido
-            filas.append({
-                "categoria_id": categoria_id,
-                "categoria": (subcategoria or "").upper(),
-                "real_minor": real,
-                "presupuesto_minor": presupuesto,
-                "categoria_de_fijos": clave_categoria(principal, subcategoria) in de_fijos,
-            })
-        filas.sort(key=lambda f: (-f["real_minor"], f["categoria"]))
-        return filas
+            if rol == ROL_EGRESO_FIJO:
+                fijos.append({
+                    "id": f"{PREFIJO_ID_FIJO_REGISTRO}{categoria_id}", "concepto": categoria,
+                    "origen": ORIGEN_REGISTRO, "estimado_minor": presupuesto or 0, "real_minor": real,
+                })
+                continue
+            fila = {
+                "id": f"{PREFIJO_ID_VARIABLE}{categoria_id}", "categoria_id": categoria_id,
+                "categoria": categoria, "real_minor": real,
+            }
+            if presupuesto is None:
+                sin_presupuesto.append({**fila, "estimado_minor": real, "proyectado_minor": real})
+            else:
+                con_presupuesto.append({
+                    **fila, "estimado_minor": presupuesto, "proyectado_minor": max(presupuesto, real),
+                })
+        fijos.sort(key=lambda f: (-f["real_minor"], f["concepto"]))
+        for filas in (con_presupuesto, sin_presupuesto):
+            filas.sort(key=lambda f: (-f["real_minor"], f["categoria"]))
+        return fijos, con_presupuesto, sin_presupuesto
 
     def _gastos_compartidos_hasta(self, fin: str) -> list[dict]:
         """
