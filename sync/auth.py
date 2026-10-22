@@ -4,14 +4,17 @@ DeltaBalance — sync/auth.py
 Autenticación contra Supabase Auth (email + contraseña) y el nombre de
 display del usuario.
 
-Sesión guardada: .deltabalance_prefs.json, clave "supabase_session"
-({access_token, refresh_token, user_id, email, expires_at} — el archivo
-está en .gitignore). Así la app no pide login cada vez: con una sesión
-guardada, is_logged_in() es True sin tocar la red (se puede trabajar sin
-conexión), y recién refresh_session() — que llama SyncEngine antes de cada
-sincronización — la carga en el cliente y renueva el token si venció.
-Cada renovación automática del cliente (evento TOKEN_REFRESHED) vuelve a
-guardar los tokens nuevos.
+Sesión guardada: keyring del sistema operativo (GNOME Keyring en Linux,
+Windows Credential Manager en Windows, Keychain en macOS), bajo el servicio
+"deltabalance" y la clave "supabase_session". Si keyring no está disponible
+(entorno sin keychain), cae a .deltabalance_prefs.json como fallback
+(comportamiento anterior). El archivo de prefs está en .gitignore.
+
+Así la app no pide login cada vez: con una sesión guardada, is_logged_in()
+es True sin tocar la red (se puede trabajar sin conexión), y recién
+refresh_session() — que llama SyncEngine antes de cada sincronización — la
+carga en el cliente y renueva el token si venció. Cada renovación automática
+del cliente (evento TOKEN_REFRESHED) vuelve a guardar los tokens nuevos.
 
 Nombre de display: prefs, clave "display_name". Local de cada
 computadora, no sube a Supabase (pedido explícito).
@@ -25,18 +28,27 @@ Los mensajes de AuthResult ya vienen en MAYÚSCULAS: la pantalla de login
 los muestra tal cual.
 """
 
+import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Optional
 
+import keyring
+import keyring.errors
 from supabase_auth.errors import AuthApiError
 
 from sync.supabase_client import ConfiguracionSupabaseError, get_client
 from ui.utils.prefs import escribir_pref, leer_pref
 
+logger = logging.getLogger(__name__)
+
 PREF_SESION = "supabase_session"
 PREF_NOMBRE = "display_name"
 PREF_USUARIO_LOCAL = "usuario_local"
 EVENTOS_SESION_NUEVA = ("SIGNED_IN", "TOKEN_REFRESHED")
+
+_KEYRING_SERVICIO = "deltabalance"
+_KEYRING_CLAVE = "supabase_session"
 
 USUARIOS_LOCALES = {
     "f5ca8a42-a039-4a46-998e-2b01dbb28e9c": "BRUNO",
@@ -52,6 +64,58 @@ class AuthResult:
     mensaje: str = ""
 
 
+# ----------------------------------------------------------
+# ALMACÉN SEGURO — keyring con fallback a prefs
+# ----------------------------------------------------------
+
+def _guardar_sesion_segura(sesion: dict) -> None:
+    """Guarda el diccionario de sesión en keyring. Si no está disponible, cae a prefs."""
+    try:
+        keyring.set_password(_KEYRING_SERVICIO, _KEYRING_CLAVE, json.dumps(sesion))
+        # Limpiar el valor viejo de prefs si existía
+        escribir_pref(PREF_SESION, None)
+        logger.debug("Sesión guardada en keyring.")
+    except keyring.errors.NoKeyringError:
+        logger.warning("Keyring no disponible — sesión guardada en prefs (fallback).")
+        escribir_pref(PREF_SESION, sesion)
+    except Exception as err:
+        logger.warning("Error al guardar en keyring (%s) — usando prefs como fallback.", err)
+        escribir_pref(PREF_SESION, sesion)
+
+
+def _leer_sesion_segura() -> Optional[dict]:
+    """Lee el diccionario de sesión desde keyring, con fallback a prefs."""
+    try:
+        valor = keyring.get_password(_KEYRING_SERVICIO, _KEYRING_CLAVE)
+        if valor is not None:
+            logger.debug("Sesión leída desde keyring.")
+            return json.loads(valor)
+    except keyring.errors.NoKeyringError:
+        logger.warning("Keyring no disponible — leyendo sesión desde prefs (fallback).")
+    except Exception as err:
+        logger.warning("Error al leer desde keyring (%s) — usando prefs como fallback.", err)
+
+    # Fallback: leer desde prefs
+    guardada = leer_pref(PREF_SESION)
+    return guardada if isinstance(guardada, dict) else None
+
+
+def _borrar_sesion_segura() -> None:
+    """Borra la sesión de keyring y de prefs."""
+    try:
+        keyring.delete_password(_KEYRING_SERVICIO, _KEYRING_CLAVE)
+        logger.debug("Sesión borrada de keyring.")
+    except keyring.errors.NoKeyringError:
+        logger.warning("Keyring no disponible — borrando sesión de prefs.")
+    except keyring.errors.PasswordDeleteError:
+        pass  # No existía en keyring, no es un error
+    except Exception as err:
+        logger.warning("Error al borrar de keyring (%s).", err)
+
+    # Siempre limpiar prefs también (por si había fallback previo)
+    escribir_pref(PREF_SESION, None)
+
+
 class AuthService:
     """
     Usage:
@@ -62,8 +126,7 @@ class AuthService:
     """
 
     def __init__(self) -> None:
-        guardada = leer_pref(PREF_SESION)
-        self._sesion: Optional[dict] = guardada if isinstance(guardada, dict) else None
+        self._sesion: Optional[dict] = _leer_sesion_segura()
         self._escuchando = False
 
     # ----------------------------------------------------------
@@ -78,7 +141,6 @@ class AuthService:
         return cliente
 
     def _al_cambiar_sesion(self, evento: Any, sesion: Any) -> None:
-        # Token renovado por el cliente (o sesión nueva): se guardan los tokens nuevos.
         if str(evento) in EVENTOS_SESION_NUEVA and sesion is not None:
             self._guardar(sesion)
 
@@ -90,14 +152,14 @@ class AuthService:
             "email": sesion.user.email,
             "expires_at": sesion.expires_at,
         }
-        escribir_pref(PREF_SESION, self._sesion)
+        _guardar_sesion_segura(self._sesion)
 
     def _olvidar(self) -> None:
         self._sesion = None
-        escribir_pref(PREF_SESION, None)
+        _borrar_sesion_segura()
 
     # ----------------------------------------------------------
-    # API
+    # API pública — sin cambios
     # ----------------------------------------------------------
 
     def login(self, email: str, password: str) -> AuthResult:
@@ -117,16 +179,18 @@ class AuthService:
         self._guardar(respuesta.session)
         escribir_pref(PREF_USUARIO_LOCAL, USUARIOS_LOCALES.get(respuesta.session.user.id, ""))
         return AuthResult(
-            success=True, user_id=respuesta.session.user.id, email=respuesta.session.user.email,
+            success=True,
+            user_id=respuesta.session.user.id,
+            email=respuesta.session.user.email,
             mensaje="SESIÓN INICIADA.",
         )
 
     def logout(self) -> None:
-        """Cierra la sesión en Supabase (si hay conexión) y la borra de prefs."""
+        """Cierra la sesión en Supabase (si hay conexión) y la borra."""
         try:
             self._cliente().auth.sign_out()
         except Exception:
-            pass  # sin conexión: igual se olvida la sesión local
+            pass
         self._olvidar()
 
     def get_user_id(self) -> Optional[str]:
@@ -136,26 +200,19 @@ class AuthService:
         return self._sesion.get("email") if self._sesion else None
 
     def get_usuario_local(self) -> Optional[str]:
-        """El usuario local hardcodeado para el UUID de la sesión (USUARIOS_LOCALES), o None."""
         user_id = self.get_user_id()
         return USUARIOS_LOCALES.get(user_id)
 
     def is_logged_in(self) -> bool:
-        """Hay una sesión guardada (no toca la red: ver docstring del módulo)."""
         return bool(self._sesion and self._sesion.get("refresh_token") and self._sesion.get("user_id"))
 
     def refresh_session(self) -> bool:
-        """
-        Carga la sesión guardada en el cliente, renovando el token si venció.
-        Hace red. False si no hay sesión, o si Supabase la rechaza (token
-        revocado o vencido del todo: se borra y hay que volver a iniciar
-        sesión). Sin conexión, la excepción sube (SyncEngine la muestra como
-        SIN CONEXIÓN).
-        """
         if not self.is_logged_in():
             return False
         try:
-            respuesta = self._cliente().auth.set_session(self._sesion["access_token"], self._sesion["refresh_token"])
+            respuesta = self._cliente().auth.set_session(
+                self._sesion["access_token"], self._sesion["refresh_token"]
+            )
         except AuthApiError:
             self._olvidar()
             return False
@@ -169,11 +226,9 @@ class AuthService:
     # ----------------------------------------------------------
 
     def get_display_name(self) -> Optional[str]:
-        """El nombre de display guardado en prefs ("display_name"), o None."""
         nombre = leer_pref(PREF_NOMBRE)
         return nombre.strip() if isinstance(nombre, str) and nombre.strip() else None
 
     def set_display_name(self, nombre: str) -> None:
-        """Guarda el nombre de display en prefs ("display_name"); vacío lo borra."""
         limpio = " ".join((nombre or "").split())
         escribir_pref(PREF_NOMBRE, limpio or None)
