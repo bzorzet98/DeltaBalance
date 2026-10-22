@@ -27,19 +27,21 @@ Este principio aplica a todas las decisiones de diseño del MVP: si una restricc
 | Módulo | Estado | Notas |
 | --- | --- | --- |
 | Registro de transacciones | ✅ Completo | Ingreso, egreso, transferencia, cambio de moneda. Múltiples monedas y cuentas. |
-| Compras en cuotas | ✅ Completo | Cronograma automático, cargos extra como cuota de una sola cuota. |
+| Compras en cuotas | ✅ Completo | Cronograma automático, cargos extra como cuota de una sola cuota. Se agrega una segunda tab a la pantalla: Tab 1 — listado de todas las compras y cuotas del registro. Tab 2 — doble columna con el total a pagar del mes (estimado) vs lo que el usuario registró como pagado (real). Esta segunda tab es la que alimenta la sección de cuotas del dashboard. |
 | Gastos compartidos | ✅ Completo | Selección múltiple de filas con coeficiente uniforme. Originados desde registro o desde compras en cuotas. |
 | Presupuestos y egresos fijos | ✅ Completo | Seguimiento en tiempo real de lo gastado vs lo presupuestado por categoría. |
 | Ahorros e inversiones | ✅ Completo | Objetivos, instrumentos (FCI, CEDEARs, etc.), aportes y distribución proporcional de rendimientos. |
 | Categorías y cuentas | ✅ Completo | Creación de categorías, cuentas de banco y tarjetas de crédito asociadas a un banco. |
 | Autotransferencia | ✅ Completo | Menú desplegable para seleccionar cuenta destino — se mantiene. |
 | Sincronización | ✅ Completo | Base de datos propia por usuario sincronizada en Supabase. Gastos compartidos visibles entre los dos usuarios. |
-| Dashboard | ⚠️ Simplificar | Se replantea como tabla resumen por sección: ingresos proyectados, egresos fijos, presupuestos, cuotas del mes y registro mensual. Todas las tablas usan doble columna: Estimado (+) / Real (−). Fórmula del disponible: Disponible =\
+| Dashboard | ⚠️ Simplificar | Se replantea como tabla resumen por sección, cada una con su propia lógica: **Ingresos** — doble columna: Estimado (+) / Real (−) **Egresos fijos** — doble columna: Estimado (+) / Real (−) **Presupuestos** — doble columna: Estimado (+) / Real (−) **Cuotas** — doble columna: Estimado (total a pagar el mes) / Real (pagado por el usuario). Sin dependencia de categorías. **Deudas informales** — suma de filas con signo: + me deben, − debo. Sin doble columna. **Gastos compartidos** — saldo neto del hogar (TE DEBEN ya calculado). Sin doble columna. **Registro mensual** — sumatoria de todas las transacciones del mes con su signo original, filtradas por moneda. Sin exclusiones por categoría. AUTOTRANSFERENCIA suma cero (sirve como control). CAMBIO MONEDA aparece con el signo de cómo se registró — depende de la dirección de la operación, no de la moneda. **Fórmula del disponible:** Disponible =\
   + (ingresos.estimado + ingresos.real)\
   - (egresos\_fijos.estimado + egresos\_fijos.real)\
   - max(presupuestos.estimado + presupuestos.real, 0)\
-  - cuotas\_del\_mes\
-  + saldo\_registro\_mensual La excepción de presupuestos (`max(..., 0)`) evita castigar dos veces cuando el real supera el estimado — el exceso ya está en el registro de transacciones. El registro mensual es la única fuente de verdad para el real. Si un ingreso proyectado no se registra en transacciones, aparece duplicado: responsabilidad del usuario. |
+  - (cuotas.estimado + cuotas.real)\
+  + saldo\_neto\_deudas\_informales\
+  + saldo\_neto\_gastos\_compartidos\
+  + flujo\_registro\_mensual La excepción de presupuestos (`max(..., 0)`) evita castigar dos veces cuando el real supera el estimado — el exceso ya está en el registro mensual. **Ahorros:** no tienen sección propia en el dashboard. El usuario los gestiona como egreso fijo o categoría de presupuesto. El patrimonio neto queda para una versión futura. |
 | Archivado de cuentas | ⚠️ Corregir | Debe permitirse siempre, independientemente del saldo. Decisión del usuario. |
 
 ## Fuera del MVP

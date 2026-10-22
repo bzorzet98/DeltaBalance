@@ -59,3 +59,4 @@ exclude = [
 # cuando se actualice Flet.
 [tool.flet.flutter.pubspec.dependency_overrides]
 jni_flutter = "1.0.3"
+jni = "1.1.0"
