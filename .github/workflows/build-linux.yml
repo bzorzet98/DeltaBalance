@@ -1,14 +1,15 @@
-name: Build Linux
+name: CI/CD
 
 on:
   push:
-    branches: [main, MVP]
+    branches: [main, develop]
+  pull_request:
+    branches: [develop, main]
   workflow_dispatch:
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -18,19 +19,39 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Install dependencies
+        run: pip install flet==0.86.5 flet-cli supabase python-dotenv keyring
+
+      - name: Check syntax
+        run: python -m compileall . -q
+
+  build:
+    runs-on: ubuntu-22.04
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
       - name: Install Python dependencies
-        run: |
-          pip install flet==0.86.5 flet-cli supabase python-dotenv
+        run: pip install flet==0.86.5 flet-cli supabase python-dotenv keyring
 
       - name: Install Linux build dependencies
         run: |
           sudo apt update
           sudo apt install -y cmake clang ninja-build pkg-config libgtk-3-dev
 
-      # flet build no mete las variables de entorno del build en el bundle:
-      # las credenciales viajan en un .py generado (fuera de git, ver
-      # sync/supabase_client.py). Sin los secrets, el build falla acá en vez
-      # de producir una app sin Supabase.
       - name: Write Supabase credentials
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -49,8 +70,7 @@ jobs:
           EOF
 
       - name: Build Linux
-        run: |
-          echo 'y' | flet build linux
+        run: echo 'y' | flet build linux
 
       - name: Package
         run: |
