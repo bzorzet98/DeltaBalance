@@ -28,7 +28,7 @@ Este principio aplica a todas las decisiones de diseño del MVP: si una restricc
 | --- | --- | --- |
 | Registro de transacciones | ✅ Completo | Ingreso, egreso, transferencia, cambio de moneda. Múltiples monedas y cuentas. |
 | Compras en cuotas | ✅ Completo | Cronograma automático, cargos extra como cuota de una sola cuota. Se agrega una segunda tab a la pantalla: Tab 1 — listado de todas las compras y cuotas del registro. Tab 2 — doble columna con el total a pagar del mes (estimado) vs lo que el usuario registró como pagado (real). Esta segunda tab es la que alimenta la sección de cuotas del dashboard. |
-| Gastos compartidos | ✅ Completo | Selección múltiple de filas con coeficiente uniforme. Originados desde registro o desde compras en cuotas. |
+| Gastos compartidos | ✅ Completo | Selección múltiple de filas con coeficiente uniforme. Originados desde registro o desde compras en cuotas. Solo el usuario que creó el gasto compartido puede editarlo o borrarlo. |
 | Presupuestos y egresos fijos | ✅ Completo | Seguimiento en tiempo real de lo gastado vs lo presupuestado por categoría. |
 | Ahorros e inversiones | ✅ Completo | Objetivos, instrumentos (FCI, CEDEARs, etc.), aportes y distribución proporcional de rendimientos. |
 | Categorías y cuentas | ✅ Completo | Creación de categorías, cuentas de banco y tarjetas de crédito asociadas a un banco. |
