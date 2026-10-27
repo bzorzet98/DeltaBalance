@@ -6,10 +6,10 @@ dependencies:
   - python=3.11
   - pip
   - pip:
-    - flet                # UI desktop
-    - flet-charts
-    - pytest              # tests
-    - keyring
-    - openpyxl
-    - supabase            # sincronización (sync/)
-    - python-dotenv       # credenciales de Supabase desde .env
+    - flet==0.86.5        # UI desktop
+    - flet-charts==0.86.5
+    - pytest==9.1.1       # tests
+    - keyring==25.7.0
+    - openpyxl==3.1.5
+    - supabase==2.31.0    # sincronización (sync/)
+    - python-dotenv==1.2.3 # credenciales de Supabase desde .env

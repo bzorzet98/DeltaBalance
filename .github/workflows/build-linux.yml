@@ -75,11 +75,57 @@ jobs:
       - name: Package
         run: |
           tar czf DeltaBalance-linux-ubuntu22.tar.gz \
-            install.sh uninstall.sh README_INSTALACION.md build/linux
+            install.sh uninstall.sh build/linux
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: DeltaBalance-linux-ubuntu22
           path: DeltaBalance-linux-ubuntu22.tar.gz
+          retention-days: 30
+
+  build-windows:
+    runs-on: windows-latest
+    needs: check
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install Python dependencies
+        run: pip install flet==0.86.5 flet-cli supabase python-dotenv keyring
+
+      - name: Write Supabase credentials
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+        run: |
+          python -c "
+          import os
+          with open('sync/credenciales_build.py', 'w', encoding='utf-8') as f:
+              f.write('# Generado por CI. No editar ni commitear.\n')
+              for nombre in ('SUPABASE_URL', 'SUPABASE_ANON_KEY'):
+                  f.write(f'{nombre} = {os.environ[nombre]!r}\n')
+          "
+
+      - name: Build Windows
+        run: |
+          echo y | flet build windows
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeltaBalance-windows
+          path: build/windows
           retention-days: 30
