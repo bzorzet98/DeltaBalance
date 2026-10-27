@@ -21,6 +21,7 @@ dependencies = [
     "flet-charts==0.86.5",
     "supabase",
     "python-dotenv",
+    "keyring",  
 ]
 
 [tool.flet]
@@ -41,6 +42,7 @@ exclude = [
     "verify",
     "lab",
     "tests",
+    "sync/tests",
     "docs",
     ".env",
     ".deltabalance_prefs.json",

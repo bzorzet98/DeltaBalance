@@ -64,6 +64,7 @@ de un resumen, sección 29) va en MIGRACIONES_TABLA, junto a tarjetas_config.
 
 from __future__ import annotations
 
+import logging
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -72,6 +73,8 @@ from pathlib import Path
 
 from utils.categorias import clave_categoria
 from utils.personas import normalizar_persona
+
+logger = logging.getLogger(__name__)
 
 # El mismo DEFAULT de los `id` de db/schema.sql: un UUID v4 en texto,
 # generado por SQLite si un INSERT no trae id (ver el comentario de cabecera
@@ -571,7 +574,7 @@ def _backup_antes_de_reestructurar(conn: sqlite3.Connection, motivo: str = "deud
         conn.backup(copia)
     finally:
         copia.close()
-    print(f"[DeltaBalance] Backup antes de reestructurar {motivo}: {destino}")
+    logger.info("Backup antes de reestructurar %s: %s", motivo, destino)
 
 
 def _normalizar_personas(conn: sqlite3.Connection, tabla: str) -> None:
@@ -1085,9 +1088,10 @@ def migrar_cargos_extra_a_compras(conn: sqlite3.Connection) -> None:
     }
     movibles = [cargo for cargo in cargos if cargo[2] in categorias]
     if len(movibles) < len(cargos):
-        print(
-            f"[DeltaBalance] {len(cargos) - len(movibles)} cargo(s) extra sin categoría especial (tipo 'otro' o "
-            f"categoría borrada): quedan en resumen_cargos_extra, sin migrar."
+        logger.warning(
+            "%d cargo(s) extra sin categoría especial (tipo 'otro' o categoría borrada): quedan en "
+            "resumen_cargos_extra, sin migrar.",
+            len(cargos) - len(movibles),
         )
     if not movibles:
         return
@@ -1125,7 +1129,7 @@ def migrar_cargos_extra_a_compras(conn: sqlite3.Connection) -> None:
     except Exception:
         conn.rollback()
         raise
-    print(f"[DeltaBalance] {len(movibles)} cargo(s) extra movido(s) de resumen_cargos_extra a compras_cuotas.")
+    logger.info("%d cargo(s) extra movido(s) de resumen_cargos_extra a compras_cuotas.", len(movibles))
 
 
 def _aplicar_columnas(conn: sqlite3.Connection, migraciones: list[MigracionColumna]) -> None:

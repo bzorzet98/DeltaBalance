@@ -27,6 +27,7 @@ SyncEngine tienen que usar el MISMO — con dos clientes, el de la sync
 haría las consultas sin sesión y RLS no le devolvería nada.
 """
 
+import logging
 import os
 import sys
 from functools import lru_cache
@@ -35,14 +36,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 from supabase import Client, create_client
 
+logger = logging.getLogger(__name__)
+
 # Con ruta explícita: sin ruta, load_dotenv() llama a find_dotenv(), que en
 # la app empaquetada falla (ver docstring). Si el archivo no existe, no pasa nada.
 load_dotenv(Path(__file__).parent.parent / ".env")
 
 # TODO: DEBUG temporal para diagnosticar la conexión en la app empaquetada —
-# sacar todos los print("[DEBUG] ...") de este archivo cuando conecte.
-print(f"[DEBUG] Python: {sys.executable}", flush=True)
-print(f"[DEBUG] SUPABASE_URL env: {os.environ.get('SUPABASE_URL', 'NO ENCONTRADA')}", flush=True)
+# sacar todos los logger.debug() de este archivo cuando conecte.
+logger.debug("Python: %s", sys.executable)
+logger.debug("SUPABASE_URL env: %s", os.environ.get("SUPABASE_URL", "NO ENCONTRADA"))
 
 # Para la app empaquetada, que no lleva .env (ver docstring). Solo lo
 # público: la service key nunca va en este archivo.
@@ -52,18 +55,17 @@ try:
         "SUPABASE_URL": getattr(_build, "SUPABASE_URL", None),
         "SUPABASE_ANON_KEY": getattr(_build, "SUPABASE_ANON_KEY", None),
     }
-    print(
-        f"[DEBUG] credenciales_build cargado OK, URL: {(VALORES_DEL_BUILD['SUPABASE_URL'] or 'NONE')[:20]}...",
-        flush=True,
+    logger.debug(
+        "credenciales_build cargado OK, URL: %s...", (VALORES_DEL_BUILD["SUPABASE_URL"] or "NONE")[:20],
     )
 except ImportError as e:  # desarrollo: no hay archivo generado, las variables salen del .env
     VALORES_DEL_BUILD = {}
-    print(f"[DEBUG] Error cargando credenciales_build: {e}", flush=True)
+    logger.debug("Error cargando credenciales_build: %s", e)
 
 _url_final = os.environ.get("SUPABASE_URL") or VALORES_DEL_BUILD.get("SUPABASE_URL")
 _hay_anon_key = bool(os.environ.get("SUPABASE_ANON_KEY") or VALORES_DEL_BUILD.get("SUPABASE_ANON_KEY"))
-print(f"[DEBUG] SUPABASE_URL final: {_url_final[:20] if _url_final else 'NONE'}...", flush=True)
-print(f"[DEBUG] SUPABASE_ANON_KEY presente: {_hay_anon_key}", flush=True)
+logger.debug("SUPABASE_URL final: %s...", _url_final[:20] if _url_final else "NONE")
+logger.debug("SUPABASE_ANON_KEY presente: %s", _hay_anon_key)
 
 
 class ConfiguracionSupabaseError(Exception):

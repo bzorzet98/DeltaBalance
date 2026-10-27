@@ -21,14 +21,21 @@ Correrlo con:
     python main.py --no-fresh     (sin empezar de cero)
 """
 import argparse
+import logging
 from datetime import datetime
 from pathlib import Path
+
+# Antes de importar flet y el resto del proyecto: sync/supabase_client.py ya loguea al
+# importarse, y basicConfig() no hace nada si alguien configuró el logging raíz antes.
+logging.basicConfig(level=logging.WARNING)
 
 import flet as ft
 from db.database import DB_PATH, DatabaseManager, get_db_path
 from sync.auth import PREF_SESION
 from ui.app import build_app
 from ui.utils.prefs import escribir_pref
+
+logger = logging.getLogger(__name__)
 
 # El archivo de la base y los que SQLite deja al lado (se mueven juntos: un -wal suelto se
 # aplicaría a la base nueva).
@@ -55,7 +62,7 @@ def _empezar_de_cero(db_path: Path) -> None:
         if archivo.exists():
             archivo.rename(Path(f"{backup}{sufijo}"))
     if backup.exists():
-        print(f"[DeltaBalance] MODO FRESH: la base anterior quedó en {backup}")
+        logger.info("MODO FRESH: la base anterior quedó en %s", backup)
     escribir_pref(PREF_SESION, None)
 
 

@@ -17,6 +17,7 @@ código nuevo (para una entidad nueva, el patrón correcto sigue siendo un
 repositorio dedicado).
 """
 
+import logging
 import os
 import sqlite3
 import shutil
@@ -27,7 +28,7 @@ from contextlib import contextmanager
 
 from db import schema_migrations
 
-
+logger = logging.getLogger(__name__)
 
 # =============================================================
 # RUTAS POR DEFECTO
@@ -172,9 +173,9 @@ class DatabaseManager:
         if not ya_existia:
             with open(self.seed_path, "r", encoding="utf-8") as f:
                 conn.executescript(f.read())
-            print(f"[DeltaBalance] Base de datos inicializada en: {self.db_path}")
+            logger.info("Base de datos inicializada en: %s", self.db_path)
         else:
-            print(f"[DeltaBalance] Base de datos ya existente en: {self.db_path}")
+            logger.debug("Base de datos ya existente en: %s", self.db_path)
 
     def esta_inicializada(self) -> bool:
         """Verifica si la DB existe y tiene las tablas principales."""
@@ -203,7 +204,7 @@ class DatabaseManager:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         destino = destino or self.db_path.parent / f"deltabalance_backup_{ts}.db"
         shutil.copy2(self.db_path, destino)
-        print(f"[DeltaBalance] Backup creado en: {destino}")
+        logger.info("Backup creado en: %s", destino)
         return destino
 
     def eliminar_db(self):
@@ -211,7 +212,7 @@ class DatabaseManager:
         self.desconectar()
         if self.db_path.exists():
             self.db_path.unlink()
-            print(f"[DeltaBalance] Base de datos eliminada: {self.db_path}")
+            logger.info("Base de datos eliminada: %s", self.db_path)
 
     # ----------------------------------------------------------
     # UTILIDAD INTERNA
