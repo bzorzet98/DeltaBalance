@@ -37,10 +37,10 @@ Capas y responsabilidades:
 - **Montos en enteros** en unidad menor (centavos) — evita errores de float
 - **Tasas y porcentajes en basis points** — mismo principio que los montos
 - **Saldos derivados**, nunca guardados — calculados desde transacciones
-- **Borrado lógico** con `deleted_at` — necesario para sync y auditoría
+- **Borrado lógico** — hoy `deleted_at` aplica solo a `transacciones`; el resto usa `activa = 0`. Decisión tomada: unificar todo a `deleted_at` para consistencia y compatibilidad con sync.
 - **WAL mode** — escrituras concurrentes seguras entre UI y sync
 - **Snapshots mensuales** — caché de saldos para evitar sumar toda la historia
-- **Claves naturales para monedas** — ARS, USD, BTC como identificadores
+- **Claves de monedas:** hoy las FK usan id entero — la coincidencia entre bases depende del orden del seed. Decisión tomada: migrar a clave natural por código (ARS, USD, BTC).
 
 ## 5. Sincronización
 
@@ -73,3 +73,9 @@ Cuando un gasto compartido llega a la base del otro usuario, las referencias (ca
 - **Dashboard acoplado a nombres de categorías** — migrar a `tipo_especial`.
 - **Dos APIs de ahorro en paralelo** — unificar.
 - **`sync/` importa `ui.utils.prefs`** — dependencia invertida a corregir.
+- **Soft delete no unificado:** algunas tablas usan `activa = 0`, otras `deleted_at`. **Decisión tomada:** migrar todo a `deleted_at` para consistencia y compatibilidad con sync.
+- **FK de monedas usa id entero** — la coincidencia entre bases depende del orden del seed. **Decisión tomada:** migrar a clave natural por código (ARS, USD, BTC).
+- **Tabla `autotransferencias` acoplada innecesariamente. Decisión tomada:** eliminar la tabla. La lógica pasa a ser un diálogo en el Registro que genera dos filas normales en `transacciones` cuando la categoría es AUTOTRANSFERENCIA.
+- **Services sin pantalla ni sync** (`empleos`, `recibos_sueldo`, `descuentos_programados`, `prestamos`, `cuotas_prestamo`): repositorios y services existen pero las tablas no se sincronizan. **Decisión tomada:** documentar como versión futura. No se tocan hasta que se decida implementar esas funcionalidades.
+- **Borrado lógico incompleto:** `deleted_at` aplica solo a `transacciones`. El resto del modelo usa `activa = 0`. Ver decisión de soft delete arriba.
+- **`autotransferencias` no se sincroniza:** en otra computadora las dos patas de una transferencia llegan sin el vínculo que las une. Resuelto por la decisión de eliminar la tabla.
