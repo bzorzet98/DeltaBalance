@@ -125,6 +125,7 @@ que pasar a la UI con page.run_task().
 """
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -143,6 +144,8 @@ from sync.auth import AuthService
 from sync.referencias import MARCA_REFERENCIAS, ReferenciasCompartidas
 from sync.supabase_client import get_client
 from ui.utils.prefs import escribir_pref, leer_pref
+
+logger = logging.getLogger(__name__)
 
 # Las del pedido + las que dependen de ellas (sin sus cuotas / saldos, una
 # compra o una cuenta llegaría incompleta a Supabase). Y Ahorros (pedido del
@@ -165,8 +168,6 @@ LOTE = 500
 # propia base: sincronizado_en y el trigger de updated_en).
 COLUMNAS_SIN_COMPARAR = ("sincronizado_en", "updated_en")
 MAX_ERRORES_EN_MENSAJE = 3
-# Log de consola (mismo estilo que db/database.py): qué sube y baja cada tabla.
-PREFIJO_LOG = "[DeltaBalance][SYNC]"
 
 # Marcas dentro de `datos` (no son columnas: guardar_fila() las ignora).
 MARCA_BORRADO = "_borrado"
@@ -474,13 +475,13 @@ class SyncEngine:
         if self._usuario_fijo is not None:
             return self._usuario_fijo
         # TODO: DEBUG temporal para diagnosticar la app empaquetada — sacar junto
-        # con los print("[DEBUG] ...") de sync/supabase_client.py.
-        print(f"{PREFIJO_LOG}[DEBUG] sesión guardada: {self._auth is not None and self._auth.is_logged_in()}", flush=True)
-        print(f"{PREFIJO_LOG}[DEBUG] user_id: {self._auth.get_user_id() if self._auth else None}", flush=True)
+        # con los logger.debug() de sync/supabase_client.py.
+        logger.debug("sesión guardada: %s", self._auth is not None and self._auth.is_logged_in())
+        logger.debug("user_id: %s", self._auth.get_user_id() if self._auth else None)
         if self._auth is None or not self._auth.is_logged_in():
             raise _SinSesion()
         renovada = self._auth.refresh_session()  # sin conexión: la excepción sube
-        print(f"{PREFIJO_LOG}[DEBUG] refresh_session: {renovada}", flush=True)
+        logger.debug("refresh_session: %s", renovada)
         if not renovada:
             raise _SinSesion()
         usuario_id = self._auth.get_user_id()
@@ -521,7 +522,7 @@ class SyncEngine:
             mensaje=mensaje, duracion_segundos=time.perf_counter() - inicio,
         )
         self.ultimo_resultado = resultado
-        print(f"{PREFIJO_LOG} TOTAL: {mensaje} ({resultado.duracion_segundos:.1f} s)")
+        logger.info("TOTAL: %s (%.1f s)", mensaje, resultado.duracion_segundos)
         self._cambiar_estado(estado)
         return resultado
 
@@ -545,7 +546,7 @@ class SyncEngine:
         # Una vez por base (docstring, REFERENCIAS); también si falta la del concepto del origen.
         reparar = repo.estado(REPARACION_REFERENCIAS) is None or repo.estado(REPARACION_CONCEPTOS) is None
         if primera:
-            print(f"{PREFIJO_LOG} usuario {usuario_id}: PRIMERA sincronización de esta base — se baja TODO (gana lo remoto)")
+            logger.debug("usuario %s: PRIMERA sincronización de esta base — se baja TODO (gana lo remoto)", usuario_id)
             desde = None  # una marca suelta no vale para una base que nunca sincronizó
             bajada_completa = self._bajar_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, None, c, primera=True)
             self._aplicar_borrados(repo, c, primera=True)
@@ -561,9 +562,9 @@ class SyncEngine:
                 # last-write-wins — NO como restauración, que pisaría con lo
                 # remoto lo editado acá que todavía no subió.
                 desde = EPOCA
-                print(f"{PREFIJO_LOG} usuario {usuario_id}: sin marca de esta base — se baja TODO (last-write-wins)")
+                logger.debug("usuario %s: sin marca de esta base — se baja TODO (last-write-wins)", usuario_id)
             else:
-                print(f"{PREFIJO_LOG} usuario {usuario_id}: se bajan los cambios posteriores a {desde}")
+                logger.debug("usuario %s: se bajan los cambios posteriores a %s", usuario_id, desde)
             self._subir_tablas(repo, TABLAS_SINCRONIZADAS, usuario_id, c)
             bajada_completa = self._bajar_tablas(
                 repo, TABLAS_SINCRONIZADAS, usuario_id, desde, c, compartidas_desde_cero=reparar,
@@ -578,7 +579,7 @@ class SyncEngine:
             # Una compartida quedó sin bajar (ver docstring del módulo): la
             # marca no se mueve. Volver a bajar lo demás no cambia nada
             # (_debe_aplicarse() saltea lo que ya está igual).
-            print(f"{PREFIJO_LOG} usuario {usuario_id}: bajada incompleta — la marca de bajada no se mueve")
+            logger.debug("usuario %s: bajada incompleta — la marca de bajada no se mueve", usuario_id)
             return
         # Al final, recién con todo bajado: si algo falla antes, la excepción
         # salta esta línea y la próxima vuelve a bajar desde la marca anterior.
@@ -600,8 +601,10 @@ class SyncEngine:
         nuevas = [t for t in sin_anotar if not any(fila.get("sincronizado_en") for fila in repo.todas(t))]
         completa = True
         if nuevas:
-            print(f"{PREFIJO_LOG} usuario {usuario_id}: tablas que esta base nunca bajó — se bajan enteras antes de subir: "
-                  f"{', '.join(nuevas)}")
+            logger.debug(
+                "usuario %s: tablas que esta base nunca bajó — se bajan enteras antes de subir: %s",
+                usuario_id, ", ".join(nuevas),
+            )
             completa = self._bajar_tablas(repo, nuevas, usuario_id, None, c)
             self._aplicar_borrados(repo, c)
         self._anotar_bajadas(repo, [t for t in sin_anotar if completa or t not in TABLAS_COMPARTIDAS])
@@ -662,10 +665,9 @@ class SyncEngine:
     def _rechazo_compartida(tabla: str, paso: str, err: APIError, c: _Contadores) -> None:
         """Supabase rechazó una tabla compartida: cuenta como error y la sync sigue (ver docstring del módulo)."""
         c.error(f"{tabla}: Supabase rechazó {paso} ({err.code}: {err.message})")
-        print(
-            f"{PREFIJO_LOG} {tabla}: ADVERTENCIA — Supabase rechazó {paso} la tabla compartida, "
-            f"se sigue con las demás. {err.code}: {err.message}",
-            flush=True,
+        logger.warning(
+            "%s: ADVERTENCIA — Supabase rechazó %s la tabla compartida, se sigue con las demás. %s: %s",
+            tabla, paso, err.code, err.message,
         )
 
     # ----------------------------------------------------------
@@ -721,7 +723,7 @@ class SyncEngine:
                     a_subir.append(entrada)
             subidas += self._subir_entradas(repo, tabla, usuario_id, a_subir, leido_en, c)
         if pendientes:
-            print(f"{PREFIJO_LOG} {tabla}: {len(pendientes)} pendiente(s), {subidas} subida(s)")
+            logger.debug("%s: %d pendiente(s), %d subida(s)", tabla, len(pendientes), subidas)
         return subidas
 
     def _subir_entradas(
@@ -854,10 +856,10 @@ class SyncEngine:
                         bajadas += 1
                         insertadas += 0 if existia else 1
         borradas =sum(1 for t, _ in c.borrados if t == tabla)
-        print(
-            f"{PREFIJO_LOG} {tabla}: {len(remotas)} fila(s) en Supabase → {insertadas} insertada(s), "
-            f"{bajadas - insertadas} actualizada(s)"
-            + (f", {borradas} borrado(s) a aplicar" if borradas else "")
+        logger.debug(
+            "%s: %d fila(s) en Supabase → %d insertada(s), %d actualizada(s)%s",
+            tabla, len(remotas), insertadas, bajadas - insertadas,
+            f", {borradas} borrado(s) a aplicar" if borradas else "",
         )
         return bajadas
 
@@ -965,7 +967,7 @@ class SyncEngine:
                 self._rechazo_compartida(tabla, "reparar", err, c)
                 completa = False
                 continue
-            print(f"{PREFIJO_LOG} {tabla}: {len(parches)} fila(s) completada(s) con {MARCA_REFERENCIAS}")
+            logger.debug("%s: %d fila(s) completada(s) con %s", tabla, len(parches), MARCA_REFERENCIAS)
         return completa
 
     # ----------------------------------------------------------
