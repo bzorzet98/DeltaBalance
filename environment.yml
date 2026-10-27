@@ -8,9 +8,8 @@ dependencies:
   - pip:
     - flet                # UI desktop
     - flet-charts
-    - fastapi             # API futura
-    - uvicorn             # servidor FastAPI
-    - pydantic            # validación de datos
     - pytest              # tests
+    - keyring
+    - openpyxl
     - supabase            # sincronización (sync/)
     - python-dotenv       # credenciales de Supabase desde .env
