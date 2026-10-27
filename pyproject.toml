@@ -42,6 +42,7 @@ exclude = [
     "verify",
     "lab",
     "tests",
+    "sync/tests",
     "docs",
     ".env",
     ".deltabalance_prefs.json",
