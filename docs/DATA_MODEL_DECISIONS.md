@@ -1249,7 +1249,7 @@ protegida hasta correr el script.
 
 **Quedan con los nombres viejos** (no se tocaron): los scripts históricos de
 `migration/` (`agregar_categoria_*.py`, `migrar_*.py` — no volver a correrlos sobre una
-base migrada) y `sync/tests/` (pytest, fuera del flujo de `verify/`).
+base migrada) y `tests/` (pytest, fuera del flujo de `verify/`).
 
 ## 31. Objetivos de ahorro por movimiento — ✅ implementado (sin cambio de schema)
 

@@ -1,5 +1,5 @@
 """
-DeltaBalance — tests/test_fees_service.py
+DeltaBalance — tests/test_compras_cuotas_service.py
 
 Full test suite for services/compras_cuotas_service.py.
 
@@ -12,8 +12,8 @@ Coverage:
     - cancel_purchase
 
 Run:
-    pytest tests/test_fees_service.py -v
-    pytest tests/test_fees_service.py -v -k "TestStatement"
+    pytest tests/test_compras_cuotas_service.py -v
+    pytest tests/test_compras_cuotas_service.py -v -k "TestStatement"
 """
 
 import pytest
@@ -32,7 +32,7 @@ from services.compras_cuotas_service import (
     FeeAlreadyConfirmedError,
 )
 
-from sync.tests.helpers import make_purchase, full_statement_cycle
+from tests.helpers import make_purchase, full_statement_cycle
 
 # =============================================================
 # PATHS

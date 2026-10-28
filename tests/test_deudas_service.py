@@ -1,5 +1,5 @@
 """
-DeltaBalance — tests/test_debts_service.py
+DeltaBalance — tests/test_deudas_service.py
 
 Full test suite for services/deudas_service.py.
 
@@ -11,8 +11,8 @@ Coverage:
     - Write off (active → incobrable, settled guard)
 
 Run:
-    pytest tests/test_debts_service.py -v
-    pytest tests/test_debts_service.py -v -k "TestPayment"
+    pytest tests/test_deudas_service.py -v
+    pytest tests/test_deudas_service.py -v -k "TestPayment"
 """
 
 import pytest
@@ -26,7 +26,7 @@ from services.deudas_service import (
     DebtAlreadySettledError,
     PaymentExceedsBalanceError,
 )
-from sync.tests.helpers import make_debt, make_payment
+from tests.helpers import make_debt, make_payment
 
 # =============================================================
 # PATHS
