@@ -5,7 +5,7 @@ Verifica CuotasCreditoRepository (repositories/cuotas_credito_repository.py):
 crear_lote (standalone y con conn + rollback simulado), obtener_por_id,
 listar_por_compra, listar_por_mes con filtros cruzados (incluye/excluye por
 mes/año/estado), y las TRES transiciones de estado reales relevadas en
-services/fees_service.py, cada una probada como la transición específica
+services/compras_cuotas_service.py, cada una probada como la transición específica
 que dispara su método real — no solo "cambia de estado":
 
     marcar_estado()              → pendiente → en_resumen  (confirm_fee)

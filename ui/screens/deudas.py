@@ -1,7 +1,7 @@
 """
 DeltaBalance — ui/screens/deudas.py
 
-Deudas informales en dos TABS (services/debts_service.py,
+Deudas informales en dos TABS (services/deudas_service.py,
 docs/DATA_MODEL_DECISIONS.md sección 22): barra de título (búsqueda +
 período) → switch ME DEBEN / DEBO → barra "saldo neto por persona" del tab
 activo → tabla (TablaPlanilla, ui/components/tabla_planilla.py) con fila de
@@ -84,8 +84,8 @@ from typing import Any, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService
-from services.debts_service import TABS, DebtError, DebtsService
+from services.cuentas_service import AccountsService
+from services.deudas_service import TABS, DebtError, DebtsService
 from services.snapshots_service import SnapshotsService
 from ui.components.campo_monto import CampoMonto
 from ui.components.saldo_anterior import TEXTO_SALDO_ANTERIOR, TOOLTIP_SALDO_ANTERIOR, boton_recalcular

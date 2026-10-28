@@ -3,7 +3,7 @@ verify/ahorros/verify_movimientos_manuales.py
 
 Verifica lo que agrega la tabla de movimientos de Ahorros e Inversiones
 (ui/screens/ahorros.py, carga a mano de datos históricos) en
-services/savings_service.py:
+services/ahorros_service.py:
 
 1. registrar_*(crear_transaccion=False): el movimiento queda informal
    (transaccion_id NULL) aunque el activo tenga cuenta — y sin el flag,
@@ -34,7 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
-from services.savings_service import MovimientoNotFoundError, SavingsError, SavingsService
+from services.ahorros_service import MovimientoNotFoundError, SavingsError, SavingsService
 
 
 def main() -> None:

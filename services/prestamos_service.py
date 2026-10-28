@@ -1,5 +1,5 @@
 """
-DeltaBalance — services/loans_service.py
+DeltaBalance — services/prestamos_service.py
 
 Purpose:
     Domain service for hard loans (prestamos: hipotecario/prendario/

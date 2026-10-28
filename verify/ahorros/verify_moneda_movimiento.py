@@ -2,7 +2,7 @@
 verify/ahorros/verify_moneda_movimiento.py
 
 Verifica la moneda por movimiento de Ahorros e Inversiones
-(docs/DATA_MODEL_DECISIONS.md sección 33) en services/savings_service.py:
+(docs/DATA_MODEL_DECISIONS.md sección 33) en services/ahorros_service.py:
 
 1. CEDEAR en ARS: compra sin moneda explícita → la del activo; compra y
    venta en USD → guardadas en USD. Compra / venta por MONTO bruto: el total
@@ -31,7 +31,7 @@ from db.database import DatabaseManager
 from db.schema_migrations import MIGRACIONES_COLUMNA
 from repositories.cuentas_repository import CuentasRepository
 from repositories.movimientos_activo_repository import MovimientosActivoRepository
-from services.savings_service import SavingsError, SavingsService
+from services.ahorros_service import SavingsError, SavingsService
 
 
 def main() -> None:

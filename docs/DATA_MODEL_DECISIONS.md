@@ -21,7 +21,7 @@ Tabla `gastos_compartidos`, generalizada con `origen_tipo` ∈
   `SharedExpensesService.add_shared_purchase(compra_id, hogar_id, pagador,
   coeficiente_deuda)`. Estas columnas estuvieron en el schema mucho tiempo sin
   ningún método que las usara — confirmado por lectura de
-  `services/shared_expenses_service.py` y `services/fees_service.py` antes de
+  `services/gastos_compartidos_service.py` y `services/compras_cuotas_service.py` antes de
   escribirlo, no había ninguna orquestación real. Vive en `SharedExpensesService`
   (no en `FeesService`) porque el resultado son filas de `gastos_compartidos`, tabla
   que ya posee ese service; lee `ComprasCuotasRepository`/`CuotasCreditoRepository`
@@ -1225,9 +1225,9 @@ Dry-run por default; `--confirmar` se niega si la app tiene la base abierta, hac
 
 **Código que reconoce categorías por nombre:** `CATEGORIAS_PROTEGIDAS`
 (`services/categorias_service.py`), `CATEGORIAS_CARGO_EXTRA`
-(`services/fees_service.py`), el routing del Registro
+(`services/compras_cuotas_service.py`), el routing del Registro
 (`ui/components/registro_transacciones.py`), la categoría de ahorro
-(`services/savings_service.py`) y la migración de cargos extra
+(`services/ahorros_service.py`) y la migración de cargos extra
 (`db/schema_migrations.py`) usan los nombres nuevos y comparan con
 `utils/categorias.py clave_categoria()`: sin espacios de más y en mayúsculas, en Python
 (`UPPER()` de SQLite no pasa la Ó). Así reconocen igual una base todavía sin migrar

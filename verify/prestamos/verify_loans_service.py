@@ -1,7 +1,7 @@
 """
 verify/prestamos/verify_loans_service.py
 
-Verifica LoansService (services/loans_service.py) — creado desde cero en
+Verifica LoansService (services/prestamos_service.py) — creado desde cero en
 Fase 2, bloque PRESTAMOS paso 2, sin comportamiento previo que replicar.
 
 Cubre create_loan() en los dos sistemas de amortización:
@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from services.loans_service import (
+from services.prestamos_service import (
     LoansService,
     LoansError,
     PrestamoNotFoundError,

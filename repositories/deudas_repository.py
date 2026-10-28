@@ -10,7 +10,7 @@ es SUM(monto_minor). No hay pendiente, estado ni tabla de pagos.
 
 Sin lógica de negocio: no valida el tab, no normaliza el nombre de la
 persona, no decide nada sobre el signo — eso vive en
-services/debts_service.py. Recibe moneda_id y montos ya resueltos en minor
+services/deudas_service.py. Recibe moneda_id y montos ya resueltos en minor
 units.
 
 Las lecturas traen la fila enriquecida con la moneda (currency_code,

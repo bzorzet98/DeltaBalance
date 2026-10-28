@@ -38,7 +38,7 @@ gana, salvo que el usuario diga explícitamente lo contrario en ese prompt.
   services existentes usan inglés) — no mezclar los dos estilos dentro de un mismo
   archivo nuevo, elegir uno y ser consistente.
 - **Excepciones propias por dominio**, siguiendo el patrón ya usado en
-  `services/debts_service.py` y `services/fees_service.py` (una clase base de error del
+  `services/deudas_service.py` y `services/compras_cuotas_service.py` (una clase base de error del
   dominio + subclases específicas).
 - **Todo texto visible al usuario en MAYÚSCULAS.** Labels, headers de tabla, opciones de
   dropdown, títulos de sección, botones, tooltips — todo en mayúsculas. Aplicar

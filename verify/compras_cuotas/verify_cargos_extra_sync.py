@@ -35,7 +35,7 @@ from db.database import DatabaseManager
 from db.schema_migrations import migrar_cargos_extra_a_compras
 from repositories.cuentas_repository import CuentasRepository
 from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
-from services.fees_service import (
+from services.compras_cuotas_service import (
     FeesError,
     FeesService,
     StatementAlreadyClosedError,

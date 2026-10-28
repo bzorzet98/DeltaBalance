@@ -12,7 +12,7 @@ eliminar_por_activo(), al borrar un objetivo (sección 32) o un instrumento
 (sección 35): la FK lo exige.
 
 Sin lógica de negocio: no decide cuándo se puede asignar ni reparte montos
-— eso vive en services/savings_service.py. validar_porcentajes() solo
+— eso vive en services/ahorros_service.py. validar_porcentajes() solo
 consulta la suma (la regla "<= 100" no entra en un CHECK de SQLite: ver el
 comentario de la tabla en db/schema.sql); quien escribe la llama dentro de
 su propia transacción y decide qué hacer.

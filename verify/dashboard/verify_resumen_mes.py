@@ -56,11 +56,11 @@ from services.dashboard_service import (
     ORIGEN_REGISTRO,
     DashboardService,
 )
-from services.debts_service import DebtsService
-from services.fees_service import FeesService
+from services.deudas_service import DebtsService
+from services.compras_cuotas_service import FeesService
 from services.ingresos_service import IngresosService
 from services.presupuestos_service import PresupuestosService
-from services.shared_expenses_service import SharedExpensesService
+from services.gastos_compartidos_service import SharedExpensesService
 
 MES, ANIO = 10, 2026
 

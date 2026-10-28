@@ -38,7 +38,7 @@ from verify._dummy_db import crear_dummy_db
 from verify.sync._fake_supabase import FakeSupabase, MarcasEnMemoria
 from db.database import DatabaseManager
 from db.schema_migrations import TABLAS_SINCRONIZADAS
-from services.savings_service import SavingsService
+from services.ahorros_service import SavingsService
 from sync.sync_engine import PREFIJO_TABLA_BAJADA, SyncEngine
 
 BRUNO = "f5ca8a42-a039-4a46-998e-2b01dbb28e9c"

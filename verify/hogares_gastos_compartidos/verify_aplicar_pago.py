@@ -14,7 +14,7 @@ Cubre:
   - aplicar_pago() que completa el pendiente exacto: saldado=True.
   - aplicar_pago() con monto que supera el pendiente: se CLAMPEA al
     pendiente exacto (decisión de diseño, ver docstring de aplicar_pago()
-    en services/shared_expenses_service.py) — confirma ajustado=True y que
+    en services/gastos_compartidos_service.py) — confirma ajustado=True y que
     el monto realmente persistido es el pendiente, no el solicitado.
   - aplicar_pago() con tipo_pago='compensacion' sin transaccion_id: válido,
     se persiste igual (transaccion_id queda NULL).
@@ -54,7 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
-from services.shared_expenses_service import (
+from services.gastos_compartidos_service import (
     SharedExpensesService,
     GastoCompartidoNotFoundError,
     GastoCompartidoYaSaldadoError,

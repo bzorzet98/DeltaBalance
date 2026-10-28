@@ -1,7 +1,7 @@
 """
 DeltaBalance — tests/test_fees_service.py
 
-Full test suite for services/fees_service.py.
+Full test suite for services/compras_cuotas_service.py.
 
 Coverage:
     - create_purchase (fee generation, minor units, validations, year wraparound)
@@ -21,7 +21,7 @@ from pathlib import Path
 from datetime import datetime
 
 from db.database import DatabaseManager, to_minor, from_minor
-from services.fees_service import (
+from services.compras_cuotas_service import (
     FeesService,
     FeesResult,
     FeesError,

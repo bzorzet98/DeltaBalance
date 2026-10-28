@@ -104,7 +104,7 @@ usuario, no una validación del sistema); solo el 0 se rechaza.
   signo: negativo = devolución), la cantidad de cuotas, la 1ª cuota y el
   tag (vacío = None) tal cual se cargaron.
 - Categoría ESPECIAL ("IMPUESTO TARJETA"/"RECARGO TARJETA"/
-  "AJUSTE/REINTEGRO TARJETA", services/fees_service.py
+  "AJUSTE/REINTEGRO TARJETA", services/compras_cuotas_service.py
   CATEGORIAS_CARGO_EXTRA, por nombre sin distinguir mayúsculas —
   charge_type_de_categoria()): NO crea una compra — resuelve el resumen de esa
   tarjeta del mes de la 1ª cuota (FeesService.open_statement(),
@@ -206,10 +206,10 @@ from typing import Any, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.categorias_service import CategoriasService
-from services.fees_service import FeesError, FeesService, charge_type_de_categoria
-from services.shared_expenses_service import SharedExpensesService
+from services.compras_cuotas_service import FeesError, FeesService, charge_type_de_categoria
+from services.gastos_compartidos_service import SharedExpensesService
 from ui.components import compartir_compra
 from ui.components.campo_monto import CampoMonto
 from ui.components.compartir_varios import abrir_compartir_varios

@@ -1,7 +1,7 @@
 """
 verify/hogares_gastos_compartidos/verify_shared_expenses_service.py
 
-Verifica SharedExpensesService (services/shared_expenses_service.py) —
+Verifica SharedExpensesService (services/gastos_compartidos_service.py) —
 creado desde cero en Fase 2, bloque HOGARES / GASTOS COMPARTIDOS paso 2,
 sin comportamiento previo que replicar.
 
@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from services.shared_expenses_service import (
+from services.gastos_compartidos_service import (
     SharedExpensesService,
     SharedExpensesError,
     HogarNotFoundError,

@@ -137,14 +137,14 @@ from typing import Any, Callable, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.categorias_service import CategoriasService
-from services.debts_service import TABS as TABS_DEUDA
-from services.debts_service import DebtError, DebtsService
-from services.savings_service import SavingsError, SavingsService
-from services.shared_expenses_service import SharedExpensesService
+from services.deudas_service import TABS as TABS_DEUDA
+from services.deudas_service import DebtError, DebtsService
+from services.ahorros_service import SavingsError, SavingsService
+from services.gastos_compartidos_service import SharedExpensesService
 from services.snapshots_service import SnapshotsService
-from services.transaction_service import TransactionError, TransactionService
+from services.transacciones_service import TransactionError, TransactionService
 from sync.sync_engine import (
     ESTADO_SIN_CONEXION,
     ESTADO_SIN_SESION,

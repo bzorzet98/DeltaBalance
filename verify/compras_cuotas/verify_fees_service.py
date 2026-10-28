@@ -38,7 +38,7 @@ detalle del modelo nuevo está en verify_cargos_extra_sync.py.
 
 fees_by_month()/fees_projection() NO se prueban acá con el mismo detalle
 porque no migraron (siguen siendo reportes agregados directos, ver nota en
-services/fees_service.py) — sí se confirma que siguen funcionando sin
+services/compras_cuotas_service.py) — sí se confirma que siguen funcionando sin
 romperse.
 
 Correlo con:
@@ -53,7 +53,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
-from services.fees_service import (
+from services.compras_cuotas_service import (
     FeesService,
     FeesError,
     PurchaseNotFoundError,

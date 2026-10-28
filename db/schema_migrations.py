@@ -993,7 +993,7 @@ def _sembrar_brokers(conn: sqlite3.Connection) -> None:
 # su tipo, y su cuota en cuotas_credito en el mes del resumen, ya incluida
 # en él. compras_cuotas y cuotas_credito sí se sincronizan.
 #
-# Copia CONGELADA de services/fees_service.py CATEGORIAS_CARGO_EXTRA (tipo →
+# Copia CONGELADA de services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA (tipo →
 # categoría especial): db/ no importa services/ (es al revés), y una
 # migración de datos no tiene que cambiar si después cambia el código vivo.
 CATEGORIA_DE_CARGO_MIGRACION: dict[str, tuple[str, str]] = {
