@@ -5,9 +5,9 @@ Clave de una categoría por su NOMBRE — (categoria_principal, subcategoria)
 sin espacios de más y en mayúsculas —, para el código que reconoce
 categorías especiales por nombre y no por id (el id varía entre bases):
 CATEGORIAS_PROTEGIDAS (services/categorias_service.py),
-CATEGORIAS_CARGO_EXTRA (services/fees_service.py), el routing del Registro
+CATEGORIAS_CARGO_EXTRA (services/compras_cuotas_service.py), el routing del Registro
 (ui/components/registro_transacciones.py), la categoría de ahorro
-(services/savings_service.py) y la migración de cargos extra
+(services/ahorros_service.py) y la migración de cargos extra
 (db/schema_migrations.py).
 
 Comparar las claves y no los textos tal cual hace que "Impuesto tarjeta" y

@@ -30,9 +30,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
-from services.debts_service import DebtsService
-from services.fees_service import FeesError, FeesService, PurchaseNotFoundError
-from services.shared_expenses_service import SharedExpensesService
+from services.deudas_service import DebtsService
+from services.compras_cuotas_service import FeesError, FeesService, PurchaseNotFoundError
+from services.gastos_compartidos_service import SharedExpensesService
 
 
 def main() -> None:

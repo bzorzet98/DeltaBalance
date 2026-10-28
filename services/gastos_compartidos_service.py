@@ -1,5 +1,5 @@
 """
-DeltaBalance — services/shared_expenses_service.py
+DeltaBalance — services/gastos_compartidos_service.py
 
 Purpose:
     Domain service for households (hogares), their members (hogar_miembros)
@@ -37,7 +37,7 @@ Purpose:
     compartidas"): orquesta compartir una compra en cuotas completa según
     su modo_deuda (total_unico / prorrateado, columnas del schema que
     existían desde hace tiempo pero no tenían ninguna orquestación real
-    todavía — confirmado por lectura de este archivo y de fees_service.py
+    todavía — confirmado por lectura de este archivo y de compras_cuotas_service.py
     antes de escribirlo). Lee ComprasCuotasRepository/CuotasCreditoRepository
     (propiedad de FeesService) solo para lectura, nunca escribe esas
     tablas — ver docstring del método para el detalle de ambos modos.
@@ -464,7 +464,7 @@ class SharedExpensesService:
         modo_deuda/monto_reintegro_minor desde hace tiempo, ver
         docs/DATA_MODEL_DECISIONS.md sección 2) y la UI, que hasta ahora
         solo podía compartir transacciones sueltas vía add_shared_expense().
-        Confirmado por lectura de este archivo y de fees_service.py antes
+        Confirmado por lectura de este archivo y de compras_cuotas_service.py antes
         de escribir esto: no existía ninguna orquestación de este tipo.
 
         Vive en SharedExpensesService (no en FeesService) porque el

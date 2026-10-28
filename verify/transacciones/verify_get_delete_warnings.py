@@ -23,8 +23,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
-from services.transaction_service import TransactionService
-from services.savings_service import SavingsService
+from services.transacciones_service import TransactionService
+from services.ahorros_service import SavingsService
 
 
 def main() -> None:

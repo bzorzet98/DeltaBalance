@@ -1,7 +1,7 @@
 """
 verify/ahorros/verify_savings_service.py
 
-Verifica SavingsService (services/savings_service.py) — creado desde cero
+Verifica SavingsService (services/ahorros_service.py) — creado desde cero
 en Fase 2, bloque AHORROS paso 2, sin comportamiento previo que replicar.
 
 Cubre:
@@ -79,7 +79,7 @@ from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
 from repositories.asignaciones_repository import AsignacionesRepository
-from services.savings_service import (
+from services.ahorros_service import (
     SavingsService,
     SavingsError,
     ActivoNotFoundError,
@@ -675,7 +675,7 @@ def main() -> None:
     )
     # get_balance_por_tipo() agrupa por (tipo, moneda_id) de TODOS los
     # activos, no solo los "nuevos" de esta sección (ver su docstring en
-    # savings_service.py) — a diferencia de 'accion' arriba, 'cripto'/ARS
+    # ahorros_service.py) — a diferencia de 'accion' arriba, 'cripto'/ARS
     # NO está aislado: activo_2 ("Cripto Wallet", tipo='cripto',
     # moneda_id=moneda_ars, creado en la sección ACTIVOS/OBJETIVOS al
     # principio del script) ya venía acumulando saldo real en esta misma

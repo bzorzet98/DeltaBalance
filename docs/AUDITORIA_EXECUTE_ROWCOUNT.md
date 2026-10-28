@@ -53,7 +53,7 @@ referencia). Cada call site se clasificó en:
 
 Aparte, se relevaron (sin contarlos en las categorías de arriba, porque no
 son `self._db.execute()`/`self.execute()`) los `conn.execute(...)` directos
-sobre un `sqlite3.Connection` real en `services/fees_service.py` — esos
+sobre un `sqlite3.Connection` real en `services/compras_cuotas_service.py` — esos
 **no** pasan por el wrapper buggy, así que `cursor.rowcount` leído ahí
 directamente sí es confiable. Se incluyen como referencia/contraste al
 final.
@@ -112,11 +112,11 @@ existe pero nada lo lee.
 | `db/database.py` | 689 | `DatabaseManager.pagar_resumen_tarjeta()` (UPDATE cuotas en bloque) — mismo método. Sin callers activos. |
 | `db/database.py` | 782 | `DatabaseManager.registrar_pago_deuda()` — sin return. Sin callers activos. |
 | `db/database.py` | 949 | `DatabaseManager.aplicar_descuento_programado()` — sin return. Sin callers activos. |
-| `services/fees_service.py` | 742 | `FeesService.close_statement()` — sin capturar; el método arma `data`/`message` a partir de la fila leída ANTES del UPDATE (`statement`), no del valor de retorno de `execute()` |
+| `services/compras_cuotas_service.py` | 742 | `FeesService.close_statement()` — sin capturar; el método arma `data`/`message` a partir de la fila leída ANTES del UPDATE (`statement`), no del valor de retorno de `execute()` |
 
 15 de estos 24 están en `repositories/` (código activo, en uso por los
 services ya migrados); 8 en `db/database.py` (legacy, sin callers activos
-confirmados); 1 en `services/fees_service.py` (activo, pero el valor no se
+confirmados); 1 en `services/compras_cuotas_service.py` (activo, pero el valor no se
 usa).
 
 ## (c) NO AFECTADO — INSERT puro
@@ -144,7 +144,7 @@ usa).
 | `db/database.py` | 840 | `copiar_presupuesto()` (loop) — INSERT OR IGNORE presupuestos, no capturado |
 | `db/database.py` | 894 | `crear_recibo_sueldo()` — INSERT recibos_sueldo, capturado y retornado |
 | `db/database.py` | 929 | `crear_descuento_programado()` — INSERT descuentos_programados, capturado y retornado |
-| `services/fees_service.py` | 598 | `open_statement()` — INSERT resumenes_tarjeta, capturado y retornado como `stmt_id` |
+| `services/compras_cuotas_service.py` | 598 | `open_statement()` — INSERT resumenes_tarjeta, capturado y retornado como `stmt_id` |
 
 ## Ya corregido (no cuenta como pendiente)
 
@@ -153,7 +153,7 @@ usa).
 | `repositories/cuotas_credito_repository.py` | `marcar_estado_por_resumen()` (rama `conn=None`) | Corregido en la tarea anterior: usa `self._db.conn.execute(...)` directo + `cur.rowcount`, ya no pasa por `self._db.execute()`. |
 | `repositories/cuotas_credito_repository.py` | `marcar_estado_por_compra()` (rama `conn=None`) | Ídem. |
 
-## Referencia: `conn.execute()` directos en `services/fees_service.py`
+## Referencia: `conn.execute()` directos en `services/compras_cuotas_service.py`
 
 No pasan por `DatabaseManager.execute()`, así que no heredan el bug. Se
 listan porque el patrón usado en `cancel_purchase()` es exactamente el

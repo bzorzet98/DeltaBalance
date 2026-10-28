@@ -45,14 +45,14 @@ from typing import Callable
 
 import flet as ft
 
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.categorias_service import CategoriasService
 from services.dashboard_service import DashboardService
-from services.debts_service import DebtsService
-from services.savings_service import SavingsService
-from services.shared_expenses_service import SharedExpensesService
+from services.deudas_service import DebtsService
+from services.ahorros_service import SavingsService
+from services.gastos_compartidos_service import SharedExpensesService
 from services.snapshots_service import SnapshotsService
-from services.transaction_service import TransactionService
+from services.transacciones_service import TransactionService
 from ui.components import registro_transacciones
 from ui.theme.tokens import TypographyTokens
 from utils.money import amount_display

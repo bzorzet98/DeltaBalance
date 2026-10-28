@@ -9,7 +9,7 @@ MIGRACIONES_TABLA, docs/DATA_MODEL_DECISIONS.md sección 29). Una fila por
 
 Sin lógica de negocio: no valida que la cuenta sea una tarjeta, que las
 fechas tengan sentido (vencimiento después del cierre) ni calcula fechas —
-eso vive en services/fees_service.py.
+eso vive en services/compras_cuotas_service.py.
 
 guardar() hace un upsert parcial: con NO_CAMBIAR (default) una fecha no se
 toca, con None se borra (vuelve a la calculada). updated_en lo escribe acá

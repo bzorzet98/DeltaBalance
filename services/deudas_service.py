@@ -1,5 +1,5 @@
 """
-DeltaBalance — services/debts_service.py
+DeltaBalance — services/deudas_service.py
 
 Deudas informales como LIBRO DE MOVIMIENTOS en dos tabs (estructura final,
 docs/DATA_MODEL_DECISIONS.md sección 22):

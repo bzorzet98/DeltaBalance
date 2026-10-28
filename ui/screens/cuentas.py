@@ -32,7 +32,7 @@ from typing import Callable, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService, AccountsError
+from services.cuentas_service import AccountsService, AccountsError
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.color_chip import color_chip
 

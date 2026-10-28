@@ -6,7 +6,7 @@ docs/PROXIMOS_PASOS.md): las tres categorías nuevas de db/seed.sql
 ("TARJETA DE CRÉDITO · Impuesto tarjeta / Recargo tarjeta /
 Ajuste-Reintegro tarjeta"), su protección en
 services/categorias_service.py CATEGORIAS_PROTEGIDAS, y el mapeo
-services/fees_service.py CATEGORIAS_CARGO_EXTRA.
+services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA.
 
 La decisión de ROUTEAR (create_purchase() vs. open_statement()+
 add_extra_charge()) vive en ui/screens/compras_cuotas.py, no en ningún
@@ -47,7 +47,7 @@ from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
 from services.categorias_service import CATEGORIAS_PROTEGIDAS
-from services.fees_service import CATEGORIAS_CARGO_EXTRA, FeesError, FeesService
+from services.compras_cuotas_service import CATEGORIAS_CARGO_EXTRA, FeesError, FeesService
 
 CATEGORIAS_ESPECIALES = [
     ("TARJETA DE CRÉDITO", "IMPUESTO TARJETA", "impuesto"),

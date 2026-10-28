@@ -40,10 +40,10 @@ from verify._dummy_db import SCHEMA_PATH, SEED_PATH, crear_dummy_db
 from db.database import DatabaseManager
 from db.schema_migrations import aplicar_migraciones_columna
 from migration.migrar_a_uuid_pk import crear_destino, migrar, preparar_origen
-from services.accounts_service import AccountsService
-from services.debts_service import DebtsService
-from services.fees_service import FeesService
-from services.transaction_service import TransactionService
+from services.cuentas_service import AccountsService
+from services.deudas_service import DebtsService
+from services.compras_cuotas_service import FeesService
+from services.transacciones_service import TransactionService
 
 UUID_V4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 SIN_UUID = {"monedas", "saldos_mensuales", "deudas_mensuales", "compartidos_mensuales", "sync_cambios", "sync_estado"}

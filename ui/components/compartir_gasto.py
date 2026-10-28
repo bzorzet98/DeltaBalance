@@ -15,7 +15,7 @@ para esa transacción puntual:
 
 Identidad del usuario local: la app todavía no tiene autenticación real
 (hogar_miembros.usuario_local es un string simple — auth con Supabase llega
-en una fase futura, ver docstring de services/shared_expenses_service.py).
+en una fase futura, ver docstring de services/gastos_compartidos_service.py).
 Mientras tanto, el nombre que te identifica en los hogares compartidos se
 guarda en page.client_storage, la primera vez que creás o te unís a un
 hogar desde acá — no hay pantalla de configuración separada para esto
@@ -42,7 +42,7 @@ from typing import Callable
 
 import flet as ft
 
-from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
+from services.gastos_compartidos_service import SharedExpensesError, SharedExpensesService
 from ui.components.reparto_compartido import RepartoCompartido
 from ui.components.tipo_valor import TIPO_COEFICIENTE
 from ui.components.usuario_local import abrir_dialogo_sin_hogar, obtener_usuario_local, ordenar_hogares

@@ -6,7 +6,7 @@ decide si una cuota "puede" pasar de un estado a otro, no calcula
 mes/año proyectado (eso lo hace FeesService.create_purchase() al armar el
 lote), no valida existencia de la compra ni del resumen.
 
-Transiciones de estado reales (relevadas en services/fees_service.py antes
+Transiciones de estado reales (relevadas en services/compras_cuotas_service.py antes
 de escribir este repositorio — Fase 2, COMPRAS_CUOTAS paso 1):
     pendiente → en_resumen   dispara FeesService.confirm_fee()
     en_resumen → pagado      dispara FeesService.pay_statement() (en BLOQUE,

@@ -1,5 +1,5 @@
 """
-DeltaBalance — services/fees_service.py
+DeltaBalance — services/compras_cuotas_service.py
 
 Purpose:
     Manages all credit installment operations: purchases made in N installments

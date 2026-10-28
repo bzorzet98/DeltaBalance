@@ -1,7 +1,7 @@
 """
 DeltaBalance — tests/test_debts_service.py
 
-Full test suite for services/debts_service.py.
+Full test suite for services/deudas_service.py.
 
 Coverage:
     - Create debts (a_favor / en_contra, validations, minor units)
@@ -19,7 +19,7 @@ import pytest
 from pathlib import Path
 
 from db.database import to_minor
-from services.debts_service import (
+from services.deudas_service import (
     DebtResult,
     DebtError,
     DebtNotFoundError,

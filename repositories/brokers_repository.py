@@ -6,7 +6,7 @@ activo financiero (COCOS, BULL MARKET, IOL…). Los iniciales los siembra
 db/schema_migrations.py (BROKERS_INICIALES).
 
 Sin lógica de negocio: no normaliza el nombre ni decide si un broker se
-puede usar — eso vive en services/savings_service.py. `brokers` no tiene
+puede usar — eso vive en services/ahorros_service.py. `brokers` no tiene
 `deleted_at` (tiene `activo`): SQL explícito, sin QueryBuilder.
 """
 

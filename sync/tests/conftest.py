@@ -5,9 +5,9 @@ from pathlib import Path
 
 from db.database import DatabaseManager
 
-from services.transaction_service import TransactionService
-from services.debts_service import DebtsService
-from services.fees_service import FeesService
+from services.transacciones_service import TransactionService
+from services.deudas_service import DebtsService
+from services.compras_cuotas_service import FeesService
 
 
 # =========================================================

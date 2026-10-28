@@ -53,8 +53,8 @@ from typing import Callable
 
 import flet as ft
 
-from services.fees_service import FeesService
-from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
+from services.compras_cuotas_service import FeesService
+from services.gastos_compartidos_service import SharedExpensesError, SharedExpensesService
 from ui.components.reparto_compartido import RepartoCompartido
 from ui.components.tipo_valor import TIPO_PORCENTAJE
 from ui.components.usuario_local import abrir_dialogo_sin_hogar, obtener_usuario_local, ordenar_hogares

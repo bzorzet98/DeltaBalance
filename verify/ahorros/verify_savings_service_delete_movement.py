@@ -1,7 +1,7 @@
 """
 verify/ahorros/verify_savings_service_delete_movement.py
 
-Verifica SavingsService.delete_movement() (services/savings_service.py,
+Verifica SavingsService.delete_movement() (services/ahorros_service.py,
 Parte B de la tarea de "borrado por fila" — Ahorros): borra el
 movimiento_activo y sus asignaciones, atómico; con
 eliminar_transaccion_vinculada=False (default) NO toca la transacción real
@@ -25,7 +25,7 @@ from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
 from repositories.transacciones_repository import TransaccionesRepository
-from services.savings_service import SavingsService, MovimientoNotFoundError
+from services.ahorros_service import SavingsService, MovimientoNotFoundError
 
 
 def main() -> None:

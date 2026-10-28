@@ -34,7 +34,7 @@ Las categorías que no están en MAPA_MIGRACION ni en CATEGORIAS_FINALES (ej.
 las creadas a mano) quedan como están y se listan al final.
 
 Nombres que usa el código: CATEGORIAS_PROTEGIDAS (services/
-categorias_service.py), CATEGORIAS_CARGO_EXTRA (services/fees_service.py),
+categorias_service.py), CATEGORIAS_CARGO_EXTRA (services/compras_cuotas_service.py),
 el routing del Registro y la categoría de ahorro reconocen las categorías
 por nombre SIN distinguir mayúsculas (utils/categorias.py
 clave_categoria()), con los nombres de CATEGORIAS_FINALES — funcionan antes

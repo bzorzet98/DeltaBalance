@@ -41,9 +41,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from db.schema_migrations import TABLAS_SINCRONIZADAS
-from services.accounts_service import AccountsService
-from services.debts_service import DebtsService
-from services.transaction_service import TransactionService
+from services.cuentas_service import AccountsService
+from services.deudas_service import DebtsService
+from services.transacciones_service import TransactionService
 from sync.sync_engine import ESTADO_SIN_CONEXION, ESTADO_SINCRONIZADO, TABLA_REMOTA, SyncEngine
 
 BRUNO = "f5ca8a42-a039-4a46-998e-2b01dbb28e9c"

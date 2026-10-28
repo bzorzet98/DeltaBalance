@@ -98,16 +98,16 @@ from typing import Callable, Iterator, Optional
 import flet as ft
 
 from db.database import DatabaseManager
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.categorias_service import CategoriasService
 from services.dashboard_service import DashboardService
-from services.debts_service import DebtsService
-from services.fees_service import FeesService
+from services.deudas_service import DebtsService
+from services.compras_cuotas_service import FeesService
 from services.presupuestos_service import PresupuestosService
-from services.savings_service import SavingsService
-from services.shared_expenses_service import SharedExpensesService
+from services.ahorros_service import SavingsService
+from services.gastos_compartidos_service import SharedExpensesService
 from services.snapshots_service import SnapshotsService
-from services.transaction_service import TransactionService
+from services.transacciones_service import TransactionService
 from services.ingresos_proyectados_service import IngresosProyectadosService
 from sync.auth import AuthService
 from sync.sync_engine import (

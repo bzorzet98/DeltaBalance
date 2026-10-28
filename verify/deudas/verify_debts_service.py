@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from services.debts_service import DebtError, DebtNotFoundError, DebtsService
+from services.deudas_service import DebtError, DebtNotFoundError, DebtsService
 
 
 def main() -> None:

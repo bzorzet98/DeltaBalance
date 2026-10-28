@@ -75,7 +75,7 @@ from typing import Any, Callable, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.ingresos_service import CLAVE_TOTAL, IngresoError, IngresosService
 from ui.components.campo_monto import CampoMonto
 from ui.components.tabla_planilla import (
