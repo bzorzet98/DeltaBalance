@@ -31,7 +31,7 @@ from services.transacciones_service import (
     CurrencyNotFoundError,
 )
 from utils.money import amount_display
-from sync.tests.helpers import make_expense
+from tests.helpers import make_expense
 
 # =============================================================
 # PATHS
