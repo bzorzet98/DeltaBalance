@@ -86,6 +86,7 @@ from typing import Any, Optional
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
 from utils.money import amount_display
+from utils.validaciones import validate_date
 from repositories._sentinels import NO_CAMBIAR
 from repositories.categorias_repository import CategoriasRepository
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
@@ -323,30 +324,8 @@ class FeesService:
             raise StatementNotFoundError(f"Statement id={statement_id} not found.")
         return row
 
-    @staticmethod
-    def _validate_date(date_str) -> str:
-        """
-        Validates and normalizes a date to 'YYYY-MM-DD'.
-        Accepts date/datetime objects or strings.
-
-        Args:
-            date_str: Date as string 'YYYY-MM-DD' or date/datetime object.
-
-        Returns:
-            Validated string in 'YYYY-MM-DD' format.
-
-        Raises:
-            ValueError for invalid formats.
-        """
-        if isinstance(date_str, (date, datetime)):
-            return date_str.strftime("%Y-%m-%d")
-        try:
-            datetime.strptime(date_str, "%Y-%m-%d")
-            return date_str
-        except ValueError:
-            raise ValueError(
-                f"Invalid date format: '{date_str}'. Expected 'YYYY-MM-DD'."
-            )
+    # Compartido con TransactionService (utils/validaciones.py).
+    _validate_date = staticmethod(validate_date)
 
     @staticmethod
     def _advance_month(month: int, year: int) -> tuple[int, int]:

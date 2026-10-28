@@ -62,9 +62,11 @@ pantallas los muestran tal cual.
 import sqlite3
 from dataclasses import dataclass
 from datetime import date
+from functools import partial
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from utils.validaciones import recurring_flag, validate_concept, validate_period
 from repositories.categorias_repository import CategoriasRepository
 from repositories.presupuestos_repository import PresupuestosRepository
 from utils.personas import normalizar_persona
@@ -145,12 +147,10 @@ class PresupuestosService:
     # VALIDACIONES
     # ----------------------------------------------------------
 
-    @staticmethod
-    def _concepto(concepto: Optional[str]) -> str:
-        limpio = " ".join((concepto or "").split()).upper()
-        if not limpio:
-            raise PresupuestoError("EL CONCEPTO NO PUEDE ESTAR VACÍO.")
-        return limpio
+    # Compartidos con IngresosService (utils/validaciones.py), con PresupuestoError.
+    _concepto = staticmethod(partial(validate_concept, error=PresupuestoError))
+    _periodo = staticmethod(partial(validate_period, error=PresupuestoError))
+    _recurrente = staticmethod(recurring_flag)
 
     @staticmethod
     def _monto(monto_minor: Any) -> int:
@@ -160,23 +160,10 @@ class PresupuestosService:
             raise PresupuestoError("EL MONTO NO PUEDE SER NEGATIVO.")
         return monto_minor
 
-    @staticmethod
-    def _periodo(mes: Any, anio: Any) -> tuple[int, int]:
-        for valor in (mes, anio):
-            if not isinstance(valor, int) or isinstance(valor, bool):
-                raise PresupuestoError(f"MES Y AÑO TIENEN QUE SER ENTEROS (RECIBIDO: {valor!r}).")
-        if not 1 <= mes <= 12:
-            raise PresupuestoError(f"EL MES TIENE QUE ESTAR ENTRE 1 Y 12 (RECIBIDO: {mes}).")
-        return mes, anio
-
     def _moneda(self, moneda_id: Any) -> int:
         if moneda_id not in {fila["id"] for fila in self._db.obtener_monedas()}:
             raise CurrencyNotFoundError(f"LA MONEDA id={moneda_id} NO EXISTE.")
         return moneda_id
-
-    @staticmethod
-    def _recurrente(valor: Any) -> int:
-        return 1 if valor else 0
 
     def _destino_variable(self, categoria_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
         """categoria_id pedido → (categoria_id, concepto) a guardar: el ítem COMPARTIDOS o una categoría existente."""
