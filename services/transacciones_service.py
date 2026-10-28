@@ -23,12 +23,13 @@ Purpose:
 """
 
 import sqlite3
-from datetime import date, datetime
+from datetime import date
 from typing import Optional, Any
 from dataclasses import dataclass, field
 
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
+from utils.validaciones import validate_date
 from repositories.transacciones_repository import TransaccionesRepository
 
 
@@ -185,28 +186,8 @@ class TransactionService:
             )
         return row
 
-    @staticmethod
-    def _validate_date(date_str: str) -> str:
-        """
-        Validates and normalizes a date string to 'YYYY-MM-DD' format.
-        Accepts date objects or strings in YYYY-MM-DD format.
-        Raises ValueError for anything else.
-
-        Args:
-            date_str: Date as string 'YYYY-MM-DD' or a date/datetime object.
-
-        Returns:
-            Validated string in 'YYYY-MM-DD' format.
-        """
-        if isinstance(date_str, (date, datetime)):
-            return date_str.strftime("%Y-%m-%d")
-        try:
-            datetime.strptime(date_str, "%Y-%m-%d")
-            return date_str
-        except ValueError:
-            raise ValueError(
-                f"Invalid date format: '{date_str}'. Expected 'YYYY-MM-DD'."
-            )
+    # Compartido con FeesService (utils/validaciones.py).
+    _validate_date = staticmethod(validate_date)
 
     @staticmethod
     def _validate_movement_type(movement_type: str) -> str:
