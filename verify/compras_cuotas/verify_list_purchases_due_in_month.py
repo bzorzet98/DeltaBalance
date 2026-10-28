@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
-from services.fees_service import FeesService
+from services.compras_cuotas_service import FeesService
 
 
 def main() -> None:

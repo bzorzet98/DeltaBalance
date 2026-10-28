@@ -58,14 +58,14 @@ from datetime import date, timedelta
 from typing import Optional
 
 from db.database import DatabaseManager
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.categorias_service import CategoriasService
-from services.debts_service import DebtsService
-from services.fees_service import FeesService
+from services.deudas_service import DebtsService
+from services.compras_cuotas_service import FeesService
 from services.ingresos_service import CLAVE_TOTAL, IngresosService
 from services.presupuestos_service import MONEDA_SIN_ORIGEN_CODIGO, PresupuestosService
-from services.shared_expenses_service import SharedExpensesService
-from services.transaction_service import TransactionService
+from services.gastos_compartidos_service import SharedExpensesService
+from services.transacciones_service import TransactionService
 from utils.categorias import clave_categoria
 from utils.personas import normalizar_persona
 

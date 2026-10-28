@@ -1,7 +1,7 @@
 """
-DeltaBalance — tests/test_debts_service.py
+DeltaBalance — tests/test_deudas_service.py
 
-Full test suite for services/debts_service.py.
+Full test suite for services/deudas_service.py.
 
 Coverage:
     - Create debts (a_favor / en_contra, validations, minor units)
@@ -11,22 +11,22 @@ Coverage:
     - Write off (active → incobrable, settled guard)
 
 Run:
-    pytest tests/test_debts_service.py -v
-    pytest tests/test_debts_service.py -v -k "TestPayment"
+    pytest tests/test_deudas_service.py -v
+    pytest tests/test_deudas_service.py -v -k "TestPayment"
 """
 
 import pytest
 from pathlib import Path
 
 from db.database import to_minor
-from services.debts_service import (
+from services.deudas_service import (
     DebtResult,
     DebtError,
     DebtNotFoundError,
     DebtAlreadySettledError,
     PaymentExceedsBalanceError,
 )
-from sync.tests.helpers import make_debt, make_payment
+from tests.helpers import make_debt, make_payment
 
 # =============================================================
 # PATHS

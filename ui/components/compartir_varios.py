@@ -45,7 +45,7 @@ from typing import Callable
 
 import flet as ft
 
-from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
+from services.gastos_compartidos_service import SharedExpensesError, SharedExpensesService
 from ui.components.reparto_compartido import ORDEN_TIPOS, RepartoCompartido
 from ui.components.tabla_planilla import mostrar_mensaje
 from ui.components.tipo_valor import TIPO_MONTO, TIPO_PORCENTAJE

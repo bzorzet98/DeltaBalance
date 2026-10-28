@@ -31,9 +31,11 @@ db.obtener_monedas() para validar la moneda) — sin SQL directo.
 
 import sqlite3
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Optional
 
 from db.database import DatabaseManager
+from utils.validaciones import recurring_flag, validate_concept, validate_period
 from repositories.ingresos_proyectados_repository import IngresosProyectadosRepository
 
 # update(): campos que se pueden cambiar.
@@ -87,12 +89,10 @@ class IngresosService:
     # VALIDACIONES
     # ----------------------------------------------------------
 
-    @staticmethod
-    def _concepto(concepto: Optional[str]) -> str:
-        limpio = " ".join((concepto or "").split()).upper()
-        if not limpio:
-            raise IngresoError("EL CONCEPTO NO PUEDE ESTAR VACÍO.")
-        return limpio
+    # Compartidos con PresupuestosService (utils/validaciones.py), con IngresoError.
+    _concepto = staticmethod(partial(validate_concept, error=IngresoError))
+    _periodo = staticmethod(partial(validate_period, error=IngresoError))
+    _recurrente = staticmethod(recurring_flag)
 
     @staticmethod
     def _monto(monto_minor: Any) -> int:
@@ -102,23 +102,10 @@ class IngresosService:
             raise IngresoError("EL MONTO NO PUEDE SER NEGATIVO.")
         return monto_minor
 
-    @staticmethod
-    def _periodo(mes: Any, anio: Any) -> tuple[int, int]:
-        for valor in (mes, anio):
-            if not isinstance(valor, int) or isinstance(valor, bool):
-                raise IngresoError(f"MES Y AÑO TIENEN QUE SER ENTEROS (RECIBIDO: {valor!r}).")
-        if not 1 <= mes <= 12:
-            raise IngresoError(f"EL MES TIENE QUE ESTAR ENTRE 1 Y 12 (RECIBIDO: {mes}).")
-        return mes, anio
-
     def _moneda(self, moneda_id: Any) -> int:
         if moneda_id not in {fila["id"] for fila in self._db.obtener_monedas()}:
             raise IngresoError(f"LA MONEDA id={moneda_id} NO EXISTE.")
         return moneda_id
-
-    @staticmethod
-    def _recurrente(valor: Any) -> int:
-        return 1 if valor else 0
 
     @staticmethod
     def _notas(valor: Optional[str]) -> Optional[str]:

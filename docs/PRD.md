@@ -56,7 +56,7 @@ Este principio aplica a todas las decisiones de diseño del MVP: si una restricc
 | Soporte UVA/CER en préstamos | 🔜 Versión futura | No es una necesidad actual. |
 | Precio de mercado de instrumentos de ahorro | 🔜 Versión futura | Por ahora se valúa a costo histórico. |
 | Múltiples usuarios / hogares | 🔜 Ejercicio técnico | La app es para dos usuarios fijos. Se documentará qué requeriría el modelo para escalarlo, sin implementarlo. |
-
+| Vinculación dinámica de hogares | ⚠️ Corregir | Al iniciar sesión en una instalación nueva, la app debe consultar a Supabase los hogares del usuario en lugar de asumirlos por UUID hardcodeado. Prerequisito para distribuir la app a nuevos usuarios. |
 ## Preguntas abiertas
 
 | # | Pregunta | Respuesta |

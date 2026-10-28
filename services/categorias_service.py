@@ -25,7 +25,7 @@ cosas en silencio:
    verify/presupuestos_ingresos_empleos/verify_empleos_repository.py +
    verify_empleos_service.py la resuelven con
    "WHERE subcategoria = 'Sueldo'" literal.
-2. MOVIMIENTO CAPITAL · Autotransferencia — services/transaction_service.py
+2. MOVIMIENTO CAPITAL · Autotransferencia — services/transacciones_service.py
    (docstring de create_transfer(), línea ~369) documenta
    "category_id: Should be the 'Autotransferencia' category" como el valor
    esperado que cualquier UI de transferencias entre cuentas debe pasar.
@@ -42,7 +42,7 @@ cosas en silencio:
    ids contra este mismo par de nombres al construir la fila de alta, y
    rutea la carga a un cargo extra de resumen (resumen_cargos_extra) en
    vez de una compra en cuotas si la categoría elegida es una de las
-   tres. Ver services/fees_service.py CATEGORIAS_CARGO_EXTRA para el
+   tres. Ver services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA para el
    mapeo nombre → charge_type.
 4. MOVIMIENTO CAPITAL · Ahorro/Inversión (nueva, Tarea 1b de
    docs/PROXIMOS_PASOS.md) — mismo mecanismo que el punto 2, pero
@@ -112,7 +112,7 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
     # si la categoría elegida es una de estas tres (por id, ya resuelto
     # una vez contra este mismo par de nombres) para decidir si crea una
     # compra en cuotas normal o un cargo extra (resumen_cargos_extra) del
-    # tipo correspondiente — ver services/fees_service.py
+    # tipo correspondiente — ver services/compras_cuotas_service.py
     # CATEGORIAS_CARGO_EXTRA para el mapeo nombre → charge_type. Renombrar
     # o desactivar cualquiera de las tres rompería ese routing en
     # silencio (dejaría de reconocerlas como especiales, todo lo cargado
@@ -120,17 +120,17 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
     ("TARJETA DE CRÉDITO", "IMPUESTO TARJETA"): (
         "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
         "tipo='impuesto' en vez de crear una compra en cuotas — ver "
-        "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
+        "services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA."
     ),
     ("TARJETA DE CRÉDITO", "RECARGO TARJETA"): (
         "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
         "tipo='recargo' en vez de crear una compra en cuotas — ver "
-        "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
+        "services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA."
     ),
     ("TARJETA DE CRÉDITO", "AJUSTE/REINTEGRO TARJETA"): (
         "ui/screens/compras_cuotas.py rutea esta categoría a un cargo extra "
         "tipo='ajuste' en vez de crear una compra en cuotas — ver "
-        "services/fees_service.py CATEGORIAS_CARGO_EXTRA."
+        "services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA."
     ),
     # Tarea 1b de docs/PROXIMOS_PASOS.md — routing de categorías especiales
     # en el Registro de transacciones. NOTA: "MOVIMIENTO CAPITAL ·

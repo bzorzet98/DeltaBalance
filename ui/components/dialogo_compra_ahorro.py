@@ -47,7 +47,7 @@ _label_activo() (Tarea 6g, docs/PROXIMOS_PASOS.md).
 Ya NO son campos de este formulario a nivel movimiento: SavingsService.
 register_purchase() los resuelve solos (cuenta_id desde
 activo["cuenta_id"], categoria_id siempre la categoría protegida
-'Ahorro/Inversión' — ver services/savings_service.py). El único lugar
+'Ahorro/Inversión' — ver services/ahorros_service.py). El único lugar
 donde una cuenta se elige acá es al CREAR un activo nuevo (sección
 "+ Crear nuevo activo"): un CampoFiltrable de cuentas, opcional, que se
 manda como create_activo(cuenta_id=...) — la cuenta queda vinculada al
@@ -152,8 +152,8 @@ from typing import Callable, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService
-from services.savings_service import TIPOS_ACTIVO, SavingsError, SavingsResult, SavingsService
+from services.cuentas_service import AccountsService
+from services.ahorros_service import TIPOS_ACTIVO, SavingsError, SavingsResult, SavingsService
 from ui.components.campo_filtrable import CampoFiltrable
 from ui.components.campo_monto import CampoMonto
 from ui.components.tipo_valor import numero

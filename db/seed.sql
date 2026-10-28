@@ -37,7 +37,7 @@ INSERT OR IGNORE INTO monedas (codigo, simbolo, decimales) VALUES
 --   (ui/components/registro_transacciones.py).
 -- - TARJETA DE CRÉDITO · IMPUESTO TARJETA / RECARGO TARJETA /
 --   AJUSTE/REINTEGRO TARJETA: en Compras en cuotas son cargos extra del
---   resumen, no compras (services/fees_service.py CATEGORIAS_CARGO_EXTRA).
+--   resumen, no compras (services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA).
 -- =============================================================
 
 -- EGRESOS ("EGRESO VARIABLE": transitoria, para los datos migrados sin una

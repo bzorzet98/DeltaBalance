@@ -4,7 +4,7 @@ verify/hogares_gastos_compartidos/verify_add_shared_purchase.py
 Verifica SharedExpensesService.add_shared_purchase() — método agregado en la
 ronda de "Compras en cuotas compartidas" para orquestar compartir una compra
 en cuotas completa (compras_cuotas + cuotas_credito) según su modo_deuda.
-Confirmado por lectura de shared_expenses_service.py y fees_service.py antes
+Confirmado por lectura de gastos_compartidos_service.py y compras_cuotas_service.py antes
 de escribirlo: esta orquestación NO existía (modo_deuda/monto_reintegro_minor
 estaban en el schema desde hace tiempo, pero sin ningún método que los usara).
 
@@ -37,8 +37,8 @@ from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
 from repositories.gastos_compartidos_repository import GastosCompartidosRepository
-from services.fees_service import FeesService
-from services.shared_expenses_service import (
+from services.compras_cuotas_service import FeesService
+from services.gastos_compartidos_service import (
     SharedExpensesService,
     HogarNotFoundError,
     MiembroNotFoundError,

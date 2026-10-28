@@ -6,7 +6,7 @@ especiales de routing de cargos extra de tarjeta (Tarea 3 de
 docs/PROXIMOS_PASOS.md) que db/seed.sql ahora incluye para bases nuevas —
 "TARJETA DE CRÉDITO · Impuesto tarjeta / Recargo tarjeta /
 Ajuste-Reintegro tarjeta", ver services/categorias_service.py
-CATEGORIAS_PROTEGIDAS y services/fees_service.py CATEGORIAS_CARGO_EXTRA.
+CATEGORIAS_PROTEGIDAS y services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA.
 
 db/seed.sql usa INSERT OR IGNORE, pero DatabaseManager.inicializar() solo
 lo aplica si la DB es NUEVA (`if not ya_existia`, ver db/database.py) — una

@@ -26,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.presupuestos_service import PresupuestosService
 from services.dashboard_service import DashboardService
 

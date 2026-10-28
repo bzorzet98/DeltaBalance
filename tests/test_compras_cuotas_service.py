@@ -1,7 +1,7 @@
 """
-DeltaBalance — tests/test_fees_service.py
+DeltaBalance — tests/test_compras_cuotas_service.py
 
-Full test suite for services/fees_service.py.
+Full test suite for services/compras_cuotas_service.py.
 
 Coverage:
     - create_purchase (fee generation, minor units, validations, year wraparound)
@@ -12,8 +12,8 @@ Coverage:
     - cancel_purchase
 
 Run:
-    pytest tests/test_fees_service.py -v
-    pytest tests/test_fees_service.py -v -k "TestStatement"
+    pytest tests/test_compras_cuotas_service.py -v
+    pytest tests/test_compras_cuotas_service.py -v -k "TestStatement"
 """
 
 import pytest
@@ -21,7 +21,7 @@ from pathlib import Path
 from datetime import datetime
 
 from db.database import DatabaseManager, to_minor, from_minor
-from services.fees_service import (
+from services.compras_cuotas_service import (
     FeesService,
     FeesResult,
     FeesError,
@@ -32,7 +32,7 @@ from services.fees_service import (
     FeeAlreadyConfirmedError,
 )
 
-from sync.tests.helpers import make_purchase, full_statement_cycle
+from tests.helpers import make_purchase, full_statement_cycle
 
 # =============================================================
 # PATHS

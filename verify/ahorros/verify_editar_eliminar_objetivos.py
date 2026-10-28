@@ -2,7 +2,7 @@
 verify/ahorros/verify_editar_eliminar_objetivos.py
 
 Verifica la edición y eliminación de objetivos de ahorro en
-services/savings_service.py (docs/DATA_MODEL_DECISIONS.md sección 32).
+services/ahorros_service.py (docs/DATA_MODEL_DECISIONS.md sección 32).
 
 Escenario: un objetivo VIEJO con plata en tres instrumentos —
 - un FCI: aporte 100.000 (todo VIEJO), aporte 50.000 (mitad VIEJO, mitad
@@ -33,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.activo_objetivos_repository import ActivoObjetivosRepository
-from services.savings_service import (
+from services.ahorros_service import (
     OBJETIVO_SIN_ASIGNAR,
     AsignacionInvalidaError,
     ObjetivoNotFoundError,

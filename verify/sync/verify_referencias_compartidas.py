@@ -49,8 +49,8 @@ from verify._dummy_db import crear_dummy_db
 from verify.sync._fake_supabase import FakeSupabase, MarcasEnMemoria
 from db.database import DatabaseManager
 from services.categorias_service import CategoriasService
-from services.shared_expenses_service import SharedExpensesService
-from services.transaction_service import TransactionService
+from services.gastos_compartidos_service import SharedExpensesService
+from services.transacciones_service import TransactionService
 from sync.referencias import MARCA_CONCEPTO, MARCA_REFERENCIAS
 from sync.sync_engine import REPARACION_CONCEPTOS, REPARACION_REFERENCIAS, SyncEngine
 

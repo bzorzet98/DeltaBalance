@@ -2,7 +2,7 @@
 verify/ahorros/verify_eliminar_instrumento.py
 
 Verifica eliminar / ocultar / reactivar un instrumento de ahorro
-(services/savings_service.py; docs/DATA_MODEL_DECISIONS.md sección 35,
+(services/ahorros_service.py; docs/DATA_MODEL_DECISIONS.md sección 35,
 CLAUDE.md §4):
 
 1. Sin movimientos → delete_activo() lo borra del todo (también sus filas
@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.activo_objetivos_repository import ActivoObjetivosRepository
-from services.savings_service import ActivoNotFoundError, SavingsError, SavingsService
+from services.ahorros_service import ActivoNotFoundError, SavingsError, SavingsService
 
 
 def main() -> None:

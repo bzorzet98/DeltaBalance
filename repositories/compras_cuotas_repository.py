@@ -3,7 +3,7 @@ DeltaBalance — repositories/compras_cuotas_repository.py
 
 Acceso a datos para la tabla `compras_cuotas`. Sin lógica de negocio: no
 genera las cuotas asociadas (eso es CuotasCreditoRepository.crear_lote(),
-orquestado por services/fees_service.py, que sigue siendo la fuente de
+orquestado por services/compras_cuotas_service.py, que sigue siendo la fuente de
 verdad de esas reglas hoy), no valida existencia de cuenta/categoría/
 moneda, no decide si una compra "se puede" cancelar.
 

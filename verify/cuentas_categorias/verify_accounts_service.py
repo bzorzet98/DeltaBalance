@@ -1,7 +1,7 @@
 """
 verify/cuentas_categorias/verify_accounts_service.py
 
-Verifica AccountsService (services/accounts_service.py). Cubre
+Verifica AccountsService (services/cuentas_service.py). Cubre
 create_account() multi-moneda (una y dos monedas, atómico; lista vacía o
 sin pasar el argumento — Tarea 6f: crea la cuenta sin ningún saldo_inicial,
 sin error; ids repetidos; moneda inexistente; cuenta_pago_id inexistente),
@@ -30,7 +30,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from services.accounts_service import (
+from services.cuentas_service import (
     AccountsService,
     AccountNotFoundError,
     CurrencyNotFoundError,

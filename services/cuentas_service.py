@@ -1,5 +1,5 @@
 """
-DeltaBalance — services/accounts_service.py
+DeltaBalance — services/cuentas_service.py
 
 Purpose:
     Domain service for accounts (cuentas). Owns the business rules around
@@ -11,7 +11,7 @@ Purpose:
         - cuentas_saldos
 
     No MonedasRepository exists yet in this codebase (mismo estado que en
-    transaction_service.py/fees_service.py/ingresos_proyectados_service.py,
+    transacciones_service.py/compras_cuotas_service.py/ingresos_proyectados_service.py,
     que también consultan `monedas` directo) — este service hace lo mismo.
 
     Key concepts:

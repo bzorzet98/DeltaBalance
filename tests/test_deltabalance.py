@@ -4,7 +4,7 @@ DeltaBalance — tests/test_deltabalance.py
 Full test suite covering:
     - utils/money.py          → amount_display()
     - db/query_builder.py     → QueryBuilder (build, filters, pagination, soft delete)
-    - services/transaction_service.py → TransactionService (create, transfer, read, update, delete)
+    - services/transacciones_service.py → TransactionService (create, transfer, read, update, delete)
 
 Strategy:
     Every test gets a fresh in-memory SQLite DB initialized with the real
@@ -22,7 +22,7 @@ from datetime import date
 
 from db.database import DatabaseManager, to_minor, from_minor
 from db.query_builder import QueryBuilder
-from services.transaction_service import (
+from services.transacciones_service import (
     TransactionService,
     TransactionResult,
     TransactionError,
@@ -31,7 +31,7 @@ from services.transaction_service import (
     CurrencyNotFoundError,
 )
 from utils.money import amount_display
-from sync.tests.helpers import make_expense
+from tests.helpers import make_expense
 
 # =============================================================
 # PATHS

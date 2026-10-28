@@ -86,7 +86,7 @@ from typing import Any, Callable, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.categorias_service import CategoriasService
 from services.dashboard_service import DashboardService
 from services.presupuestos_service import (

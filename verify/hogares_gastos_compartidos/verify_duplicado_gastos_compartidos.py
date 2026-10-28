@@ -11,7 +11,7 @@ sí permite crear una fila idéntica. Mismo patrón exacto que
 verify/transacciones/verify_duplicado_transacciones.py.
 
 Distingue explícitamente esta excepción de GastoCompartidoDuplicadoError
-(la que ya existe en services/shared_expenses_service.py, bloqueo por
+(la que ya existe en services/gastos_compartidos_service.py, bloqueo por
 origen_tipo+origen_id EXACTO repetido, sin ventana de tiempo) — un caso
 con origen_id distinto pero el resto de los campos relevantes idénticos
 SÍ dispara esta excepción nueva, aunque no dispararía la otra.

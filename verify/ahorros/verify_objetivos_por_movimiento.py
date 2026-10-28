@@ -1,7 +1,7 @@
 """
 verify/ahorros/verify_objetivos_por_movimiento.py
 
-Verifica los objetivos POR MOVIMIENTO de services/savings_service.py
+Verifica los objetivos POR MOVIMIENTO de services/ahorros_service.py
 (docs/DATA_MODEL_DECISIONS.md sección 31): cada movimiento dice a qué
 objetivos va y en qué porcentaje, sin un reparto fijo por activo.
 
@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
-from services.savings_service import (
+from services.ahorros_service import (
     OBJETIVO_SIN_ASIGNAR,
     AsignacionInvalidaError,
     MovimientoNotFoundError,

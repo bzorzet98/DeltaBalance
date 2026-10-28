@@ -46,11 +46,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.saldos_mensuales_repository import SaldosMensualesRepository
-from services.accounts_service import AccountsService
-from services.debts_service import DebtsService
-from services.shared_expenses_service import SharedExpensesService
+from services.cuentas_service import AccountsService
+from services.deudas_service import DebtsService
+from services.gastos_compartidos_service import SharedExpensesService
 from services.snapshots_service import SnapshotsError, SnapshotsService
-from services.transaction_service import TransactionService
+from services.transacciones_service import TransactionService
 
 
 def _meses_atras(n: int) -> tuple[int, int]:
