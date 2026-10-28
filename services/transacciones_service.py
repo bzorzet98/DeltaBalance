@@ -1,5 +1,5 @@
 """
-DeltaBalance — services/transaction_service.py
+DeltaBalance — services/transacciones_service.py
 
 Purpose:
     Orchestrates all transaction-related workflows. Acts as the boundary between

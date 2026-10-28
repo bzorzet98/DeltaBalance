@@ -60,7 +60,7 @@ class GastoCompartidoRecienDuplicadoError(Exception):
     criterio exacto (Tarea 9, Parte B).
 
     Nombre deliberadamente DISTINTO de GastoCompartidoDuplicadoError (esa
-    vive en services/shared_expenses_service.py): esa otra excepción
+    vive en services/gastos_compartidos_service.py): esa otra excepción
     bloquea por origen_tipo+origen_id EXACTO repetido (regla de negocio —
     "esta transacción/cuota ya se compartió"), sin importar cuándo. Esta de
     acá es una ventana de tiempo corta contra doble-click/doble-Enter en la

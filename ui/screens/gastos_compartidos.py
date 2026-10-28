@@ -130,10 +130,10 @@ from typing import Any, Optional
 
 import flet as ft
 
-from services.fees_service import FeesService
-from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
+from services.compras_cuotas_service import FeesService
+from services.gastos_compartidos_service import SharedExpensesError, SharedExpensesService
 from services.snapshots_service import SnapshotsService
-from services.transaction_service import TransactionService
+from services.transacciones_service import TransactionService
 from ui.components.campo_monto import CampoMonto
 from ui.components.tabla_planilla import (
     AccionBarra,

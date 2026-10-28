@@ -7,7 +7,7 @@ diálogo privados) para que ui/components/compartir_compra.py lo reuse sin
 duplicarlo: ambos necesitan la misma lectura/escritura de persistencia
 local y el mismo diálogo de onboarding ("todavía no pertenecés a ningún
 hogar — crear uno o unirte por código"). La app todavía no tiene
-autenticación real (ver docstring de services/shared_expenses_service.py)
+autenticación real (ver docstring de services/gastos_compartidos_service.py)
 — este nombre es un string simple guardado del lado del cliente, no un id
 de usuario real.
 
@@ -51,7 +51,7 @@ from typing import Awaitable, Callable, Optional
 
 import flet as ft
 
-from services.shared_expenses_service import SharedExpensesError, SharedExpensesService
+from services.gastos_compartidos_service import SharedExpensesError, SharedExpensesService
 from ui.utils.prefs import escribir_prefs, leer_prefs
 
 # --- Configuración de layout ---

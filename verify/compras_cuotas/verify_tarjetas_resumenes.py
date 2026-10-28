@@ -40,7 +40,7 @@ from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from db.schema_migrations import TABLAS_SINCRONIZADAS
 from repositories.cuentas_repository import CuentasRepository
-from services.fees_service import FeesError, FeesService
+from services.compras_cuotas_service import FeesError, FeesService
 
 
 def main() -> None:

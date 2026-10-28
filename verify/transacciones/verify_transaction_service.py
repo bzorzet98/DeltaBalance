@@ -8,7 +8,7 @@ siguen funcionando end-to-end con las validaciones de negocio intactas.
 
 Este es el chequeo que más importa de esta migración: confirmar que mover
 delete() a usar el repositorio (y dejar get()/list_transactions()/create()/
-update() sin migrar, ver comentarios en transaction_service.py) NO cambió
+update() sin migrar, ver comentarios en transacciones_service.py) NO cambió
 ningún comportamiento observable — ni las excepciones de negocio
 (AccountNotFoundError, CategoryNotFoundError, CurrencyNotFoundError,
 TransactionError, ValueError), ni el shape de las filas enriquecidas que
@@ -28,7 +28,7 @@ from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
 from repositories.transacciones_repository import TransaccionesRepository
-from services.transaction_service import (
+from services.transacciones_service import (
     TransactionService,
     TransactionError,
     AccountNotFoundError,

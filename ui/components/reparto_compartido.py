@@ -40,7 +40,7 @@ from typing import Callable, Optional
 
 import flet as ft
 
-from services.shared_expenses_service import SharedExpensesService
+from services.gastos_compartidos_service import SharedExpensesService
 from ui.components.tipo_valor import TIPO_COEFICIENTE, TIPO_MONTO, TIPO_PORCENTAJE, CampoTipoValor
 from ui.theme.tabla_tokens import TEXT_SECONDARY
 from ui.theme.tokens import TypographyTokens

@@ -8,7 +8,7 @@ sección 23). Una fila por tarjeta (UNIQUE cuenta_id).
 
 Sin lógica de negocio: no valida que la cuenta sea una tarjeta ni el rango
 de los días (el CHECK de la tabla es la última red), y no calcula fechas de
-resumen — eso vive en services/fees_service.py.
+resumen — eso vive en services/compras_cuotas_service.py.
 
 upsert() usa INSERT … ON CONFLICT(cuenta_id) DO UPDATE (no INSERT OR
 REPLACE): así la fila conserva su id y su creada_en, y updated_en se

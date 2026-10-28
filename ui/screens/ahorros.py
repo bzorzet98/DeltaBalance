@@ -1,7 +1,7 @@
 """
 DeltaBalance — ui/screens/ahorros.py
 
-Ahorros e inversiones (services/savings_service.py), rediseño por
+Ahorros e inversiones (services/ahorros_service.py), rediseño por
 pestañas: RESUMEN · FCI · ACCIONES · CEDEARS · PLAZO FIJO · PLAZO FLEX ·
 OTROS. Mismo fondo y paleta que las pantallas estilo planilla
 (pantalla_planilla(), ui/theme/tabla_tokens.py).
@@ -170,8 +170,8 @@ from typing import Any, Callable, Optional
 
 import flet as ft
 
-from services.accounts_service import AccountsService
-from services.savings_service import TIPOS_POR_UNIDADES, SavingsError, SavingsResult, SavingsService
+from services.cuentas_service import AccountsService
+from services.ahorros_service import TIPOS_POR_UNIDADES, SavingsError, SavingsResult, SavingsService
 from ui.components import dialogo_compra_ahorro
 from ui.components.campo_monto import CampoMonto
 from ui.components.tabla_planilla import (

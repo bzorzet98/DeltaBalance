@@ -3,7 +3,7 @@ DeltaBalance — repositories/resumenes_tarjeta_repository.py
 
 Acceso a datos para la tabla `resumenes_tarjeta`. Sin lógica de negocio: no
 decide si un resumen "se puede" cerrar o pagar, no calcula el nuevo total
-consolidado — eso vive en services/fees_service.py (FeesService), que sigue
+consolidado — eso vive en services/compras_cuotas_service.py (FeesService), que sigue
 siendo la fuente de verdad de esas reglas hoy.
 
 `resumenes_tarjeta` NO tiene columna `deleted_at` ni `activa` — no existe
@@ -14,7 +14,7 @@ anteriores sin esa columna.
 
 Hallazgo de la revisión de FeesService (Fase 2, COMPRAS_CUOTAS paso 1) que
 determina la forma de este repositorio — importante para el paso 2:
-- close_statement() (el método REAL en services/fees_service.py, todavía
+- close_statement() (el método REAL en services/compras_cuotas_service.py, todavía
   sin migrar) HOY SOLO cambia `estado` a 'cerrado'. NO toca
   monto_consumos_minor/monto_impuestos_minor/porcentaje_impuesto_bp/
   monto_total_pagado_minor — a pesar de que la consigna original de esta

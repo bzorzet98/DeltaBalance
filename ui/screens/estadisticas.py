@@ -35,7 +35,7 @@ from typing import Callable
 import flet as ft
 import flet_charts as fc
 
-from services.accounts_service import AccountsService
+from services.cuentas_service import AccountsService
 from services.dashboard_service import DashboardService
 from ui.components import selector_periodo
 from ui.theme.tokens import TypographyTokens

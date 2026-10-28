@@ -38,7 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from services.shared_expenses_service import (
+from services.gastos_compartidos_service import (
     SharedExpensesService,
     SharedExpensesError,
     GastoCompartidoNotFoundError,

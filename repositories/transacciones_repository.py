@@ -4,7 +4,7 @@ DeltaBalance — repositories/transacciones_repository.py
 Acceso a datos para la tabla `transacciones`. Sin lógica de negocio: no
 valida formato de fecha, no valida tipo_movimiento, no valida que el monto
 sea positivo, no verifica que la cuenta/categoría exista — todo eso vive en
-services/transaction_service.py (TransactionService), que sigue siendo la
+services/transacciones_service.py (TransactionService), que sigue siendo la
 fuente de verdad de esas reglas hoy y que en un paso posterior va a migrar
 para usar este repositorio en vez de escribir SQL directo.
 
