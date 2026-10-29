@@ -36,7 +36,7 @@ Purpose:
     ('en_resumen'). add_extra_charge() / delete_extra_charge() /
     list_extra_charges_in_month(); resumen_por_tarjeta() and
     close_statement() count them apart from the purchases.
-    resumen_cargos_extra is deprecated (it does not sync).
+    The old resumen_cargos_extra table was dropped in schema v2 (section 38).
 
     Key workflows:
         1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito,
@@ -1253,8 +1253,7 @@ class FeesService:
         recalculated as the sum of every cuotas_credito row linked to this
         statement that belongs to a purchase, monto_impuestos_minor as the
         sum of its extra charges (the linked fees of es_cargo_extra rows —
-        section 28 — plus any row left in the deprecated
-        resumen_cargos_extra; see ResumenesTarjetaRepository.marcar_cerrado()), and
+        section 28; see ResumenesTarjetaRepository.marcar_cerrado()), and
         porcentaje_impuesto_bp is derived from both
         (monto_impuestos_minor*10000 // monto_consumos_minor, 0 if there are
         no consumos). This is one of the two intentionally sanctioned

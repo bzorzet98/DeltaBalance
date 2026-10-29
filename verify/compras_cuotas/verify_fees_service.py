@@ -3,7 +3,7 @@ verify/compras_cuotas/verify_fees_service.py
 
 Verifica FeesService COMPLETO (no los repositorios pelados) después de la
 migración a ComprasCuotasRepository/CuotasCreditoRepository/
-ResumenesTarjetaRepository/ResumenCargosExtraRepository (Fase 2, bloque
+ResumenesTarjetaRepository/ResumenCargosExtraRepository — este último eliminado en v2 (Fase 2, bloque
 COMPRAS_CUOTAS paso 2 + cierre del pendiente de cargos extra): que
 create_purchase()/get_purchase()/list_purchases()/get_fees_for_purchase()/
 open_statement()/confirm_fee()/close_statement()/pay_statement()/

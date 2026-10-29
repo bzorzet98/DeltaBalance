@@ -1,15 +1,18 @@
 -- =============================================================
 -- DeltaBalance — db/schema.sql
--- SQLite 3 — foto del schema v1 (PRAGMA user_version = 1)
+-- SQLite 3 — foto del schema v2 (PRAGMA user_version = 2)
 -- =============================================================
--- Este archivo es el schema REAL completo de la versión 1: exactamente lo
--- que dejaba en una base la cadena anterior (schema + MIGRACIONES_COLUMNA +
--- aplicar_migraciones_tabla()), con las columnas en el mismo orden. Ver
--- docs/DATA_MODEL_DECISIONS.md sección 37.
+-- Este archivo es el schema REAL completo de la última versión:
+-- - v1: exactamente lo que dejaba en una base la cadena anterior (schema +
+--   MIGRACIONES_COLUMNA + aplicar_migraciones_tabla()), con las columnas en
+--   el mismo orden (docs/DATA_MODEL_DECISIONS.md sección 37);
+-- - v2: sin las tablas sin uso tipos_cambio, indices_inflacion,
+--   resumen_cargos_extra y activo_objetivos (sección 38).
 --
 -- Solo se aplica a una base NUEVA (sin tablas): DatabaseManager.inicializar()
 -- lo corre, siembra los brokers, crea la sync (preparar_sync()), carga
--- seed.sql y marca user_version = 1. Una base existente ya NO lo reaplica:
+-- seed.sql y marca user_version = VERSION_SCHEMA. Una base existente ya NO
+-- lo reaplica:
 --   - user_version = 0 → migración baseline (db/schema_migrations.py,
 --     run_migrations(); usa db/schema_v0.sql, el schema anterior congelado);
 --   - user_version >= 1 → solo las migraciones numeradas que falten.
@@ -18,7 +21,7 @@
 -- VERSION_SCHEMA: este archivo tiene que seguir siendo la foto de la última
 -- versión.
 --
--- Lo que NO está acá: los 66 triggers trg_sync_* de la sincronización con
+-- Lo que NO está acá: los 63 triggers trg_sync_* de la sincronización con
 -- Supabase. Los genera preparar_sync() (db/schema_migrations.py) en cada
 -- arranque, fuera del versionado.
 
@@ -372,43 +375,6 @@ CREATE TABLE IF NOT EXISTS cuotas_credito (
 );
 
 -- =============================================================
--- RESUMEN CARGOS EXTRA
--- =============================================================
--- Cargos que componen monto_impuestos_minor de un resumen al cerrarlo
--- (impuestos, recargos, ajustes). Ver docs/DATA_MODEL_DECISIONS.md sobre el
--- rediseño de cómo se calculan los totales de resumenes_tarjeta.
---
--- DEPRECADA (docs/DATA_MODEL_DECISIONS.md sección 28): los cargos extra se
--- guardan en compras_cuotas con es_cargo_extra = 1 (esta tabla no se
--- sincroniza). db/schema_migrations.py migrar_cargos_extra_a_compras() movió
--- las filas existentes (en la migración baseline v0 → v1); solo quedan acá
--- las que no se pudieron mover (tipo 'otro', sin categoría especial). Se
--- sigue creando para no romper bases ni scripts que todavía la leen.
-CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    resumen_id                      TEXT NOT NULL REFERENCES resumenes_tarjeta(id),
-
-    concepto                        TEXT NOT NULL,
-
-    tipo                            TEXT NOT NULL
-                                    CHECK(tipo IN (
-                                        'impuesto',
-                                        'recargo',
-                                        'ajuste',
-                                        'otro'
-                                    )),
-
-    monto_minor                     INTEGER NOT NULL,
-
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    -- NULL en los cargos anteriores a estas columnas (sección 28).
-    moneda_id                       INTEGER REFERENCES monedas(id),
-    fecha                           TEXT CHECK(fecha IS NULL OR fecha GLOB '????-??-??')
-);
-
--- =============================================================
 -- DEUDAS
 -- =============================================================
 -- Libro de movimientos (docs/DATA_MODEL_DECISIONS.md sección 22): cada fila
@@ -538,28 +504,6 @@ CREATE TABLE IF NOT EXISTS descuentos_programados (
 
     creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
--- =============================================================
--- TIPOS DE CAMBIO
--- =============================================================
-CREATE TABLE IF NOT EXISTS tipos_cambio (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    fecha                           TEXT NOT NULL
-                                    CHECK(fecha GLOB '????-??-??'),
-
-    moneda_origen_id               INTEGER NOT NULL,
-    moneda_destino_id              INTEGER NOT NULL,
-
-    tasa_minor                     INTEGER NOT NULL,
-
-    fuente                         TEXT,
-
-    FOREIGN KEY (moneda_origen_id) REFERENCES monedas(id),
-    FOREIGN KEY (moneda_destino_id) REFERENCES monedas(id),
-
-    UNIQUE(fecha, moneda_origen_id, moneda_destino_id)
 );
 
 -- =============================================================
@@ -708,33 +652,6 @@ CREATE TABLE IF NOT EXISTS asignaciones (
     sincronizado_en                 TEXT DEFAULT NULL,
 
     UNIQUE(movimiento_id, objetivo_id)
-);
-
--- =============================================================
--- ACTIVO OBJETIVOS (reparto vigente de un activo entre objetivos)
--- =============================================================
--- DEPRECATED (docs/DATA_MODEL_DECISIONS.md sección 31): los objetivos son
--- de cada movimiento (`asignaciones`), ya no hay un reparto fijo por
--- activo. Nada la lee ni la escribe (salvo borrar las filas de un objetivo
--- que se elimina, por la FK); queda por las bases que ya tienen filas.
--- Qué porcentaje de un activo es de cada objetivo de ahorro. Cada
--- movimiento nuevo del activo generaba sus `asignaciones` con estos
--- porcentajes (SavingsService). Misma limitación que asignaciones: la suma
--- por activo_id (<= 100) no entra en un CHECK — la validaba el service.
-CREATE TABLE IF NOT EXISTS activo_objetivos (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    activo_id                       TEXT NOT NULL REFERENCES activos_financieros(id),
-    objetivo_id                     TEXT NOT NULL REFERENCES objetivos_ahorro(id),
-
-    porcentaje                      REAL NOT NULL
-                                    CHECK(porcentaje > 0 AND porcentaje <= 100),
-
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    sincronizado_en                 TEXT DEFAULT NULL,
-
-    UNIQUE(activo_id, objetivo_id)
 );
 
 -- =============================================================
@@ -949,30 +866,6 @@ CREATE TABLE IF NOT EXISTS cuotas_prestamo (
 );
 
 -- =============================================================
--- INDICES DE INFLACION
--- =============================================================
-CREATE TABLE IF NOT EXISTS indices_inflacion (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    mes                             INTEGER NOT NULL
-                                    CHECK(mes BETWEEN 1 AND 12),
-    anio                            INTEGER NOT NULL,
-
-    -- Número índice, no porcentaje. Convención: base 100 en un mes de
-    -- referencia arbitrario, o el valor directo del índice de precios que se
-    -- cargue (ej. IPC de INDEC). El ajuste de series históricas a moneda
-    -- constante (dividir/multiplicar por el índice correspondiente) es
-    -- lógica de servicio o de lab/, no del schema.
-    valor_indice                    REAL NOT NULL,
-
-    fuente                          TEXT,
-
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE(mes, anio)
-);
-
--- =============================================================
 -- SNAPSHOTS DE CIERRE DE MES (docs/DATA_MODEL_DECISIONS.md sección 21)
 -- =============================================================
 -- Tablas derivadas: caché recalculable de datos que ya están en otras
@@ -1075,9 +968,6 @@ ON cuotas_credito(estado);
 CREATE INDEX IF NOT EXISTS idx_resumenes_periodo
 ON resumenes_tarjeta(anio, mes);
 
-CREATE INDEX IF NOT EXISTS idx_resumen_cargos_extra_resumen
-ON resumen_cargos_extra(resumen_id);
-
 CREATE INDEX IF NOT EXISTS idx_recibos_periodo
 ON recibos_sueldo(anio, mes);
 
@@ -1092,9 +982,6 @@ ON asignaciones(movimiento_id);
 
 CREATE INDEX IF NOT EXISTS idx_asignaciones_objetivo
 ON asignaciones(objetivo_id);
-
-CREATE INDEX IF NOT EXISTS idx_activo_objetivos_objetivo
-ON activo_objetivos(objetivo_id);
 
 CREATE INDEX IF NOT EXISTS idx_gastos_compartidos_hogar
 ON gastos_compartidos(hogar_id);
@@ -1122,9 +1009,6 @@ ON cuotas_prestamo(estado);
 
 CREATE INDEX IF NOT EXISTS idx_prestamos_estado
 ON prestamos(estado);
-
-CREATE INDEX IF NOT EXISTS idx_indices_inflacion_periodo
-ON indices_inflacion(anio, mes);
 
 -- =============================================================
 -- TRIGGERS UPDATED_EN

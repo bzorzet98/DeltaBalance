@@ -169,8 +169,8 @@ class ActivosFinancierosRepository:
 
     def eliminar(self, activo_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """
-        DELETE físico. Las FK de movimientos_activo / activo_objetivos lo
-        rechazan si quedan filas que lo referencian: quién puede borrarse
+        DELETE físico. La FK de movimientos_activo lo rechaza si quedan
+        filas que lo referencian: quién puede borrarse
         (y qué se borra antes, en la misma transacción `conn`) lo decide
         SavingsService.delete_activo().
         """

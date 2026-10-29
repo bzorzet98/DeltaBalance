@@ -109,10 +109,9 @@ class ObjetivosAhorroRepository:
 
     def eliminar(self, objetivo_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """
-        DELETE físico (la tabla no tiene deleted_at ni activa). Las FK de
-        asignaciones / activo_objetivos lo rechazan si quedan filas que lo
-        referencian: quien lo llama las mueve o las borra antes, en la misma
-        transacción (`conn`).
+        DELETE físico (la tabla no tiene deleted_at ni activa). La FK de
+        asignaciones lo rechaza si quedan filas que lo referencian: quien lo
+        llama las mueve o las borra antes, en la misma transacción (`conn`).
         """
         sql = "DELETE FROM objetivos_ahorro WHERE id = ?;"
         if conn is not None:

@@ -149,12 +149,14 @@ logger = logging.getLogger(__name__)
 
 # Las del pedido + las que dependen de ellas (sin sus cuotas / saldos, una
 # compra o una cuenta llegaría incompleta a Supabase). Y Ahorros (pedido del
-# usuario: verlos en la app empaquetada, que usa otra base).
+# usuario: verlos en la app empaquetada, que usa otra base). activo_objetivos
+# salió con la migración v2 (tabla eliminada): sus filas en Supabase, si las
+# hay, se ignoran — se baja tabla por tabla, solo las de TABLAS_SINCRONIZADAS.
 TABLAS_PRIVADAS = [
     "transacciones", "cuentas", "categorias", "deudas",
     "compras_cuotas", "presupuestos", "ingresos_proyectados",
     "cuentas_saldos", "cuotas_credito", "resumenes_tarjeta", "tarjetas_config", "tarjetas_resumenes",
-    "brokers", "activos_financieros", "objetivos_ahorro", "movimientos_activo", "asignaciones", "activo_objetivos",
+    "brokers", "activos_financieros", "objetivos_ahorro", "movimientos_activo", "asignaciones",
 ]
 TABLAS_COMPARTIDAS = [
      "hogares", "hogar_miembros", "gastos_compartidos", "gasto_compartido_pagos",

@@ -1681,3 +1681,56 @@ mismo cambio en `db/schema.sql` y `VERSION_SCHEMA = 2`. `MIGRACIONES_COLUMNA` y
 Verify: `verify/schema/verify_user_version.py`. Además de los caminos de arriba, compara
 tabla por tabla una base creada con la foto contra una llevada desde `schema_v0.sql` por
 la baseline: mismas columnas, en el mismo orden, mismas FKs, índices, vistas y triggers.
+
+## 38. Migración v2: eliminar las tablas sin uso — ✅ implementado
+
+Pedido explícito del usuario. Se eliminan `tipos_cambio`, `indices_inflacion`,
+`resumen_cargos_extra` y `activo_objetivos` (estado previo de cada una:
+`docs/DATA_MODEL.md` §6.2).
+
+**Migración** (`_migrar_a_v2()` en `db/schema_migrations.py`, `VERSION_SCHEMA = 2`):
+
+- Hace `DROP TABLE IF EXISTS` de las cuatro (`TABLAS_ELIMINADAS_V2`), con sus índices,
+  en una sola transacción. Ninguna otra tabla tiene una FK hacia ellas.
+- Borra de `sync_cambios` los cambios pendientes de `activo_objetivos`. Sus triggers de
+  sync se van con la tabla, antes del `DELETE` implícito de `DROP TABLE`, así que no
+  anotan ningún `'borrado'`.
+- Antes de borrar, deja en el log (warning) cuántas filas tenía cada tabla. Los datos
+  quedan en el backup `<nombre>_backup_antes_migracion_v1_<fecha>.db` que hace
+  `inicializar()`. Ese backup corre para cualquier migración pendiente, no solo para
+  v0 → v1. Una base en v0 hace un solo backup y pasa por v1 y v2 seguidas.
+
+**Código retirado:**
+
+- `repositories/resumen_cargos_extra_repository.py`,
+  `repositories/activo_objetivos_repository.py` (y su export en
+  `repositories/__init__.py`) y `DatabaseManager.obtener_tipo_cambio()`.
+- `activo_objetivos` sale de `TABLAS_SINCRONIZADAS` y de `TABLAS_PRIVADAS`
+  (`sync/sync_engine.py`). Las filas que tuviera en Supabase se ignoran: la sync baja
+  tabla por tabla, solo las de la lista. Una instalación que siga en v1 puede seguir
+  subiéndolas, sin efecto en las que ya están en v2.
+- `SavingsService.delete_activo()` / `delete_objetivo()` ya no borran filas de
+  `activo_objetivos`.
+- `ResumenesTarjetaRepository.marcar_cerrado()`: `monto_impuestos_minor` es solo la suma
+  de las cuotas de los cargos extra (`compras_cuotas.es_cargo_extra = 1`, §28).
+
+**Cambio de comportamiento:** los cargos que la baseline no había podido pasar a
+`compras_cuotas` (tipo `otro` o sin categoría especial) ya no se suman al cerrar un
+resumen. Los resúmenes ya cerrados conservan el `monto_impuestos_minor` que tenían.
+
+**Lo que no cambia:**
+
+- `migrar_cargos_extra_a_compras()` y las columnas `resumen_cargos_extra.moneda_id` /
+  `fecha` de `MIGRACIONES_COLUMNA` siguen siendo parte de la baseline: una base en v0
+  primero mueve sus cargos y después la v2 borra la tabla.
+- `db/schema_v0.sql` (congelado) sigue creando las cuatro tablas.
+- `legacy_migration/migrar_a_uuid_pk.py`: las filas de estas tablas en una base de ids
+  enteros se informan como "salteadas" (la base nueva ya no las tiene).
+
+Verify: `verify/schema/verify_user_version.py` (caso H: v1 → v2 con datos, más la
+comparación foto vs. migraciones desde v0). Se adaptaron
+`verify_resumenes_tarjeta_repository.py`, `verify_cargos_extra_sync.py` (recrea la
+tabla con su forma v1 para probar la función de la baseline),
+`verify_eliminar_instrumento.py`, `verify_editar_eliminar_objetivos.py`,
+`verify_ahorros_sync.py` y `verify_schema_completo.py`. Se borró
+`verify_resumen_cargos_extra_repository.py`.

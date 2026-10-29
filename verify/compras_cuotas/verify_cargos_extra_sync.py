@@ -13,11 +13,13 @@ sincroniza (docs/DATA_MODEL_DECISIONS.md sección 28):
   y anotadas en sync_cambios). Nada en resumen_cargos_extra.
 - resumen_por_tarjeta() los suma aparte de las compras;
   close_statement() los cuenta como impuestos, no como consumos.
-- Migración (db/schema_migrations.py migrar_cargos_extra_a_compras()): los
-  cargos que ya estaban en resumen_cargos_extra pasan a compras_cuotas con
-  su moneda y su fecha (o las deducidas), su cuota sigue al estado del
-  resumen, el tipo 'otro' se queda donde estaba, y correrla de nuevo no
-  duplica nada.
+- Migración (db/schema_migrations.py migrar_cargos_extra_a_compras(), que
+  hoy corre dentro de la baseline v0 → v1): los cargos que ya estaban en
+  resumen_cargos_extra pasan a compras_cuotas con su moneda y su fecha (o
+  las deducidas), su cuota sigue al estado del resumen, el tipo 'otro' se
+  queda donde estaba, y correrla de nuevo no duplica nada. La tabla ya no
+  existe en v2 (docs/DATA_MODEL_DECISIONS.md sección 38): para probar la
+  función se la recrea acá con su estructura v1 (DDL_RESUMEN_CARGOS_EXTRA_V1).
 - Eliminación (delete_extra_charge()): borra la compra y su cuota mientras
   el resumen está abierto; con el resumen cerrado o pagado, no.
 
@@ -27,6 +29,7 @@ Correlo con:
 
 from pathlib import Path
 import sys
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -34,13 +37,27 @@ from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from db.schema_migrations import migrar_cargos_extra_a_compras
 from repositories.cuentas_repository import CuentasRepository
-from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 from services.compras_cuotas_service import (
     FeesError,
     FeesService,
     StatementAlreadyClosedError,
     StatementAlreadyPaidError,
 )
+
+# resumen_cargos_extra como quedaba en una base v1 (db/schema_v0.sql + las
+# columnas moneda_id / fecha de MIGRACIONES_COLUMNA). Ya no existe en v2.
+DDL_RESUMEN_CARGOS_EXTRA_V1 = """
+CREATE TABLE resumen_cargos_extra (
+    id          TEXT PRIMARY KEY NOT NULL,
+    resumen_id  TEXT NOT NULL REFERENCES resumenes_tarjeta(id),
+    concepto    TEXT NOT NULL,
+    tipo        TEXT NOT NULL CHECK(tipo IN ('impuesto', 'recargo', 'ajuste', 'otro')),
+    monto_minor INTEGER NOT NULL,
+    creada_en   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    moneda_id   INTEGER REFERENCES monedas(id),
+    fecha       TEXT CHECK(fecha IS NULL OR fecha GLOB '????-??-??')
+);
+"""
 
 
 def main() -> None:
@@ -97,6 +114,19 @@ def main() -> None:
     def cargos_viejos() -> list[str]:
         return [f["id"] for f in manager.fetchall("SELECT id FROM resumen_cargos_extra ORDER BY rowid;")]
 
+    def existe_tabla(nombre: str) -> bool:
+        return manager.fetchone("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?;", (nombre,)) is not None
+
+    def cargo_viejo(resumen_id: str, concepto: str, tipo: str, monto_minor: int, moneda_id=None, fecha=None) -> str:
+        """Un cargo con la forma de la versión anterior, directo en resumen_cargos_extra."""
+        cargo_id = str(uuid.uuid4())
+        manager.execute(
+            "INSERT INTO resumen_cargos_extra (id, resumen_id, concepto, tipo, monto_minor, moneda_id, fecha) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?);",
+            (cargo_id, resumen_id, concepto, tipo, monto_minor, moneda_id, fecha),
+        )
+        return cargo_id
+
     visa = cuentas_repo.crear(nombre="VISA", tipo="credito", moneda_codigo="ARS")
     resumen_julio = svc.open_statement(visa, 7, 2026).entity_id
 
@@ -125,7 +155,7 @@ def main() -> None:
     caso("… y anotadas en sync_cambios", (True, True), (
         en_sync_cambios("compras_cuotas", paises), en_sync_cambios("cuotas_credito", cuotas_paises[0]["id"]),
     ))
-    caso("nada en resumen_cargos_extra (deprecada)", [], cargos_viejos())
+    caso("resumen_cargos_extra ya no existe (eliminada en v2)", False, existe_tabla("resumen_cargos_extra"))
 
     sin_moneda = svc.add_extra_charge(resumen_julio, concept="RECARGO", charge_type="recargo", amount_minor=2000).entity_id
     caso("sin moneda: la única de la tarjeta (ARS)", "ARS", compra(sin_moneda).get("moneda"))
@@ -169,13 +199,13 @@ def main() -> None:
     # ============================================================
     print("\n--- Migración de resumen_cargos_extra (cargos de la versión anterior) ---")
     # ============================================================
-    viejo_repo = ResumenCargosExtraRepository(manager)
+    manager.conn.executescript(DDL_RESUMEN_CARGOS_EXTRA_V1)  # la tabla de la versión anterior, solo para esta prueba
     resumen_agosto = svc.open_statement(visa, 8, 2026).entity_id
-    sellos = viejo_repo.agregar(resumen_agosto, "SELLOS", "impuesto", 1500, moneda_id=usd, fecha="2026-08-10")
-    reintegro = viejo_repo.agregar(resumen_agosto, "REINTEGRO VIEJO", "ajuste", -800)  # sin moneda ni fecha
-    otro = viejo_repo.agregar(resumen_agosto, "OTRO VIEJO", "otro", 100)  # sin categoría especial
+    sellos = cargo_viejo(resumen_agosto, "SELLOS", "impuesto", 1500, moneda_id=usd, fecha="2026-08-10")
+    reintegro = cargo_viejo(resumen_agosto, "REINTEGRO VIEJO", "ajuste", -800)  # sin moneda ni fecha
+    otro = cargo_viejo(resumen_agosto, "OTRO VIEJO", "otro", 100)  # sin categoría especial
     resumen_junio = svc.open_statement(visa, 6, 2026).entity_id
-    iva_pagado = viejo_repo.agregar(resumen_junio, "IVA", "impuesto", 2100)
+    iva_pagado = cargo_viejo(resumen_junio, "IVA", "impuesto", 2100)
     svc.pay_statement(resumen_junio, payment_date="2026-07-05", monto_pagado_minor=2100)
 
     migrar_cargos_extra_a_compras(manager.conn)

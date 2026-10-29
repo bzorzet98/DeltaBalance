@@ -40,11 +40,11 @@ TABLAS_MINIMAS = [
     "monedas", "cuentas", "cuentas_saldos", "categorias", "empleos",
     "transacciones", "resumenes_tarjeta", "compras_cuotas", "cuotas_credito",
     "deudas", "presupuestos", "ingresos_proyectados",
-    "recibos_sueldo", "descuentos_programados", "tipos_cambio",
+    "recibos_sueldo", "descuentos_programados",
     "activos_financieros", "movimientos_activo", "objetivos_ahorro",
     "asignaciones", "hogares", "hogar_miembros", "gastos_compartidos",
-    "prestamos", "cuotas_prestamo", "indices_inflacion",
-]
+    "prestamos", "cuotas_prestamo",
+]  # tipos_cambio e indices_inflacion se eliminaron en v2 (DATA_MODEL_DECISIONS.md sección 38)
 
 VISTAS_ESPERADAS = [
     "vw_balance_cuentas", "vw_cuotas_pendientes",

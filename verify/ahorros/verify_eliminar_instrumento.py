@@ -5,8 +5,7 @@ Verifica eliminar / ocultar / reactivar un instrumento de ahorro
 (services/ahorros_service.py; docs/DATA_MODEL_DECISIONS.md sección 35,
 CLAUDE.md §4):
 
-1. Sin movimientos → delete_activo() lo borra del todo (también sus filas
-   del reparto deprecated activo_objetivos, que la FK exige borrar antes).
+1. Sin movimientos → delete_activo() lo borra del todo.
 2. Con historial y saldo 0 → delete_activo() lo RECHAZA (tiene
    dependencias); ocultar_activo() lo esconde sin borrar nada:
    get_resumen_por_tipo() ya no lo trae, con incluir_ocultos=True sí
@@ -29,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from repositories.activo_objetivos_repository import ActivoObjetivosRepository
 from services.ahorros_service import ActivoNotFoundError, SavingsError, SavingsService
 
 
@@ -86,15 +84,6 @@ def main() -> None:
     resultado = svc.delete_activo(vacio)
     caso("delete_activo(): success", True, resultado.success)
     caso("el instrumento ya no existe", False, existe(vacio))
-
-    con_reparto = fci("FCI CON REPARTO VIEJO")
-    objetivo = svc.create_objetivo(nombre="MOTO").entity_id
-    ActivoObjetivosRepository(manager).crear(con_reparto, objetivo, 50.0)
-    svc.delete_activo(con_reparto)
-    caso("con una fila en activo_objetivos (deprecated): se elimina igual", False, existe(con_reparto))
-    caso("su fila de activo_objetivos también se borró", 0, manager.fetchone(
-        "SELECT COUNT(*) AS n FROM activo_objetivos WHERE activo_id = ?;", (con_reparto,),
-    )["n"])
 
     print("\n--- 2. Con historial y saldo 0: no se elimina, se oculta ---")
     historial = fci("FCI EN CERO")

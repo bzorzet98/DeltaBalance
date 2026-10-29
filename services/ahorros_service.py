@@ -122,9 +122,8 @@ Purpose:
     - get_resumen_por_tipo()/get_resumen_por_objetivo() calculan la parte de
       cada objetivo sumando lo asignado en cada movimiento
       (_partes_por_objetivo()), no saldo × porcentaje vigente.
-    La tabla activo_objetivos queda sin uso (no se borra: puede tener
-    datos) — mismo criterio que resumen_cargos_extra. Solo delete_objetivo()
-    borra sus filas del objetivo que elimina (la FK lo exige).
+    La tabla activo_objetivos quedó sin uso y se eliminó en la migración v2
+    (docs/DATA_MODEL_DECISIONS.md sección 38).
 
     Moneda por movimiento (docs/DATA_MODEL_DECISIONS.md sección 33):
     movimientos_activo.moneda_id. En acciones / CEDEARs un movimiento puede
@@ -163,7 +162,6 @@ from typing import Optional
 
 from db.database import DatabaseManager
 from utils.categorias import clave_categoria
-from repositories.activo_objetivos_repository import ActivoObjetivosRepository
 from repositories.activos_financieros_repository import ActivosFinancierosRepository
 from repositories.brokers_repository import BrokersRepository
 from repositories.objetivos_ahorro_repository import ObjetivosAhorroRepository
@@ -289,8 +287,6 @@ class SavingsService:
         self._transacciones_repo = TransaccionesRepository(db)
         self._cuentas_repo = CuentasRepository(db)
         self._brokers_repo = BrokersRepository(db)
-        # Tabla deprecated (sección 31): solo para borrar las filas de un objetivo que se elimina.
-        self._activo_objetivos_repo = ActivoObjetivosRepository(db)
 
     # ----------------------------------------------------------
     # INTERNAL HELPERS
@@ -589,9 +585,7 @@ class SavingsService:
         """
         Borra un instrumento SOLO si no tiene ningún movimiento (CLAUDE.md
         §4: sin dependencias, borrado directo). Con historial — aunque el
-        saldo sea 0 — se rechaza: se oculta con ocultar_activo(). Borra
-        también sus filas de activo_objetivos (deprecated, sección 31: la FK
-        lo exige), todo en una transacción.
+        saldo sea 0 — se rechaza: se oculta con ocultar_activo().
 
         Raises:
             ActivoNotFoundError si no existe.
@@ -605,7 +599,6 @@ class SavingsService:
             )
         conn = self._db.conn
         with self._db.transaction():
-            self._activo_objetivos_repo.eliminar_por_activo(activo_id, conn=conn)
             self._activos_repo.eliminar(activo_id, conn=conn)
         return SavingsResult(
             success=True, entity_id=activo_id, message=f"INSTRUMENTO '{activo['nombre'].upper()}' ELIMINADO.",
@@ -837,9 +830,8 @@ class SavingsService:
         unidades — pasa entera y en esa proporción, y el historial de cada
         movimiento queda coherente con el resumen. Los montos, con el mismo
         redondeo que el alta (_montos_por_porcentaje()). Todo en una
-        transacción: también borra las filas del objetivo en
-        activo_objetivos (deprecated, la FK lo exige) y el objetivo (DELETE
-        físico: la tabla no tiene soft-delete; nada más lo referencia).
+        transacción: también borra el objetivo (DELETE físico: la tabla no
+        tiene soft-delete; nada más lo referencia).
 
         Raises:
             ObjetivoNotFoundError si el objetivo o un destino no existen.
@@ -878,7 +870,6 @@ class SavingsService:
             for movimiento_id, filas in nuevas.items():
                 self._asignaciones_repo.eliminar_por_movimiento(movimiento_id, conn=conn)
                 self._crear_asignaciones(movimiento_id, filas, conn)
-            self._activo_objetivos_repo.eliminar_por_objetivo(objetivo_id, conn=conn)
             self._objetivos_repo.eliminar(objetivo_id, conn=conn)
         return SavingsResult(
             success=True, entity_id=objetivo_id, data={"movimientos_reasignados": len(nuevas)},
