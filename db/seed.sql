@@ -88,8 +88,9 @@ INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUE
 
 -- =============================================================
 -- BROKERS: no van acá. Los siembra db/schema_migrations.py
--- (BROKERS_INICIALES, INSERT OR IGNORE por nombre) en CADA inicializar():
--- este archivo solo corre en bases nuevas, y así también los reciben las
+-- (sembrar_brokers(), BROKERS_INICIALES, INSERT OR IGNORE por nombre) al
+-- crear una base nueva — antes de este archivo y de la sync, así no quedan
+-- anotados en sync_cambios — y en la migración baseline v0 → v1 de las
 -- bases que ya existían.
 -- =============================================================
 

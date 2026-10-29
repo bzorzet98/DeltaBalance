@@ -1,12 +1,15 @@
 # DeltaBalance — Modelo de datos (schema real)
 
 Este documento consolida el schema **tal como queda en una base después de
-`DatabaseManager.inicializar()`**. Ninguno de los dos archivos que lo definen lo
-muestra completo por separado:
+`DatabaseManager.inicializar()`**. Desde el versionado con `PRAGMA user_version`
+(`docs/DATA_MODEL_DECISIONS.md` §37):
 
-- `db/schema.sql`: el schema original. Se reaplica entero en cada arranque.
-- `db/schema_migrations.py`: columnas, tablas, reestructuraciones y triggers
-  agregados después.
+- `db/schema.sql`: la **foto completa del schema v1**. Solo se aplica a una base nueva.
+  Lo único que no trae son los triggers `trg_sync_*`.
+- `db/schema_migrations.py`: las migraciones versionadas (`run_migrations()`), la
+  baseline v0 → v1 (la cadena anterior de columnas, tablas, reestructuraciones) y
+  `preparar_sync()`.
+- `db/schema_v0.sql`: el `schema.sql` anterior, congelado. Solo lo usa la baseline.
 
 Se armó leyendo los dos archivos el 2026-10-23. Si cambia alguno, hay que
 actualizar este documento.
@@ -19,9 +22,19 @@ de ese archivo.
 
 ## 1. Cómo se arma el schema real
 
-Orden de `DatabaseManager.inicializar()` (`db/database.py`), en cada arranque:
+`DatabaseManager.inicializar()` (`db/database.py`) lee `PRAGMA user_version`:
 
-1. **`schema.sql`** completo (`executescript`). Lleva `CREATE … IF NOT EXISTS`, así
+- **Base nueva** (sin tablas): `schema.sql` → `sembrar_brokers()` →
+  `preparar_sync()` → `seed.sql` (solo si el archivo no existía) → `user_version = 1`.
+- **`user_version = 0`** (base anterior al versionado): backup del archivo y la
+  **baseline v0 → v1**, que es la cadena de abajo, una sola vez. Al terminar,
+  `user_version = 1`.
+- **`user_version = 1`**: ninguna migración.
+- **Siempre**, al final: `preparar_sync()`.
+
+La baseline (`_migrar_a_v1()` en `db/schema_migrations.py`) corre, en este orden:
+
+1. **`schema_v0.sql`** completo (`executescript`). Lleva `CREATE … IF NOT EXISTS`, así
    que sobre una base existente no cambia ninguna tabla.
 2. **`aplicar_migraciones_columna()`**:
    - `exigir_ids_uuid()` frena si la base todavía tiene ids enteros.
@@ -38,19 +51,20 @@ Orden de `DatabaseManager.inicializar()` (`db/database.py`), en cada arranque:
       las crea con la estructura vieja.
    6. `ampliar_tipos_ahorro()` reconstruye `activos_financieros` y
       `movimientos_activo` si su `CHECK` de `tipo` es el viejo.
-   7. `_sembrar_brokers()` carga los brokers iniciales en toda base.
+   7. `sembrar_brokers()` carga los brokers iniciales.
    8. `migrar_cargos_extra_a_compras()` mueve `resumen_cargos_extra` a
       `compras_cuotas`.
    9. `preparar_sync()`:
       - agrega `sincronizado_en` a las 22 tablas sincronizadas;
       - crea `sync_cambios` y `sync_estado`;
       - borra y vuelve a crear los 66 triggers `trg_sync_*`.
-4. **`seed.sql`**, solo si el archivo de la base no existía. Carga monedas,
-   categorías y la cuenta "Caja Efectivo".
 
-**Inventario:** 37 tablas. 30 vienen de `schema.sql` y 7 de `schema_migrations.py`.
-Además hay 3 vistas, 28 índices explícitos, 7 triggers `updated_en` y 66 triggers de
-sync.
+El `seed.sql` (monedas, categorías y la cuenta "Caja Efectivo") ya no forma parte de
+esta cadena: solo corre al crear una base nueva.
+
+**Inventario:** 37 tablas, todas en `schema.sql` (en `schema_v0.sql` había 30; las otras
+7 las crea la baseline). Además hay 3 vistas, 28 índices explícitos, 7 triggers
+`updated_en` y 66 triggers de sync (estos últimos, solo de `preparar_sync()`).
 
 ---
 
@@ -63,7 +77,7 @@ sync.
 | **ISO** | `CHECK(col GLOB '????-??-??')`. Si la columna es nullable: `col IS NULL OR …`. |
 | **mes** | `CHECK(col BETWEEN 1 AND 12)` |
 | **→ tabla** | `REFERENCES tabla(id)`. Ninguna FK declara `ON DELETE` ni `ON UPDATE`. |
-| **†** | Columna agregada por `schema_migrations.py`. No está en `schema.sql`. |
+| **†** | Columna agregada por `schema_migrations.py` en la baseline. No estaba en `schema_v0.sql`; en `schema.sql` (foto v1) sí está. |
 | **⇅** | Tabla sincronizada con Supabase: tiene `sincronizado_en` y los 3 triggers `trg_sync_<tabla>_{insert,update,delete}`. |
 
 Las columnas aparecen en el orden que tienen en una base nueva. En una base vieja,
@@ -477,8 +491,8 @@ Descuentos puntuales que se aplican en el recibo de un mes.
 
 #### `brokers` ⇅
 
-Dónde se opera un activo. `_sembrar_brokers()` carga en toda base COCOS, BULL
-MARKET, IOL, MERCADO PAGO, NACION y BALANZ.
+Dónde se opera un activo. `sembrar_brokers()` carga COCOS, BULL MARKET, IOL,
+MERCADO PAGO, NACION y BALANZ al crear la base y en la baseline v0 → v1.
 
 | Columna | Tipo | Constraints | Notas |
 | --- | --- | --- | --- |
@@ -997,6 +1011,11 @@ precisión (centésimas de punto porcentual) queda fija en el schema.
 
 ### 6.1 Schema desactualizado: `schema.sql` ≠ base real
 
+> **✅ Resuelto** con el versionado (`docs/DATA_MODEL_DECISIONS.md` §37): `schema.sql`
+> es ahora la foto completa del schema v1. Lo que sigue describe `schema_v0.sql`, el
+> archivo anterior. Queda como referencia de qué agrega la baseline. Excepción que
+> sigue vigente: los triggers de sync no están en ningún `.sql` (punto 5).
+
 Para entender el modelo, leer `schema.sql` solo no alcanza y además confunde. Las
 diferencias concretas:
 
@@ -1053,6 +1072,10 @@ Dos consecuencias que vale la pena tener presentes:
   lista de `sync_engine.py` antes de borrar la tabla.
 
 ### 6.3 El problema de `PRAGMA user_version`
+
+> **✅ Implementado** (v1 baseline, `docs/DATA_MODEL_DECISIONS.md` §37). Lo que sigue
+> describe cómo funcionaba antes: hoy esa cadena corre una sola vez por base, como
+> migración v0 → v1. `preparar_sync()` sigue corriendo en cada arranque.
 
 **Estado actual:** `PRAGMA user_version` no se lee ni se escribe en ningún lado, así
 que vale 0 en toda base. **La base no sabe en qué versión de schema está.** Cada
