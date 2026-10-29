@@ -3,18 +3,20 @@ verify/schema/verify_user_version.py
 
 Verifica el versionado del schema con PRAGMA user_version
 (DatabaseManager.inicializar() + db/schema_migrations.py run_migrations(),
-docs/DATA_MODEL_DECISIONS.md secciones 37 y 38), contra DBs temporales —
+docs/DATA_MODEL_DECISIONS.md secciones 37, 38 y 39), contra DBs temporales —
 nunca contra data/:
 
 A. Base nueva (el archivo no existe): db/schema.sql + brokers + sync +
-   seed, user_version = VERSION_SCHEMA (2), las 33 tablas, el seed anotado
+   seed, user_version = VERSION_SCHEMA (3), las 33 tablas, el seed anotado
    en sync_cambios (los brokers no), los triggers de sync (3 por tabla
-   sincronizada) y ningún backup.
-B. Base existente en v0 (db/schema_v0.sql + seed + datos con la estructura
-   vieja de presupuestos / ingresos_proyectados): UN backup ANTES de migrar,
-   la cadena anterior convierte las tablas sin perder filas, la v2 borra
-   las tablas sin uso y queda user_version = 2.
-C. La foto y las migraciones (v0 → v1 → v2) dejan el MISMO schema: por cada
+   sincronizada) y ningún backup. Además: schema.sql solo (sin
+   DatabaseManager) ya marca VERSION_SCHEMA.
+B. Base existente en v0 (db/schema_v0.sql + db/seed_v0.sql + datos con la
+   estructura vieja de presupuestos / ingresos_proyectados): UN backup ANTES
+   de migrar, la cadena anterior convierte las tablas sin perder filas, la
+   v2 borra las tablas sin uso, la v3 pasa a moneda_codigo y queda
+   user_version = 3.
+C. La foto y las migraciones (v0 → v1 → v2 → v3) dejan el MISMO schema: por cada
    tabla, mismas columnas en el mismo orden (nombre, tipo, NOT NULL,
    DEFAULT, PK) y mismas FKs; mismos índices, vistas y triggers. (Los CHECK
    no se comparan: PRAGMA no los expone.)
@@ -30,7 +32,21 @@ H. v1 → v2: una base en v1 con una fila en cada tabla que se elimina (y un
    cambio de activo_objetivos pendiente en sync_cambios): backup ANTES de
    migrar (con las cuatro tablas y sus filas adentro), las cuatro tablas
    desaparecen, sync_cambios queda sin activo_objetivos, el resto de los
-   datos sigue ahí, mismas tablas que una base nueva, user_version = 2.
+   datos sigue ahí, mismas tablas que una base nueva (sigue hasta v3).
+I. v2 → v3: una base en v2 con datos en moneda_id (una transacción en USD,
+   un saldo en USD, un movimiento sin moneda) y un cambio de cuentas_saldos
+   pendiente en sync_cambios ('<cuenta>|2'): backup ANTES de migrar (en v2,
+   con monedas.id), monedas con `codigo` de PK y sin id, ninguna tabla con
+   moneda_id, cada fila con el código de su moneda (el NULL sigue NULL),
+   la clave en sync_cambios pasa a '<cuenta>|USD', la vista
+   vw_balance_cuentas da el saldo, el índice de transacciones está sobre
+   moneda_codigo, el trigger de sync de cuentas_saldos anota la clave con
+   el código, foreign_key_check vacío, mismas tablas que una base nueva.
+J. v3 frena si una moneda tiene otro id que el que espera la sync
+   (IDS_MONEDA_REMOTOS): RuntimeError, no se migra nada y queda en v2.
+K. Sync (sync/sync_engine.py): la traducción codigo ↔ moneda_id en el
+   borde — una fila sube con moneda_id, una bajada vuelve con
+   moneda_codigo, y el uuid remoto de un saldo es el mismo que en v2.
 
 Correlo con:
     python verify/schema/verify_user_version.py
@@ -44,10 +60,11 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from verify._dummy_db import SEED_PATH
+from verify._dummy_db import SCHEMA_PATH, SEED_V0_PATH
 from db.database import DatabaseManager
 from db.schema_migrations import (
     BROKERS_INICIALES,
+    IDS_MONEDA_REMOTOS,
     MIGRACIONES_VERSIONADAS,
     SCHEMA_V0_PATH,
     TABLAS_ELIMINADAS_V2,
@@ -116,6 +133,11 @@ def main() -> None:
     caso("foreign_key_check vacío", [], [tuple(f) for f in nueva.execute("PRAGMA foreign_key_check;")])
     caso("ninguna de las tablas eliminadas en v2", [], [t for t in TABLAS_ELIMINADAS_V2 if t in tablas(nueva)])
     tablas_foto = tablas(nueva)
+    solo_foto = sqlite3.connect(carpeta / "solo_schema.db")
+    solo_foto.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    caso("schema.sql solo (sin DatabaseManager) ya marca user_version = VERSION_SCHEMA", VERSION_SCHEMA,
+         leer_version(solo_foto))
+    solo_foto.close()
 
     # ============================================================
     print("\n=== B. Base existente en v0 (baseline) ===\n")
@@ -123,7 +145,7 @@ def main() -> None:
     path_vieja = carpeta / "vieja.db"
     crudo = sqlite3.connect(path_vieja)
     crudo.executescript(SCHEMA_V0_PATH.read_text(encoding="utf-8"))
-    crudo.executescript(SEED_PATH.read_text(encoding="utf-8"))
+    crudo.executescript(SEED_V0_PATH.read_text(encoding="utf-8"))
     ars = crudo.execute("SELECT id FROM monedas WHERE codigo = 'ARS';").fetchone()[0]
     categoria = crudo.execute("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;").fetchone()[0]
     crudo.execute(
@@ -240,13 +262,13 @@ def main() -> None:
     # ============================================================
     print("\n=== H. v1 → v2: se eliminan las tablas sin uso ===\n")
     # ============================================================
-    # Una base en v1: schema_v0.sql + seed + la baseline (la migración 1 de
-    # verdad), marcada a mano en 1 — sin pasar por inicializar(), que la
-    # llevaría directo a v2.
+    # Una base en v1: schema_v0.sql + seed_v0.sql + la baseline (la
+    # migración 1 de verdad), marcada a mano en 1 — sin pasar por
+    # inicializar(), que la llevaría directo a la última versión.
     path_v1 = carpeta / "v1.db"
     crudo = sqlite3.connect(path_v1)
     crudo.executescript(SCHEMA_V0_PATH.read_text(encoding="utf-8"))
-    crudo.executescript(SEED_PATH.read_text(encoding="utf-8"))
+    crudo.executescript(SEED_V0_PATH.read_text(encoding="utf-8"))
     MIGRACIONES_VERSIONADAS[1](crudo)
     marcar_version(crudo, 1)
     caso("la base de prueba arranca en user_version = 1", 1, leer_version(crudo))
@@ -296,7 +318,7 @@ def main() -> None:
             [contar(copia, f"SELECT COUNT(*) FROM {t};") for t in TABLAS_ELIMINADAS_V2], leer_version(copia),
         ))
         copia.close()
-    caso("quedó en user_version = 2", 2, leer_version(v2))
+    caso("quedó en user_version = VERSION_SCHEMA (pasó por v2 y siguió)", VERSION_SCHEMA, leer_version(v2))
     caso("las cuatro tablas ya no existen", [], [t for t in TABLAS_ELIMINADAS_V2 if t in tablas(v2)])
     caso("… ni sus índices", [], [i for i in objetos(v2, "index") if any(t in i for t in TABLAS_ELIMINADAS_V2)])
     caso("… ni triggers de sync de activo_objetivos", [], [t for t in objetos(v2, "trigger") if "activo_objetivos" in t])
@@ -310,6 +332,148 @@ def main() -> None:
     caso("mismas tablas que una base nueva", tablas_foto, tablas(v2))
     caso("foreign_key_check vacío", [], [tuple(f) for f in v2.execute("PRAGMA foreign_key_check;")])
     manager_v1.desconectar()
+
+    def base_en_v2(nombre: str) -> sqlite3.Connection:
+        """schema_v0.sql + seed_v0.sql + las migraciones 1 y 2 de verdad, marcada en 2 — sin pasar por inicializar()."""
+        conn = sqlite3.connect(carpeta / nombre)
+        conn.executescript(SCHEMA_V0_PATH.read_text(encoding="utf-8"))
+        conn.executescript(SEED_V0_PATH.read_text(encoding="utf-8"))
+        MIGRACIONES_VERSIONADAS[1](conn)
+        MIGRACIONES_VERSIONADAS[2](conn)
+        marcar_version(conn, 2)
+        return conn
+
+    def columnas(conn, tabla: str) -> list[str]:
+        return [f[1] for f in conn.execute(f"PRAGMA table_info({tabla});")]
+
+    # ============================================================
+    print("\n=== I. v2 → v3: monedas por código ===\n")
+    # ============================================================
+    path_v2 = carpeta / "v2.db"
+    crudo = base_en_v2(path_v2.name)
+    caso("la base de prueba arranca en user_version = 2, con monedas.id", (2, True),
+         (leer_version(crudo), "id" in columnas(crudo, "monedas")))
+    ids = {codigo: moneda_id for moneda_id, codigo in crudo.execute("SELECT id, codigo FROM monedas;")}
+    caja = crudo.execute("SELECT id FROM cuentas WHERE nombre = 'Caja Efectivo';").fetchone()[0]
+    categoria = crudo.execute("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;").fetchone()[0]
+    transaccion, activo, movimiento = (str(uuid.uuid4()) for _ in range(3))
+    # El trigger de sync (creado por la baseline) anota la clave con el id: '<caja>|2'.
+    crudo.execute(
+        "INSERT INTO cuentas_saldos (cuenta_id, moneda_id, saldo_inicial_minor) VALUES (?, ?, 50000);", (caja, ids["USD"]),
+    )
+    crudo.execute(
+        "INSERT INTO transacciones (id, fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor) "
+        "VALUES (?, '2026-09-10', 'COMPRA EN USD', ?, ?, ?, 'egreso', 10000);",
+        (transaccion, caja, categoria, ids["USD"]),
+    )
+    crudo.execute("INSERT INTO activos_financieros (id, nombre, tipo, moneda_id) VALUES (?, 'CEDEAR', 'cedear', ?);", (activo, ids["ARS"]))
+    crudo.execute(
+        "INSERT INTO movimientos_activo (id, activo_id, tipo, fecha, monto_total_minor, moneda_id) "
+        "VALUES (?, ?, 'compra', '2026-09-11', 7000, NULL);",
+        (movimiento, activo),
+    )
+    crudo.commit()
+    clave_vieja, clave_nueva = f"{caja}|{ids['USD']}", f"{caja}|USD"
+    caso("sync_cambios tiene el saldo con la clave vieja ('<caja>|2')", 1,
+         contar(crudo, "SELECT COUNT(*) FROM sync_cambios WHERE tabla = 'cuentas_saldos' AND clave = ?;", (clave_vieja,)))
+    crudo.close()
+
+    manager_v2 = DatabaseManager(db_path=path_v2)
+    manager_v2.inicializar()
+    v3 = manager_v2.conn
+    caso("hizo UN backup antes de migrar", 1, len(backups(path_v2)))
+    caso("… con el nombre de la versión de origen (v2)", True,
+         all("_backup_antes_migracion_v2_" in p.name for p in backups(path_v2)))
+    respaldo = next(iter(backups(path_v2)), None)
+    if respaldo is not None:
+        copia = sqlite3.connect(respaldo)
+        caso("el backup es la base en v2 (monedas con id, transacciones con moneda_id)", (2, True, True), (
+            leer_version(copia), "id" in columnas(copia, "monedas"), "moneda_id" in columnas(copia, "transacciones"),
+        ))
+        copia.close()
+    caso("quedó en user_version = 3", 3, leer_version(v3))
+    caso("monedas: codigo, simbolo, decimales — sin id", ["codigo", "simbolo", "decimales"], columnas(v3, "monedas"))
+    caso("… con `codigo` de PRIMARY KEY", ["codigo"],
+         [f[1] for f in v3.execute("PRAGMA table_info(monedas);") if f[5]])
+    caso("las 7 monedas siguen ahí", sorted(IDS_MONEDA_REMOTOS), sorted(f[0] for f in v3.execute("SELECT codigo FROM monedas;")))
+    caso("ninguna tabla con moneda_id", [], [t for t in tablas(v3) if "moneda_id" in columnas(v3, t)])
+    caso("la transacción quedó en USD (moneda_codigo), monto intacto", ("USD", 10000),
+         tuple(v3.execute("SELECT moneda_codigo, monto_minor FROM transacciones WHERE id = ?;", (transaccion,)).fetchone()))
+    caso("los saldos de Caja: ARS (seed) y USD (500.00)", [("ARS", 0), ("USD", 50000)], [
+        tuple(f) for f in v3.execute(
+            "SELECT moneda_codigo, saldo_inicial_minor FROM cuentas_saldos WHERE cuenta_id = ? ORDER BY moneda_codigo;", (caja,),
+        )
+    ])
+    caso("el activo quedó en ARS y el movimiento sin moneda sigue sin moneda", ("ARS", None), (
+        v3.execute("SELECT moneda_codigo FROM activos_financieros WHERE id = ?;", (activo,)).fetchone()[0],
+        v3.execute("SELECT moneda_codigo FROM movimientos_activo WHERE id = ?;", (movimiento,)).fetchone()[0],
+    ))
+    caso("FK de transacciones.moneda_codigo → monedas(codigo)", [("monedas", "moneda_codigo", "codigo")],
+         [tuple(f)[2:5] for f in v3.execute("PRAGMA foreign_key_list(transacciones);") if tuple(f)[2] == "monedas"])
+    caso("sync_cambios: la clave del saldo pasó a '<caja>|USD'", (0, 1), (
+        contar(v3, "SELECT COUNT(*) FROM sync_cambios WHERE tabla = 'cuentas_saldos' AND clave = ?;", (clave_vieja,)),
+        contar(v3, "SELECT COUNT(*) FROM sync_cambios WHERE tabla = 'cuentas_saldos' AND clave = ?;", (clave_nueva,)),
+    ))
+    caso("vw_balance_cuentas: Caja en USD = 500.00 − 100.00", 40000, v3.execute(
+        "SELECT saldo_minor FROM vw_balance_cuentas WHERE cuenta_id = ? AND moneda = 'USD';", (caja,),
+    ).fetchone()[0])
+    caso("idx_transacciones_moneda está sobre moneda_codigo", ["moneda_codigo"],
+         [f[2] for f in v3.execute("PRAGMA index_info(idx_transacciones_moneda);")])
+    v3.execute("DELETE FROM sync_cambios WHERE tabla = 'cuentas_saldos';")
+    v3.execute("UPDATE cuentas_saldos SET saldo_inicial_minor = 60000 WHERE cuenta_id = ? AND moneda_codigo = 'USD';", (caja,))
+    v3.commit()
+    caso("el trigger de sync de cuentas_saldos anota la clave con el código", [clave_nueva],
+         [f[0] for f in v3.execute("SELECT clave FROM sync_cambios WHERE tabla = 'cuentas_saldos';")])
+    caso("mismas tablas que una base nueva", tablas_foto, tablas(v3))
+    caso("foreign_key_check vacío", [], [tuple(f) for f in v3.execute("PRAGMA foreign_key_check;")])
+    caso("PRAGMA foreign_keys sigue ON después de la migración", 1, v3.execute("PRAGMA foreign_keys;").fetchone()[0])
+    manager_v2.desconectar()
+
+    # ============================================================
+    print("\n=== J. v3 frena si una moneda tiene otro id que el de la sync ===\n")
+    # ============================================================
+    path_mal = carpeta / "ids_distintos.db"
+    crudo = base_en_v2(path_mal.name)
+    crudo.execute("UPDATE monedas SET id = 99 WHERE codigo = 'BRL';")
+    crudo.commit()
+    crudo.close()
+    manager_mal = DatabaseManager(db_path=path_mal)
+    try:
+        manager_mal.inicializar()
+        caso("inicializar() frena", "RuntimeError", "no frenó")
+    except RuntimeError as err:
+        caso("inicializar() frena (RuntimeError que nombra la moneda)", True, "BRL" in str(err))
+    caso("… queda en user_version = 2", 2, leer_version(manager_mal.conn))
+    caso("… sin migrar nada (monedas con id, transacciones con moneda_id)", (True, True), (
+        "id" in columnas(manager_mal.conn, "monedas"), "moneda_id" in columnas(manager_mal.conn, "transacciones"),
+    ))
+    manager_mal.desconectar()
+
+    # ============================================================
+    print("\n=== K. Sync: codigo ↔ moneda_id en el borde ===\n")
+    # ============================================================
+    try:
+        from sync import sync_engine
+    except ImportError as err:  # dependencias de sync/ (postgrest, keyring…) no instaladas
+        print(f"(Se saltea: no se pudo importar sync/sync_engine.py — {err})")
+    else:
+        cuenta = str(uuid.uuid4())
+        caso("uuid remoto de un saldo: el mismo que en v2 ('<cuenta>|2')",
+             sync_engine.uuid_compuesto("cuentas_saldos", f"{cuenta}|2"),
+             sync_engine.uuid_remoto("cuentas_saldos", f"{cuenta}|USD"))
+        caso("al subir: moneda_codigo → moneda_id",
+             {"id": "x", "moneda_id": 2},
+             sync_engine._monedas_a_remoto({"id": "x", "moneda_codigo": "USD"}))
+        caso("al subir: moneda_codigo NULL → moneda_id NULL",
+             {"moneda_id": None}, sync_engine._monedas_a_remoto({"moneda_codigo": None}))
+        bajada = sync_engine._normalizar_remota(
+            "cuentas_saldos", {"datos": '{"cuenta_id": "%s", "moneda_id": 2, "saldo_inicial_minor": 5}' % cuenta},
+        )
+        caso("al bajar: moneda_id → moneda_codigo, y la clave local con el código",
+             ({"cuenta_id": cuenta, "moneda_codigo": "USD", "saldo_inicial_minor": 5}, f"{cuenta}|USD"),
+             (bajada["datos"], bajada["clave_local"]))
+        caso("al bajar: un id desconocido queda sin traducir (guardar_fila() lo rechaza)",
+             {"moneda_id": 42}, sync_engine._monedas_a_local({"moneda_id": 42}))
 
     print(f"\n{casos_ok}/{casos_total} casos OK")
     print(f"(Las bases de prueba y sus backups quedan en {carpeta} — no es data/.)")

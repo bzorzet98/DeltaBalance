@@ -1734,3 +1734,83 @@ tabla con su forma v1 para probar la función de la baseline),
 `verify_eliminar_instrumento.py`, `verify_editar_eliminar_objetivos.py`,
 `verify_ahorros_sync.py` y `verify_schema_completo.py`. Se borró
 `verify_resumen_cargos_extra_repository.py`.
+
+## 39. Migración v3: monedas con clave natural (`moneda_codigo`) — ✅ implementado
+
+Pedido explícito del usuario, siguiendo `docs/DATA_MODEL_TARGET.md`: `monedas` pasa a
+tener `codigo` como PRIMARY KEY, sin el id entero, y cada `moneda_id INTEGER → monedas(id)`
+pasa a `moneda_codigo TEXT → monedas(codigo)`, en la misma posición de la tabla. Son 13
+tablas: `cuentas_saldos` (parte de su PK), `empleos`, `transacciones`, `compras_cuotas`,
+`deudas`, `presupuestos`, `ingresos_proyectados`, `activos_financieros` (no estaba en el
+pedido, pero sin ella su FK quedaba rota), `movimientos_activo`, `prestamos` y los tres
+snapshots mensuales. `VERSION_SCHEMA = 3`.
+
+**Migración** (`_migrar_a_v3()` en `db/schema_migrations.py`):
+
+- Antes de tocar nada, frena (`RuntimeError`, la base queda en v2) en dos casos:
+  - si alguna moneda tiene otro id que el de `IDS_MONEDA_REMOTOS` (ver Sync, abajo);
+  - si alguna fila apunta a un `moneda_id` inexistente.
+- Todo en UNA transacción, con `PRAGMA foreign_keys = OFF` mientras dura (se vuelve a
+  prender pase lo que pase). Cada tabla se reconstruye con el procedimiento de SQLite:
+  tabla nueva al lado, copia con el código de su moneda, borrado y rename. La tabla nueva
+  sale de su propio `CREATE TABLE` de `sqlite_master` transformado, así conserva el resto
+  de sus columnas y restricciones tal como están en esa base. Después se rehacen sus
+  índices y triggers. `monedas` se reemplaza al final.
+- Las vistas salen mientras dura y se recrean al final. Cada `RENAME` revalida todas, y
+  una vista sobre una tabla que se está reemplazando la hace fallar.
+  `vw_balance_cuentas` se recrea con el join por código.
+- Las claves de `cuentas_saldos` en `sync_cambios` pasan de `'<cuenta>|1'` a
+  `'<cuenta>|ARS'`.
+- `PRAGMA foreign_key_check` antes del COMMIT.
+- Los datos no cambian, `sincronizado_en` incluido. Backup previo, como en toda migración
+  (`*_backup_antes_migracion_v2_*.db`).
+
+**Sync (decisión del usuario: traducir en el borde).** Supabase sigue guardando las filas
+con `moneda_id` entero. `sync/sync_engine.py` traduce en tres lugares:
+
+- **Al subir** (`_monedas_a_remoto()`): `moneda_codigo` → `moneda_id`.
+- **Al bajar** (`_monedas_a_local()`, dentro de `_normalizar_remota()`): `moneda_id` →
+  `moneda_codigo`.
+- **En la clave remota de `cuentas_saldos`** (`uuid_remoto()` → `_clave_remota()`): el
+  uuid sigue calculándose de `'<cuenta>|1'`.
+
+El mapa es `IDS_MONEDA_REMOTOS` (ARS=1, USD=2, USDT=3, USDC=4, BTC=5, CLP=6, BRL=7). Son
+los ids que daba el AUTOINCREMENT del seed, iguales en toda base: ningún código inserta
+otras monedas. Así:
+
+- lo ya subido no se toca;
+- no hay que volver a subir nada;
+- una instalación que siga en v2 (la app empaquetada) sigue sincronizando con una en v3.
+
+Una moneda sin id conocido (agregada después de v3) viaja como `moneda_codigo`, sin
+traducir.
+
+**Otros cambios:**
+
+- **`schema.sql` marca su propia versión.** Termina con `PRAGMA user_version = 3`, igual
+  a `VERSION_SCHEMA`; hay que subirlas juntas y el verify chequea que coincidan. Una base
+  armada solo con ese archivo (`verify/_dummy_db.py`, `tests/`) ya queda en su versión.
+  Antes quedaba en 0 y `inicializar()` le corría la baseline encima, que sobre una foto v3
+  falla.
+- **`db/seed_v0.sql` (congelado).** El seed nuevo escribe `moneda_codigo`. Para armar una
+  base vieja va `schema_v0.sql` + `seed_v0.sql`
+  (`verify/_dummy_db.py crear_dummy_db_v0()`).
+- **Triggers de sync con la clave real.** `preparar_sync()` toma la clave primaria de cada
+  tabla con `PRAGMA table_info` (`_claves_reales()`), no de `CLAVES_SYNC`. La baseline lo
+  corre sobre bases viejas, cuya `cuentas_saldos` todavía tiene `moneda_id`.
+- **`CLAVES_SYNC["cuentas_saldos"]`** = (`cuenta_id`, `moneda_codigo`).
+- **Se eliminó `DatabaseManager.obtener_moneda_id()`.**
+- **Repositories, services y `ui/`:** todo parámetro, clave de dict o variable
+  `moneda_id` pasa a `moneda_codigo` (el código) en la misma posición, y
+  `currency_id` → `currency_code`. Algunas listas que se ordenaban por moneda pasan a
+  orden alfabético de código. El primer caso es `listar_por_periodo` de los snapshots;
+  la lista completa está en el reporte de la tarea.
+
+**Lo que no se tocó** (decisión del usuario): `legacy_migration/` y `tests/`.
+`legacy_migration/migrar_a_uuid_pk.py` ya no sirve contra una base nueva v3, y
+`verify/schema/verify_uuid_pk.py` saltea esa parte. La cadena de la baseline
+(`MIGRACIONES_COLUMNA`, reestructuraciones, `migrar_cargos_extra_a_compras()`) sigue
+escrita con `moneda_id`, porque corre sobre bases v0.
+
+Verify: `verify/schema/verify_user_version.py`, casos I (v2 → v3 con datos), J (ids que no
+coinciden) y K (traducción de la sync), más la comparación foto vs. migraciones desde v0.

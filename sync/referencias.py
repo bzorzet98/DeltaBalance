@@ -22,7 +22,8 @@ compartida a una tabla sincronizada que no es compartida. Una FK nueva de
 ese tipo queda cubierta sin tocar este módulo. No se tocan las FK a otra
 compartida (hogar_id, gasto_compartido_id: el padre viaja a todos los
 miembros, en orden de dependencias) ni las FK a tablas que no se
-sincronizan (monedas: mismos ids en toda base, por el seed).
+sincronizan (monedas: la clave es el código, el mismo en toda base; en
+Supabase viaja como moneda_id y lo traduce sync_engine.py).
 
 --- Al subir: la referencia en forma portable (para_subir()) ---
 

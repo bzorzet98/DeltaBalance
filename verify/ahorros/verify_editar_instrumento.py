@@ -65,8 +65,8 @@ def main() -> None:
     manager = DatabaseManager(db_path=db_path)
     manager.inicializar()
     svc = SavingsService(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    ars = "ARS"
+    usd = "USD"
     brokers = {b["nombre"]: b["id"] for b in svc.get_brokers()}
     cuentas = CuentasRepository(manager)
     cuenta_a = cuentas.crear(nombre="COCOS", tipo="debito", moneda_codigo="ARS")
@@ -77,16 +77,16 @@ def main() -> None:
 
     def campos(activo_id: str) -> tuple:
         f = fila(activo_id)
-        return (f["nombre"], f["tipo"], f["broker_id"], f["cuenta_id"], f["moneda_id"],
+        return (f["nombre"], f["tipo"], f["broker_id"], f["cuenta_id"], f["moneda_codigo"],
                 f["comision_compra_minor"], f["comision_venta_minor"])
 
     activo = svc.create_activo(
-        nombre="COCOS AHORRO", tipo="fci", moneda_id=ars, cuenta_id=cuenta_a, broker_id=brokers["COCOS"],
+        nombre="COCOS AHORRO", tipo="fci", moneda_codigo=ars, cuenta_id=cuenta_a, broker_id=brokers["COCOS"],
     ).entity_id
 
     print("--- 1. Editar todo (sin movimientos) ---")
     resultado = svc.update_activo(
-        activo, nombre="  COCOS PLUS  ", broker_id=brokers["BULL MARKET"], moneda_id=usd, cuenta_id=cuenta_b,
+        activo, nombre="  COCOS PLUS  ", broker_id=brokers["BULL MARKET"], moneda_codigo=usd, cuenta_id=cuenta_b,
         comision_compra_minor=100, comision_venta_minor=250,
     )
     caso("update_activo(): success", True, resultado.success)
@@ -104,11 +104,11 @@ def main() -> None:
     print("\n--- 3. Con movimientos la moneda no se cambia ---")
     svc.registrar_aporte(activo, 100000, "2026-01-05", crear_transaccion=False)
     caso_excepcion("cambiar la moneda con un movimiento → SavingsError", SavingsError,
-                   lambda: svc.update_activo(activo, moneda_id=ars))
-    caso("tras el rechazo sigue en USD", usd, fila(activo)["moneda_id"])
-    svc.update_activo(activo, nombre="COCOS USD", moneda_id=usd)
+                   lambda: svc.update_activo(activo, moneda_codigo=ars))
+    caso("tras el rechazo sigue en USD", usd, fila(activo)["moneda_codigo"])
+    svc.update_activo(activo, nombre="COCOS USD", moneda_codigo=usd)
     caso("la misma moneda no es un cambio: el nombre se edita igual", ("COCOS USD", usd),
-         (fila(activo)["nombre"], fila(activo)["moneda_id"]))
+         (fila(activo)["nombre"], fila(activo)["moneda_codigo"]))
     svc.update_activo(activo, broker_id=brokers["COCOS"], cuenta_id=cuenta_a)
     caso("broker y cuenta se siguen editando con movimientos", (brokers["COCOS"], cuenta_a),
          (fila(activo)["broker_id"], fila(activo)["cuenta_id"]))
@@ -123,8 +123,8 @@ def main() -> None:
     caso_excepcion("comisión negativa → SavingsError", SavingsError,
                    lambda: svc.update_activo(activo, comision_compra_minor=-1))
     caso("tras los rechazos, nada cambió", antes, campos(activo))
-    otro = svc.create_activo(nombre="SIN MOVIMIENTOS", tipo="plazo_flex", moneda_id=ars).entity_id
-    caso_excepcion("moneda inexistente → SavingsError", SavingsError, lambda: svc.update_activo(otro, moneda_id=999999))
+    otro = svc.create_activo(nombre="SIN MOVIMIENTOS", tipo="plazo_flex", moneda_codigo=ars).entity_id
+    caso_excepcion("moneda inexistente → SavingsError", SavingsError, lambda: svc.update_activo(otro, moneda_codigo="XXX"))
     caso_excepcion("activo inexistente → ActivoNotFoundError", ActivoNotFoundError,
                    lambda: svc.update_activo("no-existe", nombre="X"))
     caso("el tipo del otro tampoco cambió", "plazo_flex", fila(otro)["tipo"])

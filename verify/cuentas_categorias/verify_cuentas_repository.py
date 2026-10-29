@@ -96,15 +96,15 @@ def main() -> None:
     cuenta_saldo_id = repo.crear(nombre="Cuenta Saldo Repo", tipo="efectivo", moneda_codigo="ARS", saldo_inicial=0.0)
 
     categoria = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'ingreso' LIMIT 1;")
-    moneda = manager.fetchone("SELECT id, decimales FROM monedas WHERE codigo = 'ARS';")
+    moneda = manager.fetchone("SELECT codigo, decimales FROM monedas WHERE codigo = 'ARS';")
     monto_ingreso = 500.0
     monto_minor = round(monto_ingreso * (10 ** moneda["decimales"]))
     manager.execute(
         """
-        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
+        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, monto_minor)
         VALUES (?, ?, ?, ?, ?, ?, ?);
         """,
-        ("2026-01-15", "Ingreso de prueba", cuenta_saldo_id, categoria["id"], moneda["id"], "ingreso", monto_minor),
+        ("2026-01-15", "Ingreso de prueba", cuenta_saldo_id, categoria["id"], moneda["codigo"], "ingreso", monto_minor),
     )
 
     saldo = repo.obtener_saldo(cuenta_saldo_id, "ARS")

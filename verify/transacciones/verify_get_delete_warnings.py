@@ -57,7 +57,7 @@ def main() -> None:
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
         "AND subcategoria = 'AUTOTRANSFERENCIA';"
     )["id"]
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     categoria_inversiones = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
         "AND subcategoria = 'INVERSIONES';"
@@ -91,7 +91,7 @@ def main() -> None:
     caso("pata de entrada: transaccion_par_id apunta de vuelta a la pata de salida", tx_salida, avisos_entrada["transaccion_par_id"])
 
     print("\n--- get_delete_warnings() sobre el origen de un movimiento de ahorro ---")
-    activo = savings_svc.create_activo(nombre="FCI Warnings", tipo="fci", moneda_id=moneda_ars).entity_id
+    activo = savings_svc.create_activo(nombre="FCI Warnings", tipo="fci", moneda_codigo=moneda_ars).entity_id
     objetivo = savings_svc.create_objetivo(nombre="Objetivo Warnings").entity_id
     compra = savings_svc.register_purchase(
         activo_id=activo, fecha="2026-01-12", monto_total_minor=20000,

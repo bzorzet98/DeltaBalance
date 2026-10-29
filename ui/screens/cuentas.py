@@ -169,8 +169,8 @@ def build(
             lista_chips_moneda = ft.Row(spacing=6, wrap=True)
             fila_agregar_moneda = ft.Row(spacing=8, visible=False)
 
-            def _moneda_ids_actuales() -> set:
-                return {s["moneda_id"] for s in cuenta_actual["datos"]["saldos"]}
+            def _moneda_codigos_actuales() -> set:
+                return {s["moneda_codigo"] for s in cuenta_actual["datos"]["saldos"]}
 
             def _refrescar_chips_moneda() -> None:
                 saldos = cuenta_actual["datos"]["saldos"]
@@ -193,14 +193,14 @@ def build(
                 dialogo.update()
 
             def _mostrar_fila_agregar_moneda(e: ft.ControlEvent) -> None:
-                disponibles = [m for m in monedas_disponibles if m["id"] not in _moneda_ids_actuales()]
+                disponibles = [m for m in monedas_disponibles if m["codigo"] not in _moneda_codigos_actuales()]
                 if not disponibles:
                     _mostrar_error("La cuenta ya opera en todas las monedas disponibles.")
                     return
 
                 campo_moneda_nueva = CampoFiltrable(
                     page,
-                    [(str(m["id"]), m["codigo"]) for m in disponibles],
+                    [(m["codigo"], m["codigo"]) for m in disponibles],
                     on_seleccionar=lambda id_: None,
                     placeholder="Moneda",
                     width=180,
@@ -213,7 +213,7 @@ def build(
                         return
                     try:
                         resultado = accounts_service.add_currency_to_account(
-                            cuenta["id"], int(campo_moneda_nueva.id_seleccionado)
+                            cuenta["id"], campo_moneda_nueva.id_seleccionado
                         )
                     except AccountsError as err:
                         _mostrar_error(str(err))

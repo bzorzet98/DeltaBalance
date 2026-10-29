@@ -41,13 +41,13 @@ def main() -> None:
     manager.inicializar()
     repo = ActivosFinancierosRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    moneda_ars = "ARS"
+    moneda_usd = "USD"
 
     print("--- crear() ---")
-    activo_1 = repo.crear(nombre="SPY", tipo="accion", moneda_id=moneda_usd)
-    activo_2 = repo.crear(nombre="FCI Ahorro Pesos", tipo="fci", moneda_id=moneda_ars)
-    activo_3 = repo.crear(nombre="Plazo Fijo Banco X", tipo="plazo_fijo", moneda_id=moneda_ars)
+    activo_1 = repo.crear(nombre="SPY", tipo="accion", moneda_codigo=moneda_usd)
+    activo_2 = repo.crear(nombre="FCI Ahorro Pesos", tipo="fci", moneda_codigo=moneda_ars)
+    activo_3 = repo.crear(nombre="Plazo Fijo Banco X", tipo="plazo_fijo", moneda_codigo=moneda_ars)
     caso(
         "crear() devuelve ids numéricos distintos",
         True,
@@ -78,12 +78,12 @@ def main() -> None:
     fila_1 = repo.obtener_por_id(activo_1)
     caso("actualizar(nombre=...) solo: nombre cambia", "SPY (renombrado)", fila_1["nombre"])
     caso("actualizar(nombre=...) solo: tipo mantiene su valor previo (NO_CAMBIAR)", "accion", fila_1["tipo"])
-    caso("actualizar(nombre=...) solo: moneda_id mantiene su valor previo (NO_CAMBIAR)", moneda_usd, fila_1["moneda_id"])
+    caso("actualizar(nombre=...) solo: moneda_codigo mantiene su valor previo (NO_CAMBIAR)", moneda_usd, fila_1["moneda_codigo"])
 
-    repo.actualizar(activo_1, tipo="cripto", moneda_id=moneda_ars)
+    repo.actualizar(activo_1, tipo="cripto", moneda_codigo=moneda_ars)
     fila_1_v2 = repo.obtener_por_id(activo_1)
-    caso("actualizar(tipo=..., moneda_id=...): ambos cambian", True, fila_1_v2["tipo"] == "cripto" and fila_1_v2["moneda_id"] == moneda_ars)
-    caso("actualizar(tipo=..., moneda_id=...): nombre mantiene su valor previo", "SPY (renombrado)", fila_1_v2["nombre"])
+    caso("actualizar(tipo=..., moneda_codigo=...): ambos cambian", True, fila_1_v2["tipo"] == "cripto" and fila_1_v2["moneda_codigo"] == moneda_ars)
+    caso("actualizar(tipo=..., moneda_codigo=...): nombre mantiene su valor previo", "SPY (renombrado)", fila_1_v2["nombre"])
 
     sin_cambios = repo.actualizar(activo_1)
     caso("actualizar() sin ningún campo devuelve False", False, sin_cambios)

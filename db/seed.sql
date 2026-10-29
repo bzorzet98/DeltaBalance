@@ -102,9 +102,9 @@ INSERT OR IGNORE INTO categorias (categoria_principal, subcategoria, tipo) VALUE
 INSERT OR IGNORE INTO cuentas (nombre, tipo, notas) VALUES
     ('Caja Efectivo', 'efectivo', 'Cuenta inicial por defecto. Representa el dinero en mano.');
 
--- Saldo inicial en ARS = 0 para la cuenta efectivo. Por nombre y código, no
--- por id: el id de la cuenta es un UUID que genera el DEFAULT de cuentas.id.
-INSERT OR IGNORE INTO cuentas_saldos (cuenta_id, moneda_id, saldo_inicial_minor)
-    SELECT c.id, m.id, 0
-    FROM cuentas c, monedas m
-    WHERE c.nombre = 'Caja Efectivo' AND m.codigo = 'ARS';
+-- Saldo inicial en ARS = 0 para la cuenta efectivo. Por nombre, no por id:
+-- el id de la cuenta es un UUID que genera el DEFAULT de cuentas.id.
+INSERT OR IGNORE INTO cuentas_saldos (cuenta_id, moneda_codigo, saldo_inicial_minor)
+    SELECT c.id, 'ARS', 0
+    FROM cuentas c
+    WHERE c.nombre = 'Caja Efectivo';

@@ -63,6 +63,30 @@ def nombres_columnas(conn, tabla: str) -> list[str]:
     return [fila[1] for fila in conn.execute(f"PRAGMA table_info({tabla});")]
 
 
+# MIGRACIONES_COLUMNA es parte del baseline (v0 → v1) y describe columnas con
+# su nombre de ESE momento. Migraciones numeradas posteriores renombraron o
+# borraron algunas, así que en una base en la versión actual se chequea lo que
+# quedó de cada una:
+# - v2 borró la tabla resumen_cargos_extra (DATA_MODEL_DECISIONS.md sección 38)
+#   → sus columnas ya no existen, se saltean.
+# - v3 renombró toda columna moneda_id (INTEGER → monedas.id) a moneda_codigo
+#   (TEXT → monedas.codigo) → se chequea moneda_codigo.
+TABLAS_BORRADAS_POST_BASELINE = {"resumen_cargos_extra"}
+COLUMNAS_RENOMBRADAS_POST_BASELINE = {"moneda_id": "moneda_codigo"}
+
+
+def columnas_migradas_actuales() -> list[tuple[str, str]]:
+    """(tabla, columna) de cada entrada de MIGRACIONES_COLUMNA, con el nombre
+    que tiene en el schema actual; omite las de tablas ya borradas."""
+    resultado = []
+    for migracion in MIGRACIONES_COLUMNA:
+        if migracion.tabla in TABLAS_BORRADAS_POST_BASELINE:
+            continue
+        columna = COLUMNAS_RENOMBRADAS_POST_BASELINE.get(migracion.columna, migracion.columna)
+        resultado.append((migracion.tabla, columna))
+    return resultado
+
+
 def main() -> None:
     casos_ok = 0
     casos_total = 0
@@ -117,12 +141,12 @@ def main() -> None:
     caso("PRAGMA foreign_key_check no devuelve violaciones", [], violaciones_fk)
 
     print("\n--- Columnas agregadas vía schema_migrations.py ---")
-    for migracion in MIGRACIONES_COLUMNA:
-        columnas = nombres_columnas(conn, migracion.tabla)
+    for tabla, columna in columnas_migradas_actuales():
+        columnas = nombres_columnas(conn, tabla)
         caso(
-            f"{migracion.tabla}.{migracion.columna} existe (agregada vía schema_migrations.py)",
+            f"{tabla}.{columna} existe (agregada vía schema_migrations.py)",
             True,
-            migracion.columna in columnas,
+            columna in columnas,
         )
 
     print("\n--- Segunda llamada a inicializar() (idempotencia completa: schema + migraciones + seed) ---")
@@ -141,12 +165,12 @@ def main() -> None:
     tablas_reales_2 = nombres_tablas_reales(conn)
     for tabla in TABLAS_MINIMAS:
         caso(f"tabla '{tabla}' sigue existiendo tras la 2da inicializar()", True, tabla in tablas_reales_2)
-    for migracion in MIGRACIONES_COLUMNA:
-        columnas_2 = nombres_columnas(conn, migracion.tabla)
+    for tabla, columna in columnas_migradas_actuales():
+        columnas_2 = nombres_columnas(conn, tabla)
         caso(
-            f"{migracion.tabla}.{migracion.columna} sigue existiendo una sola vez tras la 2da inicializar()",
+            f"{tabla}.{columna} sigue existiendo una sola vez tras la 2da inicializar()",
             1,
-            columnas_2.count(migracion.columna),
+            columnas_2.count(columna),
         )
 
     print("\n--- Vistas consultables ---")

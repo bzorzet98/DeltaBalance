@@ -50,9 +50,9 @@ def main() -> None:
     repo = MovimientosActivoRepository(manager)
     asignaciones_repo = AsignacionesRepository(manager)
 
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
-    activo_1 = activos_repo.crear(nombre="SPY", tipo="accion", moneda_id=moneda_usd)
-    activo_2 = activos_repo.crear(nombre="QQQ", tipo="accion", moneda_id=moneda_usd)
+    moneda_usd = "USD"
+    activo_1 = activos_repo.crear(nombre="SPY", tipo="accion", moneda_codigo=moneda_usd)
+    activo_2 = activos_repo.crear(nombre="QQQ", tipo="accion", moneda_codigo=moneda_usd)
     objetivo_1 = objetivos_repo.crear(nombre="Terreno")
 
     print("--- crear() — tipo 'compra' ---")

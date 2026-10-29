@@ -121,24 +121,24 @@ def main() -> None:
     manager.inicializar()
     svc = SavingsService(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
 
     # ============================================================
     # ACTIVOS / OBJETIVOS — gestión simple
     # ============================================================
     print("--- create_activo() / list_activos() ---")
-    activo_1 = svc.create_activo(nombre="FCI Ahorro", tipo="fci", moneda_id=moneda_ars)
+    activo_1 = svc.create_activo(nombre="FCI Ahorro", tipo="fci", moneda_codigo=moneda_ars)
     caso("create_activo() devuelve success=True", True, activo_1.success)
     caso("create_activo() devuelve entity_id numérico", True, isinstance(activo_1.entity_id, int))
     activo_1_id = activo_1.entity_id
 
     caso_excepcion(
-        "create_activo() con moneda_id inexistente lanza SavingsError",
+        "create_activo() con moneda_codigo inexistente lanza SavingsError",
         SavingsError,
-        lambda: svc.create_activo(nombre="X", tipo="fci", moneda_id=999999),
+        lambda: svc.create_activo(nombre="X", tipo="fci", moneda_codigo="XXX"),
     )
 
-    activo_2 = svc.create_activo(nombre="Cripto Wallet", tipo="cripto", moneda_id=moneda_ars).entity_id
+    activo_2 = svc.create_activo(nombre="Cripto Wallet", tipo="cripto", moneda_codigo=moneda_ars).entity_id
 
     fci_listados = svc.list_activos(tipo="fci")
     caso("list_activos(tipo='fci') incluye activo_1", True, activo_1_id in [a["id"] for a in fci_listados])
@@ -266,7 +266,7 @@ def main() -> None:
 
     print("\n--- register_return() — 3 objetivos, monto que fuerza el método del resto mayor ---")
     # una sola compra de activo_2 repartida 40/35/25 entre objetivo_X/Y/Z (activo_2 ya tenía compra_parcial/compra_libre previas sin tocar X/Y/Z salvo compra_parcial->X en 70%; usamos un activo nuevo para aislar el escenario)
-    activo_3 = svc.create_activo(nombre="Plazo Fijo", tipo="plazo_fijo", moneda_id=moneda_ars).entity_id
+    activo_3 = svc.create_activo(nombre="Plazo Fijo", tipo="plazo_fijo", moneda_codigo=moneda_ars).entity_id
     svc.register_purchase(
         activo_id=activo_3, fecha="2026-01-10", monto_total_minor=1000000,
         asignaciones=[
@@ -289,7 +289,7 @@ def main() -> None:
     )
 
     print("\n--- register_return() — total agregado = 0 (sin poder repartirse) ---")
-    activo_4 = svc.create_activo(nombre="Sin asignar", tipo="otro", moneda_id=moneda_ars).entity_id
+    activo_4 = svc.create_activo(nombre="Sin asignar", tipo="otro", moneda_codigo=moneda_ars).entity_id
     svc.register_purchase(activo_id=activo_4, fecha="2026-01-15", monto_total_minor=999)  # compra libre, sin asignaciones
     rendimiento_sin_repartir = svc.register_return(activo_id=activo_4, fecha="2026-02-15", monto_total_minor=50)
     caso("register_return() sin asignaciones previas: success=True (movimiento se crea igual)", True, rendimiento_sin_repartir.success)
@@ -403,7 +403,7 @@ def main() -> None:
     cuenta_mp = cuentas_repo.crear(
         nombre="Mercado Pago (verify)", tipo="debito", moneda_codigo="ARS", saldo_inicial=1000.0,
     )
-    activo_link = svc.create_activo(nombre="FCI sin cuenta vinculada", tipo="fci", moneda_id=moneda_ars).entity_id
+    activo_link = svc.create_activo(nombre="FCI sin cuenta vinculada", tipo="fci", moneda_codigo=moneda_ars).entity_id
     objetivo_link = svc.create_objetivo(nombre="Vinculo cuenta").entity_id
 
     print("\n--- register_purchase() con activo SIN cuenta_id vinculada — no crea transacción, transaccion_id queda NULL ---")
@@ -424,11 +424,11 @@ def main() -> None:
     caso_excepcion(
         "create_activo() con cuenta_id inexistente lanza AccountNotFoundError",
         AccountNotFoundError,
-        lambda: svc.create_activo(nombre="X con cuenta mala", tipo="fci", moneda_id=moneda_ars, cuenta_id=999999),
+        lambda: svc.create_activo(nombre="X con cuenta mala", tipo="fci", moneda_codigo=moneda_ars, cuenta_id=999999),
     )
 
     resultado_activo_con_cuenta = svc.create_activo(
-        nombre="FCI con cuenta MP", tipo="fci", moneda_id=moneda_ars, cuenta_id=cuenta_mp,
+        nombre="FCI con cuenta MP", tipo="fci", moneda_codigo=moneda_ars, cuenta_id=cuenta_mp,
     )
     caso("create_activo(cuenta_id=...): success=True", True, resultado_activo_con_cuenta.success)
     caso("create_activo(cuenta_id=...): persiste cuenta_id en data", cuenta_mp, resultado_activo_con_cuenta.data["cuenta_id"])
@@ -590,10 +590,10 @@ def main() -> None:
     # activo ya no puede "saltar" de cuenta en cuenta movimiento a
     # movimiento como antes).
     activo_cuenta_a = svc.create_activo(
-        nombre="Activo en cuenta A (verify balance)", tipo="otro", moneda_id=moneda_ars, cuenta_id=cuenta_a,
+        nombre="Activo en cuenta A (verify balance)", tipo="otro", moneda_codigo=moneda_ars, cuenta_id=cuenta_a,
     ).entity_id
     activo_cuenta_b = svc.create_activo(
-        nombre="Activo en cuenta B (verify balance)", tipo="otro", moneda_id=moneda_ars, cuenta_id=cuenta_b,
+        nombre="Activo en cuenta B (verify balance)", tipo="otro", moneda_codigo=moneda_ars, cuenta_id=cuenta_b,
     ).entity_id
 
     svc.register_purchase(
@@ -644,9 +644,9 @@ def main() -> None:
     # que ya acumularon actividad de secciones anteriores del script) — así
     # los números esperados se pueden calcular a mano sin sumar todo lo de
     # arriba.
-    activo_accion_1 = svc.create_activo(nombre="Accion Uno (verify tipo)", tipo="accion", moneda_id=moneda_ars).entity_id
-    activo_accion_2 = svc.create_activo(nombre="Accion Dos (verify tipo)", tipo="accion", moneda_id=moneda_ars).entity_id
-    activo_cripto_1 = svc.create_activo(nombre="Cripto Uno (verify tipo)", tipo="cripto", moneda_id=moneda_ars).entity_id
+    activo_accion_1 = svc.create_activo(nombre="Accion Uno (verify tipo)", tipo="accion", moneda_codigo=moneda_ars).entity_id
+    activo_accion_2 = svc.create_activo(nombre="Accion Dos (verify tipo)", tipo="accion", moneda_codigo=moneda_ars).entity_id
+    activo_cripto_1 = svc.create_activo(nombre="Cripto Uno (verify tipo)", tipo="cripto", moneda_codigo=moneda_ars).entity_id
 
     # activo_accion_1: compra 10 unidades (100000) + rendimiento (5000) + venta 3 unidades (30000)
     svc.register_purchase(activo_id=activo_accion_1, fecha="2026-07-01", monto_total_minor=100000, cantidad=10.0)
@@ -661,23 +661,23 @@ def main() -> None:
     svc.register_purchase(activo_id=activo_accion_2, fecha="2026-07-01", monto_total_minor=50000, cantidad=5.0)
     # saldo_neto = 50000 ; cantidad_neta = 5.0
 
-    # activo_cripto_1: tipo distinto, mismo moneda_id — no debe mezclarse con 'accion'
+    # activo_cripto_1: tipo distinto, mismo moneda_codigo — no debe mezclarse con 'accion'
     svc.register_purchase(activo_id=activo_cripto_1, fecha="2026-07-01", monto_total_minor=20000, cantidad=1000.0)
     # saldo_neto = 20000 ; cantidad_neta = 1000.0
 
     balance_tipo = svc.get_balance_por_tipo()
-    balance_tipo_por_clave = {(f["tipo"], f["moneda_id"]): f for f in balance_tipo}
+    balance_tipo_por_clave = {(f["tipo"], f["moneda_codigo"]): f for f in balance_tipo}
 
     caso(
         "get_balance_por_tipo(): 'accion'/ARS suma activo_accion_1 (75000) + activo_accion_2 (50000) = 125000",
         125000,
         balance_tipo_por_clave[("accion", moneda_ars)]["saldo_neto_minor"],
     )
-    # get_balance_por_tipo() agrupa por (tipo, moneda_id) de TODOS los
+    # get_balance_por_tipo() agrupa por (tipo, moneda_codigo) de TODOS los
     # activos, no solo los "nuevos" de esta sección (ver su docstring en
     # ahorros_service.py) — a diferencia de 'accion' arriba, 'cripto'/ARS
     # NO está aislado: activo_2 ("Cripto Wallet", tipo='cripto',
-    # moneda_id=moneda_ars, creado en la sección ACTIVOS/OBJETIVOS al
+    # moneda_codigo=moneda_ars, creado en la sección ACTIVOS/OBJETIVOS al
     # principio del script) ya venía acumulando saldo real en esta misma
     # dummy_db compartida — compra_parcial (1000) + compra_libre (500) =
     # 1500 (ver esas dos secciones más arriba; la asignación de 110% y el
@@ -782,7 +782,7 @@ def main() -> None:
         nombre="Mercado Pago Reservado (verify)", tipo="debito", moneda_codigo="ARS",
     )
     activos_antes = manager.fetchone("SELECT COUNT(*) AS n FROM activos_financieros;")["n"]
-    primera_vez = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_1, moneda_id=moneda_ars)
+    primera_vez = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_1, moneda_codigo=moneda_ars)
     caso("get_or_create_reserved_cash_asset() primera vez: success=True", True, primera_vez.success)
     caso("get_or_create_reserved_cash_asset() primera vez: data['creado'] = True", True, primera_vez.data["creado"])
     caso(
@@ -795,13 +795,13 @@ def main() -> None:
 
     fila_activo = manager.fetchone("SELECT * FROM activos_financieros WHERE id = ?;", (primera_vez.entity_id,))
     caso("el activo creado tiene tipo='otro'", "otro", fila_activo["tipo"])
-    caso("el activo creado usa el moneda_id pasado", moneda_ars, fila_activo["moneda_id"])
+    caso("el activo creado usa el moneda_codigo pasado", moneda_ars, fila_activo["moneda_codigo"])
     caso(
         "el activo creado persiste cuenta_id (Tarea 6g: es la clave de búsqueda, ya no el nombre)",
         cuenta_reservada_1, fila_activo["cuenta_id"],
     )
 
-    segunda_vez = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_1, moneda_id=moneda_ars)
+    segunda_vez = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_1, moneda_codigo=moneda_ars)
     caso("get_or_create_reserved_cash_asset() segunda vez: success=True", True, segunda_vez.success)
     caso("get_or_create_reserved_cash_asset() segunda vez: data['creado'] = False (reusa)", False, segunda_vez.data["creado"])
     caso(
@@ -820,7 +820,7 @@ def main() -> None:
     cuenta_reservada_2 = cuentas_repo.crear(
         nombre="Cocos FCI Reservado (verify)", tipo="inversion", moneda_codigo="ARS",
     )
-    otra_cuenta = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_2, moneda_id=moneda_ars)
+    otra_cuenta = svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_2, moneda_codigo=moneda_ars)
     caso("get_or_create_reserved_cash_asset() con otra cuenta_id: crea uno nuevo", True, otra_cuenta.data["creado"])
     caso(
         "get_or_create_reserved_cash_asset() con otra cuenta_id: entity_id distinto al de la primera",
@@ -831,16 +831,16 @@ def main() -> None:
     caso_excepcion(
         "get_or_create_reserved_cash_asset() con cuenta_id inexistente lanza AccountNotFoundError",
         AccountNotFoundError,
-        lambda: svc.get_or_create_reserved_cash_asset(cuenta_id=999999, moneda_id=moneda_ars),
+        lambda: svc.get_or_create_reserved_cash_asset(cuenta_id=999999, moneda_codigo=moneda_ars),
     )
 
     cuenta_reservada_moneda_invalida = cuentas_repo.crear(
         nombre="Cuenta reservada sin moneda válida (verify)", tipo="debito", moneda_codigo="ARS",
     )
     caso_excepcion(
-        "get_or_create_reserved_cash_asset() con moneda_id inexistente (y activo todavía no creado) lanza SavingsError",
+        "get_or_create_reserved_cash_asset() con moneda_codigo inexistente (y activo todavía no creado) lanza SavingsError",
         SavingsError,
-        lambda: svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_moneda_invalida, moneda_id=999999),
+        lambda: svc.get_or_create_reserved_cash_asset(cuenta_id=cuenta_reservada_moneda_invalida, moneda_codigo="XXX"),
     )
 
     manager.desconectar()

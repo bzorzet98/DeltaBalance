@@ -356,7 +356,7 @@ def _alta_vacia() -> dict:
     rendimiento sin objetivos elegidos a mano (ver docstring, "Objetivos").
     """
     return {
-        "fecha": "", "activo_id": None, "movimiento": None, "cantidad": "", "moneda_id": None, "comision": "",
+        "fecha": "", "activo_id": None, "movimiento": None, "cantidad": "", "moneda_codigo": None, "comision": "",
         "monto": "", "notas": "", "objetivos": [], "proporcional": True,
     }
 
@@ -519,7 +519,7 @@ def build(
     raiz = ft.Column(scroll=ft.ScrollMode.AUTO, expand=True, horizontal_alignment=ft.CrossAxisAlignment.STRETCH)
     datos: dict = {"resumen": {}}
     vista: dict[str, Any] = {"control_tabla": None}
-    monedas_por_id = {m["id"]: dict(m) for m in accounts_service.list_currencies()}
+    monedas_por_codigo = {m["codigo"]: dict(m) for m in accounts_service.list_currencies()}
 
     def _ok(mensaje: str) -> None:
         mostrar_mensaje(page, mensaje)
@@ -901,7 +901,7 @@ def build(
         entradas = {id_: e for id_, e in todas.items() if e["activa"]}
         opciones_activo = [(id_, _nombre_con_broker(e["activo"], e["broker"])) for id_, e in entradas.items()]
         # Moneda por movimiento: solo en acciones / CEDEARs (ver docstring, "Moneda").
-        opciones_moneda = [(str(id_), m["codigo"]) for id_, m in monedas_por_id.items()]
+        opciones_moneda = [(codigo, m["codigo"]) for codigo, m in monedas_por_codigo.items()]
 
         # --- Datos ---
 
@@ -913,7 +913,7 @@ def build(
                     continue
                 if not m["activo_activa"] and not _mostrar_ocultos(tab):
                     continue  # movimientos de un instrumento oculto: solo con MOSTRAR OCULTOS
-                moneda = monedas_por_id.get(m["moneda_id"], {})
+                moneda = monedas_por_codigo.get(m["moneda_codigo"], {})
                 entrada = todas.get(m["activo_id"])
                 m.update(
                     currency_code=moneda.get("codigo", ""),
@@ -1001,7 +1001,7 @@ def build(
                 "activo_id": alta_refs["activo"].id_seleccionado,
                 "movimiento": alta_refs["movimiento"].valor,
                 "cantidad": (alta_refs["cantidad"].value or "") if por_unidades else "",
-                "moneda_id": alta_refs["moneda"].value if por_unidades else None,
+                "moneda_codigo": alta_refs["moneda"].value if por_unidades else None,
                 "comision": alta_refs["comision"].texto,
                 "monto": alta_refs["monto"].texto,
                 "notas": alta_refs["notas"].value or "",
@@ -1029,14 +1029,14 @@ def build(
                 else (opciones_activo[0][0] if opciones_activo else None)
             )
             # Moneda inicial (acciones / CEDEARs): la del borrador, si no la del activo inicial.
-            moneda_inicial = borrador.get("moneda_id") or (
-                str(entradas[activo_inicial]["moneda_id"]) if activo_inicial else None
+            moneda_inicial = borrador.get("moneda_codigo") or (
+                entradas[activo_inicial]["moneda_codigo"] if activo_inicial else None
             )
             # Decimales de los CampoMonto: los de la moneda inicial. Al confirmar
             # se convierte con los de la moneda del movimiento (mismo criterio que Deudas).
             decimales = (
-                monedas_por_id[int(moneda_inicial)]["decimales"]
-                if moneda_inicial and int(moneda_inicial) in monedas_por_id else DECIMALES_DEFAULT
+                monedas_por_codigo[moneda_inicial]["decimales"]
+                if moneda_inicial and moneda_inicial in monedas_por_codigo else DECIMALES_DEFAULT
             )
 
             texto_moneda = texto_celda("", color=TEXT_SECONDARY)
@@ -1068,9 +1068,9 @@ def build(
 
             def _moneda_alta(entrada: dict) -> dict:
                 """La moneda del movimiento: la elegida (acciones / CEDEARs) o la del activo."""
-                if por_unidades and dropdown_moneda.value and int(dropdown_moneda.value) in monedas_por_id:
-                    return monedas_por_id[int(dropdown_moneda.value)]
-                return monedas_por_id.get(entrada["moneda_id"], {"decimales": entrada["decimales"], "simbolo": entrada["simbolo"]})
+                if por_unidades and dropdown_moneda.value and dropdown_moneda.value in monedas_por_codigo:
+                    return monedas_por_codigo[dropdown_moneda.value]
+                return monedas_por_codigo.get(entrada["moneda_codigo"], {"decimales": entrada["decimales"], "simbolo": entrada["simbolo"]})
 
             def _monto_alta(entrada: dict) -> Optional[int]:
                 """Para el diálogo de objetivos: el total de la fila (en compra / venta, monto ± comisión), si se puede leer."""
@@ -1124,7 +1124,7 @@ def build(
                 _mostrar_activo()
                 entrada = entradas.get(id_activo or "")
                 if por_unidades and entrada is not None:
-                    dropdown_moneda.value = str(entrada["moneda_id"])  # otro activo: vuelve a su moneda
+                    dropdown_moneda.value = entrada["moneda_codigo"]  # otro activo: vuelve a su moneda
                 _guardar_borrador_alta()
 
             def _campo_monto(texto: str, hint: str, on_avanzar: Callable[[], None]) -> CampoMonto:
@@ -1252,8 +1252,8 @@ def build(
                 return
             activo_id = entrada["activo_id"]
             # Acciones / CEDEARs: la moneda elegida en la fila; el resto, la del activo (la pone el service).
-            moneda_id = int(alta_refs["moneda"].value) if por_unidades and alta_refs["moneda"].value else None
-            decimales = monedas_por_id.get(moneda_id or entrada["moneda_id"], {}).get("decimales", entrada["decimales"])
+            moneda_codigo = alta_refs["moneda"].value if por_unidades and alta_refs["moneda"].value else None
+            decimales = monedas_por_codigo.get(moneda_codigo or entrada["moneda_codigo"], {}).get("decimales", entrada["decimales"])
             fecha = (alta_refs["fecha"].value or "").strip()
             movimiento = alta_refs["movimiento"].valor
             notas = (alta_refs["notas"].value or "").strip() or None
@@ -1280,12 +1280,12 @@ def build(
                     # monto = el bruto (cantidad × precio, sin la comisión): ver docstring, "Moneda".
                     resultado = registrar(
                         activo_id, cantidad, monto, comision, fecha, notas=notas, crear_transaccion=False,
-                        asignaciones=asignaciones, moneda_id=moneda_id,
+                        asignaciones=asignaciones, moneda_codigo=moneda_codigo,
                     )
                 else:
                     if movimiento == "rendimiento":
                         resultado = savings_service.registrar_rendimiento(
-                            activo_id, monto, fecha, notas=notas, asignaciones=asignaciones, moneda_id=moneda_id,
+                            activo_id, monto, fecha, notas=notas, asignaciones=asignaciones, moneda_codigo=moneda_codigo,
                         )
                     else:
                         registrar = (
@@ -1377,8 +1377,8 @@ def build(
             # MONEDA: editable solo en acciones / CEDEARs (en el resto es siempre la del activo).
             if por_unidades and editable:
                 celda_moneda = tabla.celda_dropdown(
-                    m, "moneda", m["currency_code"], opciones_moneda, str(m["moneda_id"]),
-                    lambda nuevo: _guardar(moneda_id=int(nuevo)), color=TEXT_SECONDARY,
+                    m, "moneda", m["currency_code"], opciones_moneda, m["moneda_codigo"],
+                    lambda nuevo: _guardar(moneda_codigo=nuevo), color=TEXT_SECONDARY,
                 )
             else:
                 celda_moneda = _lectura(

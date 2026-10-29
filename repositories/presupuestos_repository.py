@@ -12,7 +12,7 @@ tipos de fila:
 
 Sin lógica de negocio: no valida el tipo ni la categoría, no decide qué
 columnas usa cada tipo, no calcula ningún real — eso vive en
-services/presupuestos_service.py. Recibe moneda_id y montos ya resueltos en
+services/presupuestos_service.py. Recibe moneda_codigo y montos ya resueltos en
 minor units.
 
 Las lecturas traen la fila enriquecida con la moneda (currency_code,
@@ -37,7 +37,7 @@ from repositories._ids import nuevo_id
 # al SQL, así que nunca se acepta una que no esté acá).
 COLUMNAS_EDITABLES = (
     "tipo", "concepto", "categoria_id", "monto_estimado_minor", "monto_real_minor",
-    "moneda_id", "mes", "anio", "es_recurrente",
+    "moneda_codigo", "mes", "anio", "es_recurrente",
 )
 
 # Lectura enriquecida: columnas propias + la moneda + la categoría (si tiene).
@@ -45,7 +45,7 @@ _SELECT = """
     SELECT p.*, m.codigo AS currency_code, m.simbolo AS currency_symbol, m.decimales,
            cat.subcategoria, cat.categoria_principal
     FROM presupuestos p
-    JOIN monedas m ON m.id = p.moneda_id
+    JOIN monedas m ON m.codigo = p.moneda_codigo
     LEFT JOIN categorias cat ON cat.id = p.categoria_id
 """
 # Fijos primero ('fijo' < 'variable'), después en orden de alta (rowid: con
@@ -64,7 +64,7 @@ class PresupuestosRepository:
     def crear(
         self,
         tipo: str,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         monto_estimado_minor: int,
@@ -79,12 +79,12 @@ class PresupuestosRepository:
             """
             INSERT INTO presupuestos
                 (id, tipo, concepto, categoria_id, monto_estimado_minor, monto_real_minor,
-                 moneda_id, mes, anio, es_recurrente)
+                 moneda_codigo, mes, anio, es_recurrente)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
                 presupuesto_id, tipo, concepto, categoria_id, monto_estimado_minor, monto_real_minor,
-                moneda_id, mes, anio, es_recurrente,
+                moneda_codigo, mes, anio, es_recurrente,
             ),
         )
         self._db.conn.commit()
@@ -171,12 +171,12 @@ class PresupuestosRepository:
                     """
                     INSERT INTO presupuestos
                         (id, tipo, concepto, categoria_id, monto_estimado_minor, monto_real_minor,
-                         moneda_id, mes, anio, es_recurrente)
+                         moneda_codigo, mes, anio, es_recurrente)
                     VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, 1);
                     """,
                     (
                         nuevo_id(), fila["tipo"], fila["concepto"], fila["categoria_id"], fila["monto_estimado_minor"],
-                        fila["moneda_id"], mes_destino, anio_destino,
+                        fila["moneda_codigo"], mes_destino, anio_destino,
                     ),
                 )
         return len(origen)

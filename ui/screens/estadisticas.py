@@ -65,8 +65,8 @@ def build(
 
     contenedor = ft.Column(spacing=16, expand=True, scroll=ft.ScrollMode.AUTO)
 
-    def _monedas_por_id() -> dict:
-        return {m["id"]: m for m in accounts_service.list_currencies()}
+    def _monedas_por_codigo() -> dict:
+        return {m["codigo"]: m for m in accounts_service.list_currencies()}
 
     # ------------------------------------------------------------
     # GASTO DEL MES POR CATEGORÍA (gráfico de torta + detalle)
@@ -86,16 +86,16 @@ def build(
         if not gastos:
             return ft.Text("Sin gastos para graficar este mes.", italic=True, color=ft.Colors.OUTLINE)
 
-        monedas = _monedas_por_id()
-        totales_por_moneda: dict[int, int] = {}
+        monedas = _monedas_por_codigo()
+        totales_por_moneda: dict[str, int] = {}
         for g in gastos:
-            totales_por_moneda[g["moneda_id"]] = totales_por_moneda.get(g["moneda_id"], 0) + g["monto_total_minor"]
+            totales_por_moneda[g["moneda_codigo"]] = totales_por_moneda.get(g["moneda_codigo"], 0) + g["monto_total_minor"]
 
-        moneda_id_elegida = max(totales_por_moneda, key=totales_por_moneda.get)
-        moneda = monedas.get(moneda_id_elegida)
+        moneda_codigo_elegida = max(totales_por_moneda, key=totales_por_moneda.get)
+        moneda = monedas.get(moneda_codigo_elegida)
         codigo = moneda["codigo"] if moneda else ""
 
-        gastos_moneda = [g for g in gastos if g["moneda_id"] == moneda_id_elegida]
+        gastos_moneda = [g for g in gastos if g["moneda_codigo"] == moneda_codigo_elegida]
         total = sum(g["monto_total_minor"] for g in gastos_moneda)
 
         secciones = [
@@ -136,7 +136,7 @@ def build(
         comparacion = {
             c["categoria_id"]: c for c in dashboard_service.get_comparacion_presupuesto(mes, anio)
         }
-        monedas = _monedas_por_id()
+        monedas = _monedas_por_codigo()
 
         if not gastos:
             lista = ft.Text(
@@ -147,7 +147,7 @@ def build(
         else:
             filas = []
             for g in gastos:
-                moneda = monedas.get(g["moneda_id"])
+                moneda = monedas.get(g["moneda_codigo"])
                 decimales = moneda["decimales"] if moneda else 2
                 simbolo = (moneda["simbolo"] if moneda else "") or ""
                 monto_texto = amount_display(g["monto_total_minor"], decimales, simbolo)

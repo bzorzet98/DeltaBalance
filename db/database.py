@@ -316,11 +316,8 @@ class DatabaseManager:
     def obtener_moneda_por_codigo(self, codigo: str) -> Optional[sqlite3.Row]:
         return self.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (codigo,))
 
-    def obtener_moneda_id(self, codigo: str) -> int:
-        row = self.obtener_moneda_por_codigo(codigo)
-        if row is None:
-            raise ValueError(f"Moneda no encontrada: {codigo}")
-        return row["id"]
+    # obtener_moneda_id() se eliminó en v3: el código ES la clave de la
+    # moneda (docs/DATA_MODEL_DECISIONS.md sección 39).
 
     # (TIPOS DE CAMBIO: obtener_tipo_cambio() se eliminó junto con la tabla
     # tipos_cambio en la migración v2 — docs/DATA_MODEL_DECISIONS.md sección
@@ -352,7 +349,7 @@ class DatabaseManager:
                 SUM(CASE WHEN t.tipo_movimiento = 'ingreso'
                          THEN t.monto_minor ELSE -t.monto_minor END)           AS balance_minor
             FROM transacciones t
-            JOIN monedas m ON m.id = t.moneda_id
+            JOIN monedas m ON m.codigo = t.moneda_codigo
             WHERE strftime('%m', t.fecha) = printf('%02d', ?)
               AND strftime('%Y', t.fecha) = CAST(? AS TEXT)
             GROUP BY m.codigo;

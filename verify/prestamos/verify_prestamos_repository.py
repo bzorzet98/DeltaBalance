@@ -46,24 +46,24 @@ def main() -> None:
     repo = PrestamosRepository(manager)
     cuotas_repo = CuotasPrestamoRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cuenta_1 = manager.fetchone("SELECT id FROM cuentas LIMIT 1;")["id"]
 
     print("--- crear() ---")
     prestamo_1 = repo.crear(
         entidad="Banco Galicia", tipo="hipotecario", capital_original_minor=5000000,
-        tasa_anual_bp=4500, sistema_amortizacion="frances", moneda_id=moneda_ars,
+        tasa_anual_bp=4500, sistema_amortizacion="frances", moneda_codigo=moneda_ars,
         fecha_inicio="2026-01-01", plazo_meses=120, cuenta_debito_id=cuenta_1,
         notas="Hipoteca casa",
     )
     prestamo_2 = repo.crear(
         entidad="Banco Nación", tipo="prendario", capital_original_minor=2000000,
-        tasa_anual_bp=3800, sistema_amortizacion="aleman", moneda_id=moneda_ars,
+        tasa_anual_bp=3800, sistema_amortizacion="aleman", moneda_codigo=moneda_ars,
         fecha_inicio="2026-02-01", plazo_meses=48,
     )  # sin cuenta_debito_id, sin notas
     prestamo_3 = repo.crear(
         entidad="Banco Galicia", tipo="personal", capital_original_minor=500000,
-        tasa_anual_bp=6000, sistema_amortizacion="frances", moneda_id=moneda_ars,
+        tasa_anual_bp=6000, sistema_amortizacion="frances", moneda_codigo=moneda_ars,
         fecha_inicio="2026-03-01", plazo_meses=12,
     )
     caso("crear() devuelve ids numéricos distintos", True, len({prestamo_1, prestamo_2, prestamo_3}) == 3)
@@ -145,7 +145,7 @@ def main() -> None:
     with manager.transaction():
         prestamo_d = repo.crear(
             entidad="Banco Ciudad", tipo="personal", capital_original_minor=300000,
-            tasa_anual_bp=5500, sistema_amortizacion="frances", moneda_id=moneda_ars,
+            tasa_anual_bp=5500, sistema_amortizacion="frances", moneda_codigo=moneda_ars,
             fecha_inicio="2026-04-01", plazo_meses=3, conn=conn_externo,
         )
         cuotas_ids = cuotas_repo.crear_lote(
@@ -168,7 +168,7 @@ def main() -> None:
         with manager.transaction():
             prestamo_e = repo.crear(
                 entidad="Préstamo que va a fallar", tipo="otro", capital_original_minor=100000,
-                tasa_anual_bp=4000, sistema_amortizacion="aleman", moneda_id=moneda_ars,
+                tasa_anual_bp=4000, sistema_amortizacion="aleman", moneda_codigo=moneda_ars,
                 fecha_inicio="2026-05-01", plazo_meses=2, conn=conn_externo,
             )
             cuotas_repo.crear_lote(

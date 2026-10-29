@@ -23,7 +23,7 @@ Purpose:
     mes a mes — el sistema nunca fuerza ese cierre por su cuenta (ver
     Fase 2, PRESTAMOS paso 1b: CuotasPrestamoRepository.actualizar()).
 
-    moneda_id/cuenta_debito_id no tienen su propia excepción en la lista
+    moneda_codigo/cuenta_debito_id no tienen su propia excepción en la lista
     pedida para este service (a diferencia de otros services de esta fase
     que sí definen CurrencyNotFoundError/AccountNotFoundError propias) —
     se validan igual, pero levantan la excepción base LoansError
@@ -87,7 +87,7 @@ class LoansService:
         svc.create_loan(
             entidad="Banco Galicia", tipo="hipotecario",
             capital_original_minor=1200000, tasa_anual_bp=1200,
-            sistema_amortizacion="frances", moneda_id=1,
+            sistema_amortizacion="frances", moneda_codigo="ARS",
             fecha_inicio="2026-01-01", plazo_meses=12,
         )
     """
@@ -108,11 +108,11 @@ class LoansService:
             raise PrestamoNotFoundError(f"Préstamo id={prestamo_id} not found.")
         return row
 
-    def _get_currency(self, currency_id: int) -> sqlite3.Row:
+    def _get_currency(self, currency_code: str) -> sqlite3.Row:
         """No MonedasRepository exists yet in this codebase — mismo patrón que en los demás services."""
-        row = self._db.fetchone("SELECT * FROM monedas WHERE id = ?;", (currency_id,))
+        row = self._db.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (currency_code,))
         if row is None:
-            raise LoansError(f"Currency id={currency_id} not found.")
+            raise LoansError(f"Currency code={currency_code} not found.")
         return row
 
     def _get_account(self, account_id: str) -> sqlite3.Row:
@@ -226,7 +226,7 @@ class LoansService:
         capital_original_minor: int,
         tasa_anual_bp: int,
         sistema_amortizacion: str,
-        moneda_id: int,
+        moneda_codigo: str,
         fecha_inicio: str,
         plazo_meses: int,
         cuenta_debito_id: Optional[str] = None,
@@ -245,7 +245,7 @@ class LoansService:
         Raises:
             ValueError si capital_original_minor <= 0, tasa_anual_bp < 0,
                        o plazo_meses <= 0.
-            LoansError si moneda_id no existe, o si cuenta_debito_id se
+            LoansError si moneda_codigo no existe, o si cuenta_debito_id se
                        pasa y no existe.
         """
         if capital_original_minor <= 0:
@@ -255,7 +255,7 @@ class LoansService:
         if plazo_meses <= 0:
             raise ValueError(f"plazo_meses must be positive. Received: {plazo_meses}.")
 
-        self._get_currency(moneda_id)  # validate existence
+        self._get_currency(moneda_codigo)  # validate existence
         if cuenta_debito_id is not None:
             self._get_account(cuenta_debito_id)  # validate existence
 
@@ -277,7 +277,7 @@ class LoansService:
             prestamo_id = self._prestamos_repo.crear(
                 entidad=entidad, tipo=tipo, capital_original_minor=capital_original_minor,
                 tasa_anual_bp=tasa_anual_bp, sistema_amortizacion=sistema_amortizacion,
-                moneda_id=moneda_id, fecha_inicio=fecha_inicio, plazo_meses=plazo_meses,
+                moneda_codigo=moneda_codigo, fecha_inicio=fecha_inicio, plazo_meses=plazo_meses,
                 cuenta_debito_id=cuenta_debito_id, notas=notas, conn=conn,
             )
             cuotas_ids = self._cuotas_repo.crear_lote(prestamo_id=prestamo_id, cuotas=cuotas, conn=conn)

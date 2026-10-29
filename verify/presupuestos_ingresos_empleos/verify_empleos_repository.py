@@ -62,14 +62,14 @@ def main() -> None:
     repo = EmpleosRepository(manager)
     cuentas_repo = CuentasRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cuenta_id = cuentas_repo.crear(nombre="Cuenta Sueldo", tipo="debito", moneda_codigo="ARS")
     categoria_ingreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'ingreso' LIMIT 1;")["id"]
 
     print("--- crear_empleo() ---")
-    empleo_1 = repo.crear_empleo(nombre_empresa="Acme SA", moneda_id=moneda_ars, puesto="Backend")
+    empleo_1 = repo.crear_empleo(nombre_empresa="Acme SA", moneda_codigo=moneda_ars, puesto="Backend")
     empleo_2 = repo.crear_empleo(
-        nombre_empresa="Beta SRL", moneda_id=moneda_ars,
+        nombre_empresa="Beta SRL", moneda_codigo=moneda_ars,
         porcentaje_jubilacion=1200, porcentaje_obra_social=350, porcentaje_gremio=100, tope_copago_os_minor=5000,
     )
     caso("crear_empleo() devuelve ids numéricos distintos", True, isinstance(empleo_1, int) and isinstance(empleo_2, int) and empleo_1 != empleo_2)
@@ -89,7 +89,7 @@ def main() -> None:
 
     print("\n--- listar_empleos() — filtro solo_activos ---")
     empleo_inactivo = manager.execute(
-        "INSERT INTO empleos (nombre_empresa, moneda_id, activa) VALUES ('Empresa Vieja', ?, 0);",
+        "INSERT INTO empleos (nombre_empresa, moneda_codigo, activa) VALUES ('Empresa Vieja', ?, 0);",
         (moneda_ars,),
     )
     listado_activos = repo.listar_empleos(solo_activos=True)
@@ -129,7 +129,7 @@ def main() -> None:
         # El id es un UUID (DEFAULT de la columna): lastrowid es el rowid interno, no el id.
         rowid = conn_externo.execute(
             """
-            INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
+            INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, monto_minor)
             VALUES ('2026-02-01', 'Sueldo 02/2026', ?, ?, ?, 'ingreso', 86000000);
             """,
             (cuenta_id, categoria_ingreso, moneda_ars),
@@ -153,7 +153,7 @@ def main() -> None:
         with manager.transaction():
             rowid_fallido = conn_externo.execute(
                 """
-                INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
+                INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, monto_minor)
                 VALUES ('2026-03-01', 'Sueldo que va a fallar', ?, ?, ?, 'ingreso', 1);
                 """,
                 (cuenta_id, categoria_ingreso, moneda_ars),

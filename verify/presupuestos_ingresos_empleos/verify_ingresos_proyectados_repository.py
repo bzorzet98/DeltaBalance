@@ -11,7 +11,7 @@ cuando no se pasa — y atomicidad con conn + rollback.
 Nota: a diferencia de otros repositorios de esta fase, acá NO se prueba
 "actualizar(campo=None) escribe NULL explícito" — ninguna de las columnas
 que actualizar() toca (concepto, mes, anio, monto_estimado_minor,
-moneda_id) es NULLable en el schema (todas son NOT NULL), así que ese
+moneda_codigo) es NULLable en el schema (todas son NOT NULL), así que ese
 escenario no tiene un resultado válido que probar (rompería una constraint,
 no es un caso de negocio real).
 
@@ -49,13 +49,13 @@ def main() -> None:
     manager.inicializar()
     repo = IngresosProyectadosRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    moneda_ars = "ARS"
+    moneda_usd = "USD"
 
     print("--- crear() ---")
-    ingreso_1 = repo.crear(concepto="Freelance", mes=1, anio=2026, monto_estimado_minor=200000, moneda_id=moneda_ars)
-    ingreso_2 = repo.crear(concepto="Reintegro", mes=1, anio=2026, monto_estimado_minor=50000, moneda_id=moneda_usd)
-    ingreso_3 = repo.crear(concepto="Venta usado", mes=2, anio=2026, monto_estimado_minor=30000, moneda_id=moneda_ars)
+    ingreso_1 = repo.crear(concepto="Freelance", mes=1, anio=2026, monto_estimado_minor=200000, moneda_codigo=moneda_ars)
+    ingreso_2 = repo.crear(concepto="Reintegro", mes=1, anio=2026, monto_estimado_minor=50000, moneda_codigo=moneda_usd)
+    ingreso_3 = repo.crear(concepto="Venta usado", mes=2, anio=2026, monto_estimado_minor=30000, moneda_codigo=moneda_ars)
     caso(
         "crear() devuelve ids numéricos distintos",
         True,
@@ -86,10 +86,10 @@ def main() -> None:
     caso("actualizar(monto_estimado_minor=...) solo: concepto mantiene su valor previo (NO_CAMBIAR)", "Freelance", fila_1["concepto"])
     caso("actualizar(monto_estimado_minor=...) solo: mes mantiene su valor previo (NO_CAMBIAR)", 1, fila_1["mes"])
 
-    repo.actualizar(ingreso_1, concepto="Freelance (renovado)", moneda_id=moneda_usd)
+    repo.actualizar(ingreso_1, concepto="Freelance (renovado)", moneda_codigo=moneda_usd)
     fila_1_v2 = repo.obtener_por_id(ingreso_1)
-    caso("actualizar(concepto=..., moneda_id=...): ambos cambian", True, fila_1_v2["concepto"] == "Freelance (renovado)" and fila_1_v2["moneda_id"] == moneda_usd)
-    caso("actualizar(concepto=..., moneda_id=...): monto_estimado_minor mantiene su valor previo", 250000, fila_1_v2["monto_estimado_minor"])
+    caso("actualizar(concepto=..., moneda_codigo=...): ambos cambian", True, fila_1_v2["concepto"] == "Freelance (renovado)" and fila_1_v2["moneda_codigo"] == moneda_usd)
+    caso("actualizar(concepto=..., moneda_codigo=...): monto_estimado_minor mantiene su valor previo", 250000, fila_1_v2["monto_estimado_minor"])
 
     sin_cambios = repo.actualizar(ingreso_1)
     caso("actualizar() sin ningún campo devuelve False", False, sin_cambios)
@@ -118,7 +118,7 @@ def main() -> None:
     print("\n--- crear()/actualizar()/marcar_estado()(conn=...) — participan de una transacción externa ---")
     conn_externo = manager.conn
     with manager.transaction():
-        ingreso_4 = repo.crear(concepto="Bono", mes=4, anio=2026, monto_estimado_minor=80000, moneda_id=moneda_ars, conn=conn_externo)
+        ingreso_4 = repo.crear(concepto="Bono", mes=4, anio=2026, monto_estimado_minor=80000, moneda_codigo=moneda_ars, conn=conn_externo)
         repo.marcar_estado(ingreso_4, "cobrado", monto_percibido_minor=80000, conn=conn_externo)
     fila_4 = repo.obtener_por_id(ingreso_4)
     caso("crear(conn=...) + marcar_estado(conn=...) persisten tras comitear", "cobrado", fila_4["estado"] if fila_4 else None)
@@ -128,7 +128,7 @@ def main() -> None:
     ingresos_antes = manager.fetchone("SELECT COUNT(*) AS n FROM ingresos_proyectados;")["n"]
     try:
         with manager.transaction():
-            ingreso_5 = repo.crear(concepto="No debería persistir", mes=5, anio=2026, monto_estimado_minor=1, moneda_id=moneda_ars, conn=conn_externo)
+            ingreso_5 = repo.crear(concepto="No debería persistir", mes=5, anio=2026, monto_estimado_minor=1, moneda_codigo=moneda_ars, conn=conn_externo)
             repo.marcar_estado(ingreso_5, "cobrado", monto_percibido_minor=1, conn=conn_externo)
             raise RuntimeError("Fallo simulado a mitad de la transacción externa")
     except RuntimeError:

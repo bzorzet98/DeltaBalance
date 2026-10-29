@@ -10,7 +10,7 @@ es SUM(monto_minor). No hay pendiente, estado ni tabla de pagos.
 
 Sin lógica de negocio: no valida el tab, no normaliza el nombre de la
 persona, no decide nada sobre el signo — eso vive en
-services/deudas_service.py. Recibe moneda_id y montos ya resueltos en minor
+services/deudas_service.py. Recibe moneda_codigo y montos ya resueltos en minor
 units.
 
 Las lecturas traen la fila enriquecida con la moneda (currency_code,
@@ -19,7 +19,7 @@ muestren el monto sin otra consulta. `deudas` no tiene `deleted_at`:
 QueryBuilder no se usa acá para no inyectar ese filtro; las consultas son
 SQL explícito.
 
-actualizar() también acepta entidad_persona y moneda_id (no estaban en el
+actualizar() también acepta entidad_persona y moneda_codigo (no estaban en el
 pedido): la pantalla edita todas las celdas, y corregir un nombre mal
 tipeado es la corrección más común (CLAUDE.md §4). listar_por_origen() lo
 usa FeesService.delete_purchase() para no borrar una compra de la que
@@ -47,7 +47,7 @@ VENTANA_DUPLICADO_SEGUNDOS = 5
 _SELECT = """
     SELECT d.*, m.codigo AS currency_code, m.simbolo AS currency_symbol, m.decimales
     FROM deudas d
-    JOIN monedas m ON m.id = d.moneda_id
+    JOIN monedas m ON m.codigo = d.moneda_codigo
 """
 # Desempate por rowid (orden de alta): con ids UUID, ordenar por id sería al azar.
 _ORDEN = " ORDER BY d.fecha DESC, d.rowid DESC;"
@@ -84,7 +84,7 @@ class DeudasRepository:
         concepto: Optional[str],
         tab: str,
         monto_minor: int,
-        moneda_id: int,
+        moneda_codigo: str,
         fecha: str,
         notas: Optional[str] = None,
         origen_tipo: str = "manual",
@@ -106,10 +106,10 @@ class DeudasRepository:
         deuda_id = nuevo_id()
         sql = """
             INSERT INTO deudas
-                (id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id, tag)
+                (id, entidad_persona, concepto, tab, monto_minor, moneda_codigo, fecha, notas, origen_tipo, origen_id, tag)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
-        params = (deuda_id, entidad_persona, concepto, tab, monto_minor, moneda_id, fecha, notas, origen_tipo, origen_id, tag)
+        params = (deuda_id, entidad_persona, concepto, tab, monto_minor, moneda_codigo, fecha, notas, origen_tipo, origen_id, tag)
         if conn is not None:
             conn.execute(sql, params)
         else:
@@ -162,13 +162,13 @@ class DeudasRepository:
     # ----------------------------------------------------------
 
     def get_saldo_neto_por_persona(self, tab: str, hasta_fecha: str) -> list[sqlite3.Row]:
-        """(entidad_persona, moneda_id, saldo) de un tab: SUM(monto_minor) de las filas con fecha <= hasta_fecha."""
+        """(entidad_persona, moneda_codigo, saldo) de un tab: SUM(monto_minor) de las filas con fecha <= hasta_fecha."""
         return self._db.fetchall(
             """
-            SELECT entidad_persona, moneda_id, SUM(monto_minor) AS saldo
+            SELECT entidad_persona, moneda_codigo, SUM(monto_minor) AS saldo
             FROM deudas
             WHERE tab = ? AND fecha <= ?
-            GROUP BY entidad_persona, moneda_id
+            GROUP BY entidad_persona, moneda_codigo
             ORDER BY entidad_persona;
             """,
             (tab, hasta_fecha),
@@ -187,7 +187,7 @@ class DeudasRepository:
         fecha: Any = NO_CAMBIAR,
         notas: Any = NO_CAMBIAR,
         entidad_persona: Any = NO_CAMBIAR,
-        moneda_id: Any = NO_CAMBIAR,
+        moneda_codigo: Any = NO_CAMBIAR,
         tag: Any = NO_CAMBIAR,
     ) -> bool:
         """
@@ -197,7 +197,7 @@ class DeudasRepository:
         campos, valores = [], []
         for columna, valor in (
             ("entidad_persona", entidad_persona), ("concepto", concepto), ("tab", tab),
-            ("monto_minor", monto_minor), ("moneda_id", moneda_id), ("fecha", fecha), ("notas", notas), ("tag", tag),
+            ("monto_minor", monto_minor), ("moneda_codigo", moneda_codigo), ("fecha", fecha), ("notas", notas), ("tag", tag),
         ):
             if valor is not NO_CAMBIAR:
                 campos.append(f"{columna} = ?")

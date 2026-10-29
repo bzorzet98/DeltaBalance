@@ -63,11 +63,11 @@ def main() -> None:
     manager.inicializar()
     svc = IngresosProyectadosService(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    moneda_ars = "ARS"
+    moneda_usd = "USD"
 
     print("--- create() — camino feliz ---")
-    resultado = svc.create(concepto="Freelance", mes=1, anio=2026, monto_estimado_minor=200000, moneda_id=moneda_ars)
+    resultado = svc.create(concepto="Freelance", mes=1, anio=2026, monto_estimado_minor=200000, moneda_codigo=moneda_ars)
     caso("create() devuelve success=True", True, resultado.success)
     caso("create() devuelve un entity_id numérico", True, isinstance(resultado.entity_id, int))
     ingreso_1 = resultado.entity_id
@@ -81,29 +81,29 @@ def main() -> None:
     caso_excepcion(
         "create() con concepto vacío lanza ValueError",
         ValueError,
-        lambda: svc.create(concepto="   ", mes=1, anio=2026, monto_estimado_minor=1000, moneda_id=moneda_ars),
+        lambda: svc.create(concepto="   ", mes=1, anio=2026, monto_estimado_minor=1000, moneda_codigo=moneda_ars),
     )
     caso_excepcion(
         "create() con monto_estimado_minor<=0 lanza ValueError",
         ValueError,
-        lambda: svc.create(concepto="X", mes=1, anio=2026, monto_estimado_minor=0, moneda_id=moneda_ars),
+        lambda: svc.create(concepto="X", mes=1, anio=2026, monto_estimado_minor=0, moneda_codigo=moneda_ars),
     )
     caso_excepcion(
         "create() con mes fuera de rango lanza ValueError",
         ValueError,
-        lambda: svc.create(concepto="X", mes=13, anio=2026, monto_estimado_minor=1000, moneda_id=moneda_ars),
+        lambda: svc.create(concepto="X", mes=13, anio=2026, monto_estimado_minor=1000, moneda_codigo=moneda_ars),
     )
     caso_excepcion(
-        "create() con moneda_id inexistente lanza CurrencyNotFoundError",
+        "create() con moneda_codigo inexistente lanza CurrencyNotFoundError",
         CurrencyNotFoundError,
-        lambda: svc.create(concepto="X", mes=1, anio=2026, monto_estimado_minor=1000, moneda_id=999999),
+        lambda: svc.create(concepto="X", mes=1, anio=2026, monto_estimado_minor=1000, moneda_codigo="XXX"),
     )
 
     print("\n--- get() / list_for_period() ---")
     caso("get() de un id inexistente devuelve None", None, svc.get(999999))
 
-    ingreso_2 = svc.create(concepto="Reintegro", mes=1, anio=2026, monto_estimado_minor=50000, moneda_id=moneda_usd).entity_id
-    ingreso_3 = svc.create(concepto="Venta usado", mes=2, anio=2026, monto_estimado_minor=30000, moneda_id=moneda_ars).entity_id
+    ingreso_2 = svc.create(concepto="Reintegro", mes=1, anio=2026, monto_estimado_minor=50000, moneda_codigo=moneda_usd).entity_id
+    ingreso_3 = svc.create(concepto="Venta usado", mes=2, anio=2026, monto_estimado_minor=30000, moneda_codigo=moneda_ars).entity_id
 
     listado_enero = svc.list_for_period(1, 2026)
     ids_enero = [r["id"] for r in listado_enero]
@@ -122,12 +122,12 @@ def main() -> None:
     fila_1 = svc.get(ingreso_1)
     caso("update(monto_estimado_minor=...) solo: el monto cambia", 250000, fila_1["monto_estimado_minor"])
     caso("update(monto_estimado_minor=...) solo: concepto mantiene su valor previo (NO_CAMBIAR)", "Freelance", fila_1["concepto"])
-    caso("update(monto_estimado_minor=...) solo: moneda_id mantiene su valor previo (NO_CAMBIAR)", moneda_ars, fila_1["moneda_id"])
+    caso("update(monto_estimado_minor=...) solo: moneda_codigo mantiene su valor previo (NO_CAMBIAR)", moneda_ars, fila_1["moneda_codigo"])
 
-    svc.update(ingreso_1, concepto="Freelance (renovado)", moneda_id=moneda_usd)
+    svc.update(ingreso_1, concepto="Freelance (renovado)", moneda_codigo=moneda_usd)
     fila_1_v2 = svc.get(ingreso_1)
-    caso("update(concepto=..., moneda_id=...): ambos cambian", True, fila_1_v2["concepto"] == "Freelance (renovado)" and fila_1_v2["moneda_id"] == moneda_usd)
-    caso("update(concepto=..., moneda_id=...): monto_estimado_minor mantiene su valor previo", 250000, fila_1_v2["monto_estimado_minor"])
+    caso("update(concepto=..., moneda_codigo=...): ambos cambian", True, fila_1_v2["concepto"] == "Freelance (renovado)" and fila_1_v2["moneda_codigo"] == moneda_usd)
+    caso("update(concepto=..., moneda_codigo=...): monto_estimado_minor mantiene su valor previo", 250000, fila_1_v2["monto_estimado_minor"])
 
     sin_cambios = svc.update(ingreso_1)
     caso("update() sin ningún campo devuelve success=False", False, sin_cambios.success)
@@ -144,9 +144,9 @@ def main() -> None:
         lambda: svc.update(ingreso_1, monto_estimado_minor=0),
     )
     caso_excepcion(
-        "update() con moneda_id inexistente lanza CurrencyNotFoundError",
+        "update() con moneda_codigo inexistente lanza CurrencyNotFoundError",
         CurrencyNotFoundError,
-        lambda: svc.update(ingreso_1, moneda_id=999999),
+        lambda: svc.update(ingreso_1, moneda_codigo="XXX"),
     )
 
     print("\n--- mark_partial() — camino feliz ---")
@@ -191,7 +191,7 @@ def main() -> None:
     caso("mark_collected() sin monto usa monto_estimado_minor como percibido", 30000, fila_3["monto_percibido_minor"])
 
     print("\n--- mark_collected() — con monto explícito, puede diferir del estimado ---")
-    ingreso_4 = svc.create(concepto="Bono", mes=3, anio=2026, monto_estimado_minor=80000, moneda_id=moneda_ars).entity_id
+    ingreso_4 = svc.create(concepto="Bono", mes=3, anio=2026, monto_estimado_minor=80000, moneda_codigo=moneda_ars).entity_id
     res_collected_2 = svc.mark_collected(ingreso_4, monto_percibido_minor=95000)
     caso("mark_collected() con monto explícito devuelve success=True", True, res_collected_2.success)
     fila_4 = svc.get(ingreso_4)
@@ -204,7 +204,7 @@ def main() -> None:
         IngresoProyectadoNotFoundError,
         lambda: svc.mark_collected(999999),
     )
-    ingreso_5 = svc.create(concepto="Otro", mes=4, anio=2026, monto_estimado_minor=1000, moneda_id=moneda_ars).entity_id
+    ingreso_5 = svc.create(concepto="Otro", mes=4, anio=2026, monto_estimado_minor=1000, moneda_codigo=moneda_ars).entity_id
     caso_excepcion(
         "mark_collected() con monto_percibido_minor<=0 lanza ValueError",
         ValueError,

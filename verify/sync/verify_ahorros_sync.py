@@ -95,7 +95,7 @@ def main() -> None:
         caso("cada base sembró su broker COCOS con su propio UUID", True, cocos_d != cocos_e)
 
         ahorros_d = SavingsService(md)
-        ars = md.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+        ars = "ARS"
         caja = md.fetchone("SELECT id FROM cuentas WHERE nombre = 'Caja Efectivo';")["id"]
         objetivo = ahorros_d.create_objetivo("VIAJE", 100000000).entity_id
         activo = ahorros_d.create_activo("FCI COCOS", "fci", ars, cuenta_id=caja, broker_id=cocos_d).entity_id

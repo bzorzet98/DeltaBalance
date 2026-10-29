@@ -807,7 +807,7 @@ def build(
                     tab=tab_deuda,
                     # Positivo: la deuda crece (negativo sería un pago, DebtsService).
                     monto_minor=amount_to_minor(abs(monto), moneda["decimales"]),
-                    moneda_id=moneda["id"],
+                    moneda_codigo=moneda["codigo"],
                     fecha=fecha_str,
                     # La tabla de deudas ya no tiene fecha de vencimiento: va en las notas.
                     notas=f"VENCE: {due_date}" if due_date else None,
@@ -885,7 +885,7 @@ def build(
                 _mostrar_error(f"MONEDA '{moneda_codigo}' NO ENCONTRADA.")
                 return
             try:
-                activo = savings_service.get_or_create_reserved_cash_asset(cuenta_id=cuenta_id, moneda_id=moneda["id"])
+                activo = savings_service.get_or_create_reserved_cash_asset(cuenta_id=cuenta_id, moneda_codigo=moneda["codigo"])
                 resultado = savings_service.register_purchase(
                     activo_id=activo.entity_id,
                     fecha=fecha_str,
@@ -1068,7 +1068,7 @@ def build(
                     concepto=t["concepto"],
                     tab=dropdown_tab.value,
                     monto_minor=monto_minor,
-                    moneda_id=t["moneda_id"],
+                    moneda_codigo=t["moneda_codigo"],
                     fecha=t["fecha"],
                     origen_tipo="transaccion",
                     origen_id=t["id"],

@@ -20,7 +20,7 @@ Purpose:
         - Una cuenta puede operar en más de una moneda (ver
           docs/DATA_MODEL_DECISIONS.md sección 14) — schema.sql ya lo
           soportaba desde el diseño original vía cuentas_saldos
-          (PK (cuenta_id, moneda_id)), esto solo lo expone desde el
+          (PK (cuenta_id, moneda_codigo)), esto solo lo expone desde el
           service. Declarar moneda al crear la cuenta ya NO es obligatorio
           (Tarea 6f, docs/PROXIMOS_PASOS.md): create_account() puede
           crearse sin ninguna, y cada combinación cuenta+moneda se resuelve
@@ -161,11 +161,11 @@ class AccountsService:
             raise AccountNotFoundError(f"Account id={account_id} not found.")
         return row
 
-    def _get_currency(self, currency_id: int) -> sqlite3.Row:
+    def _get_currency(self, currency_code: str) -> sqlite3.Row:
         """No hay MonedasRepository — se valida contra la tabla directo."""
-        row = self._db.fetchone("SELECT * FROM monedas WHERE id = ?;", (currency_id,))
+        row = self._db.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (currency_code,))
         if row is None:
-            raise CurrencyNotFoundError(f"Currency id={currency_id} not found.")
+            raise CurrencyNotFoundError(f"Currency code={currency_code} not found.")
         return row
 
     def list_currencies(self) -> list[sqlite3.Row]:
@@ -216,7 +216,7 @@ class AccountsService:
     def _enrich(self, row: sqlite3.Row) -> dict:
         """
         Agrega la lista de saldos (uno por moneda operativa de la cuenta,
-        cada uno con moneda_id/moneda_codigo/moneda_simbolo/saldo/saldo_minor)
+        cada uno con moneda_codigo/moneda_simbolo/saldo/saldo_minor)
         a una fila de cuenta. Una cuenta puede operar en más de una moneda
         (ver docs/DATA_MODEL_DECISIONS.md sección 14) — por eso "saldos" es
         una lista, nunca un único saldo/moneda_codigo sueltos.
@@ -226,7 +226,6 @@ class AccountsService:
         for fila in self._repo.listar_saldos(row["id"]):
             saldo = self._repo.obtener_saldo(row["id"], fila["codigo"])
             saldos.append({
-                "moneda_id":      fila["moneda_id"],
                 "moneda_codigo":  fila["codigo"],
                 "moneda_simbolo": fila["simbolo"],
                 "saldo":          saldo,
@@ -243,21 +242,21 @@ class AccountsService:
         self,
         nombre: str,
         tipo: str,
-        monedas: Optional[list[int]] = None,
+        monedas: Optional[list[str]] = None,
         cuenta_pago_id: Optional[str] = None,
         notas: Optional[str] = None,
         color_hex: Optional[str] = None,
     ) -> AccountsResult:
         """
         Creates a new account and a cuentas_saldos row (saldo 0) for every
-        moneda_id in `monedas`. Atomic: the account and every saldo row are
+        moneda_codigo in `monedas`. Atomic: the account and every saldo row are
         written in a single transaction — either all of it lands, or none
         of it does.
 
         Args:
             nombre:         Account name. Must be unique (schema UNIQUE).
             tipo:           One of 'debito', 'credito', 'efectivo', 'crypto', 'inversion'.
-            monedas:        Optional list of moneda_id the account already
+            monedas:        Optional list of moneda_codigo the account already
                             knows it operates in. Default None/empty: the
                             account is created without declaring any
                             currency yet — no cuentas_saldos row is created
@@ -282,21 +281,21 @@ class AccountsService:
 
         Returns:
             AccountsResult with the new account's id and its enriched data
-            (data["saldos"] has one entry per moneda_id passed in, or is
+            (data["saldos"] has one entry per moneda_codigo passed in, or is
             empty if monedas was not passed).
 
         Raises:
             AccountsError if nombre is empty.
             ValueError if tipo is invalid, monedas has duplicates, or
                        color_hex doesn't match '#RRGGBB'.
-            CurrencyNotFoundError if any moneda_id does not exist.
+            CurrencyNotFoundError if any moneda_codigo does not exist.
             ParentAccountNotFoundError if cuenta_pago_id does not exist.
         """
         monedas = monedas or []
         if not nombre or not nombre.strip():
             raise AccountsError("El nombre de la cuenta no puede estar vacío.")
         if len(monedas) != len(set(monedas)):
-            raise ValueError("La lista de monedas no puede tener ids repetidos.")
+            raise ValueError("La lista de monedas no puede tener códigos repetidos.")
 
         tipo_validado = self._validate_tipo(tipo)
         monedas_rows = [self._get_currency(m) for m in monedas]  # valida existencia de cada una
@@ -316,7 +315,7 @@ class AccountsService:
                 conn=conn,
             )
             for moneda in monedas_rows[1:]:
-                self._repo.crear_saldo_inicial(account_id, moneda["id"], monto_minor=0, conn=conn)
+                self._repo.crear_saldo_inicial(account_id, moneda["codigo"], monto_minor=0, conn=conn)
 
         return AccountsResult(
             success=True,
@@ -325,35 +324,35 @@ class AccountsService:
             message=f"Cuenta '{nombre.strip()}' creada.",
         )
 
-    def add_currency_to_account(self, account_id: str, moneda_id: int) -> AccountsResult:
+    def add_currency_to_account(self, account_id: str, moneda_codigo: str) -> AccountsResult:
         """
         Adds a new currency to an already-existing account (e.g. "this card
         now also operates in USD"), with saldo starting at 0.
 
         Args:
             account_id: The account to extend.
-            moneda_id:  The currency to add.
+            moneda_codigo:  The currency code to add.
 
         Returns:
             AccountsResult with the account's updated enriched data.
 
         Raises:
             AccountNotFoundError if the account does not exist.
-            CurrencyNotFoundError if moneda_id does not exist.
+            CurrencyNotFoundError if moneda_codigo does not exist.
             AccountsError if the account already operates in that currency.
         """
         self._get_cuenta(account_id)
-        moneda = self._get_currency(moneda_id)
+        moneda = self._get_currency(moneda_codigo)
 
         ya_existe = any(
-            fila["moneda_id"] == moneda_id for fila in self._repo.listar_saldos(account_id)
+            fila["moneda_codigo"] == moneda_codigo for fila in self._repo.listar_saldos(account_id)
         )
         if ya_existe:
             raise AccountsError(
                 f"La cuenta #{account_id} ya opera en {moneda['codigo']}."
             )
 
-        self._repo.crear_saldo_inicial(account_id, moneda_id, monto_minor=0)
+        self._repo.crear_saldo_inicial(account_id, moneda_codigo, monto_minor=0)
 
         return AccountsResult(
             success=True,
@@ -450,7 +449,7 @@ class AccountsService:
                        color_hex doesn't match '#RRGGBB'.
             ParentAccountNotFoundError if cuenta_pago_id does not exist.
         """
-        if "tipo" in campos_no_permitidos or "monedas" in campos_no_permitidos or "moneda_id" in campos_no_permitidos:
+        if "tipo" in campos_no_permitidos or "monedas" in campos_no_permitidos or "moneda_codigo" in campos_no_permitidos:
             raise ValueError(
                 "No se puede cambiar 'tipo' ni las monedas de una cuenta ya "
                 "creada con update_account(): 'tipo' es estructural, y las "

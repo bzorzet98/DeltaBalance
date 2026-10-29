@@ -62,7 +62,7 @@ def main() -> None:
     repo = ComprasCuotasRepository(manager)
 
     tarjeta = cuentas_repo.crear(nombre="Tarjeta Dup Compras", tipo="credito", moneda_codigo="ARS")
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
 
     campos_comunes = dict(
@@ -70,7 +70,7 @@ def main() -> None:
         concepto="Lavarropas duplicado",
         cuenta_id=tarjeta,
         categoria_id=cat_egreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         monto_total_minor=36000000,
         total_cuotas=12,
         monto_por_cuota_minor=3000000,

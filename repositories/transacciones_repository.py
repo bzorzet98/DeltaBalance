@@ -8,9 +8,9 @@ services/transacciones_service.py (TransactionService), que sigue siendo la
 fuente de verdad de esas reglas hoy y que en un paso posterior va a migrar
 para usar este repositorio en vez de escribir SQL directo.
 
-Por el mismo motivo, crear()/actualizar() reciben moneda_id y monto_minor ya
-resueltos (no moneda_codigo ni montos en float) — resolver un código de
-moneda a id y convertir un monto a minor units es responsabilidad de quien
+Por el mismo motivo, crear()/actualizar() reciben moneda_codigo y monto_minor ya
+resueltos (moneda_codigo ya validado, montos no en float) — validar el
+código de moneda y convertir un monto a minor units es responsabilidad de quien
 llama (hoy TransactionService.create()/update() ya lo hacen así antes de
 tocar la tabla), no de este repositorio.
 
@@ -106,7 +106,7 @@ class TransaccionesRepository:
         concepto: str,
         cuenta_id: str,
         categoria_id: str,
-        moneda_id: int,
+        moneda_codigo: str,
         tipo_movimiento: str,
         monto_minor: int,
         tag: Optional[str] = None,
@@ -125,7 +125,7 @@ class TransaccionesRepository:
 
         Justo antes del INSERT (Tarea 6f, docs/PROXIMOS_PASOS.md), resuelve
         la moneda de la cuenta de forma perezosa vía
-        CuentasRepository.get_or_create_saldo_inicial(cuenta_id, moneda_id):
+        CuentasRepository.get_or_create_saldo_inicial(cuenta_id, moneda_codigo):
         si esta combinación cuenta+moneda todavía no tiene fila en
         cuentas_saldos (por ejemplo porque la cuenta se creó sin declarar
         ninguna moneda), la crea con saldo_inicial_minor = 0 antes de que
@@ -159,21 +159,21 @@ class TransaccionesRepository:
         transaccion_id = nuevo_id()
         sql = """
             INSERT INTO transacciones
-                (id, fecha, concepto, cuenta_id, categoria_id, moneda_id,
+                (id, fecha, concepto, cuenta_id, categoria_id, moneda_codigo,
                  tipo_movimiento, monto_minor, tag, notas)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            transaccion_id, fecha, concepto, cuenta_id, categoria_id, moneda_id,
+            transaccion_id, fecha, concepto, cuenta_id, categoria_id, moneda_codigo,
             tipo_movimiento, monto_minor, tag, notas,
         )
         if conn is not None:
-            self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_id, conn=conn)
+            self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_codigo, conn=conn)
             conn.execute(sql, params)
             return transaccion_id
 
         with self._db.transaction() as conn_local:
-            self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_id, conn=conn_local)
+            self._cuentas_repo.get_or_create_saldo_inicial(cuenta_id, moneda_codigo, conn=conn_local)
             conn_local.execute(sql, params)
         return transaccion_id
 
@@ -241,7 +241,7 @@ class TransaccionesRepository:
             )
             .join("cuentas c", "c.id = t.cuenta_id")
             .join("categorias cat", "cat.id = t.categoria_id")
-            .join("monedas m", "m.id = t.moneda_id")
+            .join("monedas m", "m.codigo = t.moneda_codigo")
             .where("t.id", transaccion_id)
             .ejecutar_uno(self._db.conn)
         )
@@ -250,7 +250,7 @@ class TransaccionesRepository:
         self,
         cuenta_id: Optional[str] = None,
         categoria_id: Optional[str] = None,
-        moneda_id: Optional[int] = None,
+        moneda_codigo: Optional[str] = None,
         tipo_movimiento: Optional[str] = None,
         fecha_desde: Optional[str] = None,
         fecha_hasta: Optional[str] = None,
@@ -269,7 +269,7 @@ class TransaccionesRepository:
             QueryBuilder("transacciones", include_deleted=incluir_eliminadas)
             .where("cuenta_id", cuenta_id)
             .where("categoria_id", categoria_id)
-            .where("moneda_id", moneda_id)
+            .where("moneda_codigo", moneda_codigo)
             .where("tipo_movimiento", tipo_movimiento)
             .where("fecha", fecha_desde, ">=")
             .where("fecha", fecha_hasta, "<=")
@@ -284,7 +284,7 @@ class TransaccionesRepository:
         self,
         cuenta_id: Optional[str] = None,
         categoria_id: Optional[str] = None,
-        moneda_id: Optional[int] = None,
+        moneda_codigo: Optional[str] = None,
         tipo_movimiento: Optional[str] = None,
         fecha_desde: Optional[str] = None,
         fecha_hasta: Optional[str] = None,
@@ -298,7 +298,7 @@ class TransaccionesRepository:
         enriquecido (JOINs a cuentas/categorias/monedas) y el subconjunto
         curado de columnas que usa TransactionService.list_transactions().
         Réplica exacta de esa query (Fase 2, TRANSACCIONES paso 3) — con un
-        agregado: t.cuenta_id/t.categoria_id/t.moneda_id ahora también van
+        agregado: t.cuenta_id/t.categoria_id/t.moneda_codigo ahora también van
         seleccionados (antes solo se usaban como filtro WHERE, no viajaban
         en la fila). Hacía falta para el Registro de transacciones del
         dashboard (edición inline por celda, Fase 5): sin el id crudo, la
@@ -315,7 +315,7 @@ class TransaccionesRepository:
             .select(
                 "t.id", "t.fecha", "t.concepto", "t.tipo_movimiento",
                 "t.monto_minor", "t.tag", "t.notas", "t.creada_en",
-                "t.cuenta_id", "t.categoria_id", "t.moneda_id",
+                "t.cuenta_id", "t.categoria_id", "t.moneda_codigo",
                 "c.nombre AS account_name",
                 "cat.subcategoria AS category_name",
                 "cat.categoria_principal",
@@ -325,10 +325,10 @@ class TransaccionesRepository:
             )
             .join("cuentas c", "c.id = t.cuenta_id")
             .join("categorias cat", "cat.id = t.categoria_id")
-            .join("monedas m", "m.id = t.moneda_id")
+            .join("monedas m", "m.codigo = t.moneda_codigo")
             .where("t.cuenta_id", cuenta_id)
             .where("t.categoria_id", categoria_id)
-            .where("t.moneda_id", moneda_id)
+            .where("t.moneda_codigo", moneda_codigo)
             .where("t.tipo_movimiento", tipo_movimiento)
             .where("t.fecha", fecha_desde, ">=")
             .where("t.fecha", fecha_hasta, "<=")
@@ -346,7 +346,7 @@ class TransaccionesRepository:
         concepto: Any = NO_CAMBIAR,
         cuenta_id: Any = NO_CAMBIAR,
         categoria_id: Any = NO_CAMBIAR,
-        moneda_id: Any = NO_CAMBIAR,
+        moneda_codigo: Any = NO_CAMBIAR,
         tipo_movimiento: Any = NO_CAMBIAR,
         monto_minor: Any = NO_CAMBIAR,
         tag: Any = NO_CAMBIAR,
@@ -364,7 +364,7 @@ class TransaccionesRepository:
         if concepto        is not NO_CAMBIAR: campos.append("concepto = ?");        valores.append(concepto)
         if cuenta_id       is not NO_CAMBIAR: campos.append("cuenta_id = ?");       valores.append(cuenta_id)
         if categoria_id    is not NO_CAMBIAR: campos.append("categoria_id = ?");    valores.append(categoria_id)
-        if moneda_id       is not NO_CAMBIAR: campos.append("moneda_id = ?");       valores.append(moneda_id)
+        if moneda_codigo       is not NO_CAMBIAR: campos.append("moneda_codigo = ?");       valores.append(moneda_codigo)
         if tipo_movimiento is not NO_CAMBIAR: campos.append("tipo_movimiento = ?"); valores.append(tipo_movimiento)
         if monto_minor     is not NO_CAMBIAR: campos.append("monto_minor = ?");     valores.append(monto_minor)
         if tag             is not NO_CAMBIAR: campos.append("tag = ?");             valores.append(tag)

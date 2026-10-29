@@ -79,7 +79,7 @@ def main() -> None:
     manager.inicializar()
     svc = SavingsService(manager)
     cuentas_repo = CuentasRepository(manager)
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
 
     moto = svc.create_objetivo(nombre="MOTO").entity_id
     terreno = svc.create_objetivo(nombre="TERRENEITOR").entity_id
@@ -116,7 +116,7 @@ def main() -> None:
     def proporcional(activo_id: str, fecha: str) -> list[tuple[str, float]]:
         return [(r["nombre"], r["porcentaje"]) for r in svc.get_reparto_proporcional(activo_id, fecha)]
 
-    fci = svc.create_activo(nombre="COCOS PESOS PLUS", tipo="fci", moneda_id=moneda_ars).entity_id
+    fci = svc.create_activo(nombre="COCOS PESOS PLUS", tipo="fci", moneda_codigo=moneda_ars).entity_id
 
     print("--- 1. FCI: aportes con objetivo, rendimientos proporcionales y a mano, retiro ---")
     aporte_moto = svc.registrar_aporte(fci, 29900000, "2026-02-20", crear_transaccion=False, asignaciones=todo_a(moto))
@@ -180,7 +180,7 @@ def main() -> None:
          [("MOTO", 98.3871), ("AHORRO GENERAL", 1.6129)], proporcional(fci, "2026-08-04"))
 
     print("\n--- 4. CEDEAR por unidades (NVDA de la planilla) ---")
-    nvda = svc.create_activo(nombre="NVDA", tipo="cedear", moneda_id=moneda_ars).entity_id
+    nvda = svc.create_activo(nombre="NVDA", tipo="cedear", moneda_codigo=moneda_ars).entity_id
     svc.registrar_compra(nvda, 253, 253000000, 0, "2025-09-14", notas="TENENCIA INICIAL", crear_transaccion=False,
                          asignaciones=todo_a(general))
     svc.registrar_compra(nvda, 14, 15337056, 0, "2025-09-14", crear_transaccion=False, asignaciones=todo_a(terreno))
@@ -205,7 +205,7 @@ def main() -> None:
     cuenta = cuentas_repo.crear(
         nombre="Banco (verify objetivos por movimiento)", tipo="debito", moneda_codigo="ARS", saldo_inicial=100000.0,
     )
-    fci_cuenta = svc.create_activo(nombre="FCI CON CUENTA", tipo="fci", moneda_id=moneda_ars, cuenta_id=cuenta).entity_id
+    fci_cuenta = svc.create_activo(nombre="FCI CON CUENTA", tipo="fci", moneda_codigo=moneda_ars, cuenta_id=cuenta).entity_id
     vinculado = svc.registrar_aporte(fci_cuenta, 5000000, "2026-09-01", asignaciones=todo_a(moto))
     caso("aporte con cuenta: creó la transacción del Registro", True, vinculado.data["transaccion_id"] is not None)
     svc.update_asignaciones(vinculado.entity_id, todo_a(terreno))

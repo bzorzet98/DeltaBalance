@@ -51,8 +51,8 @@ def main() -> None:
     movimientos_repo = MovimientosActivoRepository(manager)
     repo = AsignacionesRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    activo_1 = activos_repo.crear(nombre="FCI Ahorro", tipo="fci", moneda_id=moneda_ars)
+    moneda_ars = "ARS"
+    activo_1 = activos_repo.crear(nombre="FCI Ahorro", tipo="fci", moneda_codigo=moneda_ars)
     objetivo_1 = objetivos_repo.crear(nombre="Terreno")
     objetivo_2 = objetivos_repo.crear(nombre="Vacaciones")
     objetivo_3 = objetivos_repo.crear(nombre="Moto")

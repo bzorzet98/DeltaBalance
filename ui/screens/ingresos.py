@@ -306,7 +306,7 @@ def build(
 
     def _firma(i: dict) -> tuple:
         return (
-            i["concepto"], i["monto_estimado_minor"], i["monto_real_minor"], i["moneda_id"], i["currency_code"],
+            i["concepto"], i["monto_estimado_minor"], i["monto_real_minor"], i["moneda_codigo"], i["currency_code"],
             i["currency_symbol"], i["decimales"], i["es_recurrente"], i["notas"],
         )
 
@@ -501,7 +501,7 @@ def build(
                 concepto=concepto,
                 monto_estimado_minor=round(estimado * escala),
                 monto_real_minor=round(real * escala),
-                moneda_id=moneda["id"],
+                moneda_codigo=moneda["codigo"],
                 mes=ui["mes"],
                 anio=ui["anio"],
                 es_recurrente=bool(alta_refs["recurrente"].value),
@@ -528,7 +528,7 @@ def build(
             try:
                 ingresos_service.update(
                     i["id"],
-                    moneda_id=moneda["id"],
+                    moneda_codigo=moneda["codigo"],
                     monto_estimado_minor=_reescalar(i["monto_estimado_minor"], i["decimales"], moneda["decimales"]),
                     monto_real_minor=_reescalar(i["monto_real_minor"], i["decimales"], moneda["decimales"]),
                 )

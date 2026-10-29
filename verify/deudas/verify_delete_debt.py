@@ -61,12 +61,12 @@ def main() -> None:
     manager.inicializar()
     svc = DebtsService(manager)
     repo = DeudasRepository(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    ars = "ARS"
 
     def saldo_noe() -> int:
         return next(
             (e["saldo_minor"] for e in svc.summary_by_person("me_deben", "2026-12-31")
-             if e["entidad_persona"] == "NOE" and e["moneda_id"] == ars),
+             if e["entidad_persona"] == "NOE" and e["moneda_codigo"] == ars),
             0,
         )
 
