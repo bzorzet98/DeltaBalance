@@ -112,8 +112,10 @@ CREATE TABLE deudas (
 );
 """
 
-# deudas_mensuales antes de tener `tab`.
+# deudas_mensuales antes de tener `tab` (la dummy DB ya la trae con `tab`:
+# db/schema.sql es la foto del schema v1, se la pisa).
 DDL_DEUDAS_MENSUALES_SIN_TAB = """
+DROP TABLE IF EXISTS deudas_mensuales;
 CREATE TABLE deudas_mensuales (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     entidad_persona TEXT NOT NULL,

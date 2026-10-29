@@ -17,7 +17,8 @@ A. Base nueva (db/schema.sql actual):
 B. Guarda: una base con ids enteros frena inicializar() con un mensaje que
    dice qué script correr.
 C. migration/migrar_a_uuid_pk.py de punta a punta sobre una base VIEJA
-   armada acá (el schema.sql actual con los ids vueltos a INTEGER) con
+   armada acá (db/schema_v0.sql — el schema anterior a PRAGMA
+   user_version — con los ids vueltos a INTEGER) con
    datos: mismas filas y sumas, todos los ids UUID, FKs traducidas
    (incluida la de una cuenta a otra), origen polimórfico de deudas y
    gastos compartidos traducido (pago_migrado → NULL), snapshots con su
@@ -36,9 +37,9 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from verify._dummy_db import SCHEMA_PATH, SEED_PATH, crear_dummy_db
+from verify._dummy_db import SEED_PATH, crear_dummy_db
 from db.database import DatabaseManager
-from db.schema_migrations import aplicar_migraciones_columna
+from db.schema_migrations import SCHEMA_V0_PATH, aplicar_migraciones_columna
 from migration.migrar_a_uuid_pk import crear_destino, migrar, preparar_origen
 from services.cuentas_service import AccountsService
 from services.deudas_service import DebtsService
@@ -48,7 +49,9 @@ from services.transacciones_service import TransactionService
 UUID_V4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 SIN_UUID = {"monedas", "saldos_mensuales", "deudas_mensuales", "compartidos_mensuales", "sync_cambios", "sync_estado"}
 
-# Para armar la base VIEJA: el schema.sql actual con los ids vueltos a enteros.
+# Para armar la base VIEJA: db/schema_v0.sql (el schema anterior a PRAGMA
+# user_version — db/schema.sql ya es la foto v1, con tablas que una base de
+# ids enteros nunca tuvo) con los ids vueltos a enteros.
 ID_TEXTO = re.compile(r"^(\s*id\s+)TEXT PRIMARY KEY NOT NULL DEFAULT \(.*\),$", re.MULTILINE)
 FK_TEXTO = re.compile(
     r"^(\s*)(cuenta_pago_id|cuenta_id|categoria_id|transaccion_salida_id|transaccion_entrada_id|compra_id|"
@@ -167,7 +170,7 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="verify_uuid_migracion_") as carpeta:
         origen = Path(carpeta) / "vieja.db"
         destino = Path(carpeta) / "nueva.db"
-        schema_viejo = FK_TEXTO.sub(r"\1\2\3INTEGER", ID_TEXTO.sub(r"\1INTEGER PRIMARY KEY AUTOINCREMENT,", SCHEMA_PATH.read_text(encoding="utf-8")))
+        schema_viejo = FK_TEXTO.sub(r"\1\2\3INTEGER", ID_TEXTO.sub(r"\1INTEGER PRIMARY KEY AUTOINCREMENT,", SCHEMA_V0_PATH.read_text(encoding="utf-8")))
         crudo = sqlite3.connect(origen)
         crudo.row_factory = sqlite3.Row
         crudo.executescript(schema_viejo)

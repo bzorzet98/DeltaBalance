@@ -1615,3 +1615,69 @@ y OTROS) y una leyenda con todas las categorías, su monto y su porcentaje.
   PROYECTADO: su estimado en fijos y su real en variables. HOY no tiene este problema.
 
 Verify: `verify/dashboard/verify_resumen_mes.py`.
+
+## 37. Versionado del schema con `PRAGMA user_version` — ✅ implementado (v1 baseline)
+
+Antes de este cambio, la base no sabía en qué versión de schema estaba (`user_version`
+valía 0 en toda base). Cada arranque reaplicaba `schema.sql` completo y la cadena de
+`db/schema_migrations.py` deducía qué faltaba mirando la base (`PRAGMA table_info`,
+texto de `sqlite_master`, filas pendientes). Por eso `schema.sql` no podía ser la foto
+real del schema (ver `docs/DATA_MODEL.md` §6.1 y §6.3).
+
+**Cómo funciona ahora** (`DatabaseManager.inicializar()`):
+
+- **Base nueva** (sin tablas: el archivo no existía, o existe vacío): `db/schema.sql`,
+  que pasa a ser la **foto completa del schema v1** (37 tablas, mismas columnas en el
+  mismo orden que dejaba la cadena anterior, índices, vistas y triggers `updated_en`).
+  Después `sembrar_brokers()`, `preparar_sync()`, `seed.sql` (solo si el archivo no
+  existía) y, al final, `user_version = 1`. No corre ninguna migración.
+- **Base existente con `user_version` menor que `VERSION_SCHEMA`**: backup del archivo
+  con `hacer_backup()` (`<nombre>_backup_antes_migracion_v<N>_<fecha>_<hora>.db`,
+  después de un `wal_checkpoint(TRUNCATE)`; si no se puede pasar todo el `-wal` al
+  archivo, no se migra). Después `run_migrations(conn, version)`, que corre en orden cada
+  migración de `MIGRACIONES_VERSIONADAS` y marca `user_version` al terminar **cada una**.
+- **Base al día**: ninguna migración.
+- **`user_version` mayor que `VERSION_SCHEMA`** (base de una versión más nueva de la
+  app): `RuntimeError`, no se abre.
+- **En todos los casos**, `preparar_sync()` (fuera del versionado, decisión del usuario):
+  columna `sincronizado_en`, `sync_cambios` / `sync_estado` y los 66 triggers
+  `trg_sync_*` con su definición actual. Los triggers siguen sin estar en `schema.sql`.
+
+**Migración baseline v0 → v1** (`_migrar_a_v1()`): la cadena anterior completa, tal como
+corría en cada arranque. Primero `exigir_ids_uuid()`, después `db/schema_v0.sql`, después
+`aplicar_migraciones_columna()` y por último `aplicar_migraciones_tabla()`.
+
+- **`db/schema_v0.sql` es una copia congelada** del `schema.sql` anterior. Hace falta
+  porque reaplicar ese archivo era parte de la cadena: creaba en bases viejas las tablas,
+  índices y vistas que se le fueron agregando con `IF NOT EXISTS`, y reemplazaba
+  `vw_saldo_neto_hogar`. La foto v1 no puede cumplir ese papel: correría índices y vistas
+  sobre columnas que una base vieja todavía no tiene. **No se edita.**
+- No es una sola transacción: `ampliar_tipos_ahorro()` necesita `PRAGMA foreign_keys =
+  OFF` fuera de una, y cada paso comitea por su cuenta. Si falla a la mitad, la base queda
+  con `user_version = 0` y el próximo arranque vuelve a correr la cadena entera, que es
+  idempotente.
+- `aplicar_migraciones_columna()` / `aplicar_migraciones_tabla()` siguen existiendo con la
+  misma firma: las usa `legacy_migration/migrar_a_uuid_pk.py` directamente, sobre una copia
+  con ids enteros.
+
+**Cambios de comportamiento:**
+
+- Los brokers iniciales ya no se vuelven a sembrar en cada arranque: solo al crear la base
+  y en la baseline. Un broker inicial borrado físicamente ya no vuelve.
+- `migrar_cargos_extra_a_compras()` corre una sola vez (en la baseline). El aviso de
+  cargos que no se pueden mover deja de repetirse en cada arranque.
+- Las demás reestructuraciones (`deudas`, `presupuestos` / `ingresos_proyectados`,
+  `deudas_mensuales`, CHECK de ahorros) tampoco se vuelven a evaluar en una base en v1.
+- Una base vieja conserva el orden físico de sus columnas agregadas con `ALTER TABLE`. Con
+  una base nueva coincide en tipos, defaults, FKs e índices, no necesariamente en el
+  orden. Ningún código depende del orden; seguir usando siempre listas de columnas
+  explícitas.
+
+**Cómo agregar la versión 2:** una función `_migrar_a_v2(conn)` en
+`MIGRACIONES_VERSIONADAS` (arranca con la base exactamente en v1, sin introspección), el
+mismo cambio en `db/schema.sql` y `VERSION_SCHEMA = 2`. `MIGRACIONES_COLUMNA` y
+`MIGRACIONES_TABLA` quedan cerradas: son parte de la baseline.
+
+Verify: `verify/schema/verify_user_version.py`. Además de los caminos de arriba, compara
+tabla por tabla una base creada con la foto contra una llevada desde `schema_v0.sql` por
+la baseline: mismas columnas, en el mismo orden, mismas FKs, índices, vistas y triggers.

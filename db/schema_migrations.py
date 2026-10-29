@@ -1,8 +1,20 @@
 """
 DeltaBalance — db/schema_migrations.py
 
-A partir de ahora, toda columna nueva sobre una tabla EXISTENTE se agrega acá,
-nunca como `ALTER TABLE ... ADD COLUMN` suelto en db/schema.sql.
+VERSIONADO (PRAGMA user_version, docs/DATA_MODEL_DECISIONS.md sección 37 —
+al final de este módulo: VERSION_SCHEMA, MIGRACIONES_VERSIONADAS,
+run_migrations()). La base guarda en qué versión de schema está. Todo lo
+que sigue en este docstring describe la cadena ANTERIOR, basada en
+introspección: hoy corre una sola vez por base, como migración baseline
+v0 → v1 (_migrar_a_v1()), y queda para las bases con user_version = 0 (una
+base vieja, un backup, la base de la app empaquetada) y para
+legacy_migration/migrar_a_uuid_pk.py, que llama a aplicar_migraciones_columna()
+/ aplicar_migraciones_tabla() directo. Un cambio de schema NUEVO ya no va
+en MIGRACIONES_COLUMNA / MIGRACIONES_TABLA: va como migración numerada en
+MIGRACIONES_VERSIONADAS, y en db/schema.sql (la foto de la última versión).
+
+Cadena anterior: toda columna nueva sobre una tabla EXISTENTE se agregaba
+acá, nunca como `ALTER TABLE ... ADD COLUMN` suelto en db/schema.sql.
 
 Por qué: SQLite no soporta `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (a
 diferencia de CREATE TABLE/INDEX/TRIGGER/VIEW, que sí soportan IF NOT
@@ -52,7 +64,7 @@ en una transacción y con backup previo si hay datos.
 Rediseño de Ahorros e Inversiones (más abajo): ampliar_tipos_ahorro()
 reconstruye activos_financieros y movimientos_activo cuando su CHECK de
 `tipo` todavía es el anterior (sin 'cedear'/'plazo_flex' y sin 'aporte'), y
-_sembrar_brokers() carga los brokers iniciales (BROKERS_INICIALES) en toda
+sembrar_brokers() carga los brokers iniciales (BROKERS_INICIALES) en toda
 base — las tablas nuevas brokers / activo_objetivos van en db/schema.sql.
 
 Cargos extra de tarjeta (más abajo, migrar_cargos_extra_a_compras(),
@@ -67,6 +79,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -338,7 +351,7 @@ def aplicar_migraciones_tabla(conn: sqlite3.Connection) -> None:
     y convierte presupuestos / ingresos_proyectados a su estructura final
     (reestructurar_presupuestos_ingresos()) y los CHECK de tipo de ahorros
     (ampliar_tipos_ahorro()); ninguna hace nada si ya se hizo. Siembra los
-    brokers iniciales (_sembrar_brokers(), INSERT OR IGNORE) y mueve los
+    brokers iniciales (sembrar_brokers(), INSERT OR IGNORE) y mueve los
     cargos extra de resumen_cargos_extra a compras_cuotas
     (migrar_cargos_extra_a_compras(), no hace nada si ya no quedan). Por
     último, preparar_sync(): columna sincronizado_en, tablas de control y
@@ -351,7 +364,7 @@ def aplicar_migraciones_tabla(conn: sqlite3.Connection) -> None:
     _deudas_mensuales_con_tab(conn)
     reestructurar_presupuestos_ingresos(conn)
     ampliar_tipos_ahorro(conn)
-    _sembrar_brokers(conn)
+    sembrar_brokers(conn)
     migrar_cargos_extra_a_compras(conn)
     # Al final: necesita que todas las tablas sincronizadas ya existan con
     # su estructura definitiva (deudas, presupuestos e ingresos_proyectados
@@ -976,8 +989,12 @@ def ampliar_tipos_ahorro(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON;")
 
 
-def _sembrar_brokers(conn: sqlite3.Connection) -> None:
-    """Brokers iniciales (INSERT OR IGNORE por el UNIQUE de nombre: no duplica ni reactiva nada)."""
+def sembrar_brokers(conn: sqlite3.Connection) -> None:
+    """
+    Brokers iniciales (INSERT OR IGNORE por el UNIQUE de nombre: no duplica ni
+    reactiva nada). Corre en la migración baseline (aplicar_migraciones_tabla())
+    y al crear una base nueva (DatabaseManager.inicializar()).
+    """
     if not _existe_tabla(conn, "brokers"):
         return
     conn.executemany("INSERT OR IGNORE INTO brokers (nombre) VALUES (?);", [(nombre,) for nombre in BROKERS_INICIALES])
@@ -1360,3 +1377,107 @@ def preparar_sync(conn: sqlite3.Connection) -> None:
     except Exception:
         conn.rollback()
         raise
+
+
+# =============================================================
+# VERSIONADO DEL SCHEMA (PRAGMA user_version)
+# =============================================================
+# docs/DATA_MODEL_DECISIONS.md sección 37. La versión vive en el encabezado
+# del archivo de la base (PRAGMA user_version, 0 en una base que nunca la
+# marcó). DatabaseManager.inicializar() decide el camino:
+#   - base nueva (sin tablas): db/schema.sql (la foto de VERSION_SCHEMA) y
+#     se marca VERSION_SCHEMA directo, sin correr ninguna migración;
+#   - base existente con user_version < VERSION_SCHEMA: backup del archivo
+#     y run_migrations();
+#   - user_version == VERSION_SCHEMA: nada;
+#   - user_version > VERSION_SCHEMA: la base es de una versión más nueva de
+#     la app — no se abre (RuntimeError).
+# preparar_sync() queda FUERA del versionado: corre en cada arranque.
+#
+# Agregar la versión N+1: una función _migrar_a_vN+1(conn) en
+# MIGRACIONES_VERSIONADAS, el mismo cambio en db/schema.sql y VERSION_SCHEMA
+# = N+1. Cada migración arranca con la base en la versión anterior EXACTA
+# (no hace falta introspección) y run_migrations() marca la versión recién
+# cuando terminó bien.
+
+# Versión que deja db/schema.sql en una base nueva.
+VERSION_SCHEMA = 1
+
+# db/schema.sql tal como estaba antes del versionado (congelado). Solo lo usa
+# la baseline.
+SCHEMA_V0_PATH = Path(__file__).resolve().parent / "schema_v0.sql"
+
+
+def leer_version(conn: sqlite3.Connection) -> int:
+    return conn.execute("PRAGMA user_version;").fetchone()[0]
+
+
+def marcar_version(conn: sqlite3.Connection, version: int) -> None:
+    """
+    PRAGMA user_version = version. Antes cierra cualquier transacción
+    implícita que haya dejado abierta una migración (un backfill): la marca
+    se escribe sola, después de que todo lo anterior quedó comiteado.
+    """
+    conn.commit()
+    conn.execute(f"PRAGMA user_version = {int(version)};")  # un PRAGMA no admite parámetros
+    conn.commit()
+
+
+def base_vacia(conn: sqlite3.Connection) -> bool:
+    """True si la base no tiene ninguna tabla (archivo nuevo, o creado vacío con touch())."""
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1;"
+    ).fetchone() is None
+
+
+def _migrar_a_v1(conn: sqlite3.Connection) -> None:
+    """
+    Baseline v0 → v1: la cadena anterior completa, tal como corría en cada
+    arranque antes del versionado — db/schema_v0.sql (crea las tablas,
+    índices y vistas que una base vieja todavía no tenga; reemplaza
+    vw_saldo_neto_hogar), aplicar_migraciones_columna() y
+    aplicar_migraciones_tabla(). Todo idempotente: sobre una base que ya
+    estaba al día no cambia nada (salvo rehacer los triggers de sync).
+
+    No es UNA transacción (ampliar_tipos_ahorro() necesita PRAGMA
+    foreign_keys = OFF fuera de una, y cada paso comitea por su cuenta): si
+    falla a la mitad, la base queda con user_version = 0 y el próximo
+    arranque vuelve a correr la cadena entera, que retoma desde donde quedó.
+
+    Raises:
+        RuntimeError si la base todavía tiene ids enteros
+        (exigir_ids_uuid(), antes de tocar nada) o si una reestructuración
+        encuentra una estructura desconocida.
+    """
+    exigir_ids_uuid(conn)
+    conn.executescript(SCHEMA_V0_PATH.read_text(encoding="utf-8"))
+    aplicar_migraciones_columna(conn)
+    aplicar_migraciones_tabla(conn)
+
+
+# versión destino → función que lleva la base desde la versión anterior.
+MIGRACIONES_VERSIONADAS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    1: _migrar_a_v1,
+}
+
+
+def run_migrations(conn: sqlite3.Connection, current_version: int) -> int:
+    """
+    Corre, en orden, cada migración de MIGRACIONES_VERSIONADAS con versión
+    mayor que current_version, y marca PRAGMA user_version después de CADA
+    una que terminó bien (si falla la N, la base queda en N-1 y la
+    excepción sube: la app no arranca con una base a medio migrar).
+    Devuelve la versión en la que quedó la base. Con current_version >=
+    VERSION_SCHEMA no hace nada.
+
+    El backup del archivo NO es responsabilidad de esta función: lo hace
+    DatabaseManager.inicializar() antes de llamarla.
+    """
+    for version in sorted(MIGRACIONES_VERSIONADAS):
+        if version <= current_version:
+            continue
+        logger.info("Migrando el schema de la base: v%d → v%d", current_version, version)
+        MIGRACIONES_VERSIONADAS[version](conn)
+        marcar_version(conn, version)
+        current_version = version
+    return current_version
