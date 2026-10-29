@@ -14,9 +14,9 @@ A. Base nueva (el archivo no existe): db/schema.sql + brokers + sync +
 B. Base existente en v0 (db/schema_v0.sql + db/seed_v0.sql + datos con la
    estructura vieja de presupuestos / ingresos_proyectados): UN backup ANTES
    de migrar, la cadena anterior convierte las tablas sin perder filas, la
-   v2 borra las tablas sin uso, la v3 pasa a moneda_codigo y queda
-   user_version = 3.
-C. La foto y las migraciones (v0 → v1 → v2 → v3) dejan el MISMO schema: por cada
+   v2 borra las tablas sin uso, la v3 pasa a moneda_codigo, la v4 borra
+   autotransferencias y queda user_version = 4.
+C. La foto y las migraciones (v0 → … → v4) dejan el MISMO schema: por cada
    tabla, mismas columnas en el mismo orden (nombre, tipo, NOT NULL,
    DEFAULT, PK) y mismas FKs; mismos índices, vistas y triggers. (Los CHECK
    no se comparan: PRAGMA no los expone.)
@@ -47,6 +47,11 @@ J. v3 frena si una moneda tiene otro id que el que espera la sync
 K. Sync (sync/sync_engine.py): la traducción codigo ↔ moneda_id en el
    borde — una fila sube con moneda_id, una bajada vuelve con
    moneda_codigo, y el uuid remoto de un saldo es el mismo que en v2.
+L. v3 → v4: una base en v3 con una autotransferencia (dos transacciones
+   y su vínculo): backup ANTES de migrar (en v3, con el vínculo adentro),
+   la tabla autotransferencias desaparece con sus índices, sync_cambios
+   queda sin ella, las dos transacciones siguen intactas, mismas tablas
+   que una base nueva, user_version = 4.
 
 Correlo con:
     python verify/schema/verify_user_version.py
@@ -75,7 +80,7 @@ from db.schema_migrations import (
     run_migrations,
 )
 
-TABLAS_ESPERADAS = 33
+TABLAS_ESPERADAS = 32
 
 
 def main() -> None:
@@ -391,7 +396,7 @@ def main() -> None:
             leer_version(copia), "id" in columnas(copia, "monedas"), "moneda_id" in columnas(copia, "transacciones"),
         ))
         copia.close()
-    caso("quedó en user_version = 3", 3, leer_version(v3))
+    caso("quedó en user_version = VERSION_SCHEMA (pasó por v3 y siguió)", VERSION_SCHEMA, leer_version(v3))
     caso("monedas: codigo, simbolo, decimales — sin id", ["codigo", "simbolo", "decimales"], columnas(v3, "monedas"))
     caso("… con `codigo` de PRIMARY KEY", ["codigo"],
          [f[1] for f in v3.execute("PRAGMA table_info(monedas);") if f[5]])
@@ -474,6 +479,69 @@ def main() -> None:
              (bajada["datos"], bajada["clave_local"]))
         caso("al bajar: un id desconocido queda sin traducir (guardar_fila() lo rechaza)",
              {"moneda_id": 42}, sync_engine._monedas_a_local({"moneda_id": 42}))
+
+    # ============================================================
+    print("\n=== L. v3 → v4: se elimina autotransferencias ===\n")
+    # ============================================================
+    # Una base en v3: la de base_en_v2() + la migración 3 de verdad, marcada
+    # a mano en 3 — sin pasar por inicializar(), que la llevaría a v4.
+    path_v3 = carpeta / "v3.db"
+    crudo = base_en_v2(path_v3.name)
+    MIGRACIONES_VERSIONADAS[3](crudo)
+    marcar_version(crudo, 3)
+    caso("la base de prueba arranca en user_version = 3, con autotransferencias", (3, True),
+         (leer_version(crudo), "autotransferencias" in tablas(crudo)))
+    caja = crudo.execute("SELECT id FROM cuentas WHERE nombre = 'Caja Efectivo';").fetchone()[0]
+    categoria = crudo.execute(
+        "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' AND subcategoria = 'AUTOTRANSFERENCIA';"
+    ).fetchone()[0]
+    banco, salida, entrada = (str(uuid.uuid4()) for _ in range(3))
+    crudo.execute("INSERT INTO cuentas (id, nombre, tipo) VALUES (?, 'BANCO', 'debito');", (banco,))
+    for transaccion_id, cuenta, tipo in ((salida, caja, "egreso"), (entrada, banco, "ingreso")):
+        crudo.execute(
+            "INSERT INTO transacciones (id, fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, "
+            "monto_minor, tag) VALUES (?, '2026-09-20', 'TRANSFERENCIA', ?, ?, 'ARS', ?, 25000, 'autotransferencia');",
+            (transaccion_id, cuenta, categoria, tipo),
+        )
+    crudo.execute(
+        "INSERT INTO autotransferencias (transaccion_salida_id, transaccion_entrada_id) VALUES (?, ?);", (salida, entrada),
+    )
+    # La tabla nunca se sincronizó; una anotación suelta igual tiene que irse.
+    crudo.execute(
+        "INSERT OR REPLACE INTO sync_cambios (tabla, clave, operacion, modificado_en) "
+        "VALUES ('autotransferencias', 'suelta', 'guardado', '2026-09-20 10:00:00.000');",
+    )
+    crudo.commit()
+    crudo.close()
+
+    manager_v3 = DatabaseManager(db_path=path_v3)
+    manager_v3.inicializar()
+    v4 = manager_v3.conn
+    caso("hizo UN backup antes de migrar", 1, len(backups(path_v3)))
+    caso("… con el nombre de la versión de origen (v3)", True,
+         all("_backup_antes_migracion_v3_" in p.name for p in backups(path_v3)))
+    respaldo = next(iter(backups(path_v3)), None)
+    if respaldo is not None:
+        copia = sqlite3.connect(respaldo)
+        caso("el backup es la base en v3, con el vínculo adentro", (3, 1),
+             (leer_version(copia), contar(copia, "SELECT COUNT(*) FROM autotransferencias;")))
+        copia.close()
+    caso("quedó en user_version = 4", 4, leer_version(v4))
+    caso("la tabla autotransferencias ya no existe", False, "autotransferencias" in tablas(v4))
+    caso("… ni sus índices", [], [i for i in objetos(v4, "index") if "autotransferencias" in i])
+    caso("sync_cambios sin anotaciones de autotransferencias", 0,
+         contar(v4, "SELECT COUNT(*) FROM sync_cambios WHERE tabla = 'autotransferencias';"))
+    caso("las dos transacciones siguen intactas (tipo, cuenta, monto, tag)", [
+        ("egreso", caja, 25000, "autotransferencia"), ("ingreso", banco, 25000, "autotransferencia"),
+    ], [
+        tuple(v4.execute(
+            "SELECT tipo_movimiento, cuenta_id, monto_minor, tag FROM transacciones WHERE id = ?;", (transaccion_id,),
+        ).fetchone())
+        for transaccion_id in (salida, entrada)
+    ])
+    caso("mismas tablas que una base nueva", tablas_foto, tablas(v4))
+    caso("foreign_key_check vacío", [], [tuple(f) for f in v4.execute("PRAGMA foreign_key_check;")])
+    manager_v3.desconectar()
 
     print(f"\n{casos_ok}/{casos_total} casos OK")
     print(f"(Las bases de prueba y sus backups quedan en {carpeta} — no es data/.)")

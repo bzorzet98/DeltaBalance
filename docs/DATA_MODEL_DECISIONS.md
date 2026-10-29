@@ -1814,3 +1814,42 @@ escrita con `moneda_id`, porque corre sobre bases v0.
 
 Verify: `verify/schema/verify_user_version.py`, casos I (v2 → v3 con datos), J (ids que no
 coinciden) y K (traducción de la sync), más la comparación foto vs. migraciones desde v0.
+
+## 40. Migración v4: sin `autotransferencias` — ✅ implementado
+
+Pedido explícito del usuario, siguiendo `docs/DATA_MODEL_TARGET.md`. Se elimina la tabla
+de vínculo `autotransferencias` (§13). Las dos patas de una transferencia son
+transacciones independientes, sin `cuenta_destino_id` ni ninguna otra columna que las una.
+
+**Migración** (`_migrar_a_v4()` en `db/schema_migrations.py`, `VERSION_SCHEMA = 4`):
+
+- `DROP TABLE IF EXISTS autotransferencias` (con sus dos índices).
+- Borra de `sync_cambios` lo que hubiera de esa tabla. No debería haber nada: nunca
+  estuvo en `TABLAS_SINCRONIZADAS`.
+- Todo en una transacción.
+- Antes deja en el log cuántos vínculos había. Las transacciones no se tocan: lo único
+  que se pierde es el vínculo, que queda en el backup previo
+  (`*_backup_antes_migracion_v3_*.db`).
+- Ninguna tabla, vista ni trigger dependía de ella.
+
+**Código:**
+
+- `TransactionService.create_transfer()` sigue creando las dos transacciones en una
+  sola transacción de base: si falla la segunda, no queda la primera. Ya no escribe el
+  vínculo. Las dos patas llevan `tag = TAG_AUTOTRANSFERENCIA` (`"autotransferencia"`,
+  que ya se usaba).
+- `TransactionService.get_delete_warnings()`: `es_autotransferencia` sale del tag de la
+  transacción, no de la tabla. Así la UI sigue avisando que "la otra pata no se borra"
+  sin ningún cambio en `ui/`.
+  - Se quitó `transaccion_par_id`: sin vínculo no se puede saber cuál es la otra pata.
+    La UI no lo usaba.
+  - Límite: si alguien edita el tag de una pata, deja de reconocerse como
+    autotransferencia.
+- Se eliminó `TransaccionesRepository.crear_autotransferencia()`.
+- La categoría MOVIMIENTO CAPITAL · AUTOTRANSFERENCIA no cambia: es una categoría, no
+  la tabla.
+
+Verify: `verify/schema/verify_user_version.py` caso L (v3 → v4 con un vínculo). Se
+adaptaron `verify_transaction_service.py` (las patas con su tag, y la atomicidad
+haciendo fallar la segunda pata) y `verify_get_delete_warnings.py` (aviso por tag, y
+borrar una pata no toca la otra).

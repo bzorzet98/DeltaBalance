@@ -38,6 +38,9 @@ from repositories.transacciones_repository import TransaccionesRepository
 # Account names are uppercased (all user-visible text in uppercase).
 CONCEPTO_TRANSFERENCIA_SALIDA = "TRANSFERENCIA A {cuenta}"
 CONCEPTO_TRANSFERENCIA_ENTRADA = "TRANSFERENCIA DESDE {cuenta}"
+# Tag of both legs of an auto-transfer. Since schema v4 there is no link
+# table between them: get_delete_warnings() recognizes a leg by this tag.
+TAG_AUTOTRANSFERENCIA = "autotransferencia"
 
 
 # =============================================================
@@ -340,15 +343,14 @@ class TransactionService:
     ) -> TransactionResult:
         """
         Creates an auto-transfer between two accounts owned by the user.
-        Produces two transaction rows (egreso from origin, ingreso to destination)
-        — concepts "TRANSFERENCIA A <DESTINATION>" and "TRANSFERENCIA DESDE
-        <ORIGIN>" (CONCEPTO_TRANSFERENCIA_SALIDA / _ENTRADA, account names) —
-        and one linking row in autotransferencias (via
-        TransaccionesRepository.crear_autotransferencia() — added when this
-        method's docstring was found to claim it wrote that row when it
-        actually didn't; see docs/DATA_MODEL_DECISIONS.md sección 13). The
-        whole operation is atomic — if anything fails, none of the three
-        rows (two transactions + the link) are persisted.
+        Produces two INDEPENDENT transaction rows (egreso from origin,
+        ingreso to destination) — concepts "TRANSFERENCIA A <DESTINATION>"
+        and "TRANSFERENCIA DESDE <ORIGIN>" (CONCEPTO_TRANSFERENCIA_SALIDA /
+        _ENTRADA, account names), both with tag "autotransferencia". There
+        is no link between them: the autotransferencias table was dropped in
+        schema v4 (docs/DATA_MODEL_DECISIONS.md sección 40). The operation
+        is atomic — both rows are written in one transaction, so if the
+        second one fails, the first one is rolled back too.
 
         Args:
             date_str:          Transfer date in 'YYYY-MM-DD'.
@@ -374,8 +376,6 @@ class TransactionService:
         origin = self._get_account(origin_account_id)
         dest = self._get_account(dest_account_id)
 
-        conn = self._db.conn
-
         with self._db.transaction():
             # Egreso from origin
             out_result = self.create(
@@ -386,7 +386,7 @@ class TransactionService:
                 currency_code=currency_code,
                 amount=amount,
                 movement_type="egreso",
-                tag="autotransferencia",
+                tag=TAG_AUTOTRANSFERENCIA,
                 notes=notes,
                 autocommit=False,
             )
@@ -400,16 +400,8 @@ class TransactionService:
                 currency_code=currency_code,
                 amount=amount,
                 movement_type="ingreso",
-                tag="autotransferencia",
+                tag=TAG_AUTOTRANSFERENCIA,
                 autocommit=False,
-            )
-
-            # Formal link between the two transactions above
-            self._repo.crear_autotransferencia(
-                transaccion_salida_id=out_result.transaction_id,
-                transaccion_entrada_id=in_result.transaction_id,
-                notas=notes,
-                conn=conn,
             )
 
         return TransactionResult(
@@ -706,19 +698,18 @@ class TransactionService:
 
     def get_delete_warnings(self, transaction_id: str) -> dict:
         """
-        Comprueba si transaction_id está vinculada a una autotransferencia
-        (autotransferencias.transaccion_salida_id/transaccion_entrada_id) o
-        es el origen de un movimiento de ahorro
-        (movimientos_activo.transaccion_id) — para que la UI pueda avisar
-        de qué más se ve afectado ANTES de borrar. No bloquea nada por sí
-        misma (delete() sigue funcionando igual con o sin vínculos) — solo
-        informa, la decisión de mostrar una confirmación es de la UI.
+        Comprueba si transaction_id es una pata de una autotransferencia o
+        el origen de un movimiento de ahorro (movimientos_activo.transaccion_id)
+        — para que la UI pueda avisar de qué más se ve afectado ANTES de
+        borrar. No bloquea nada por sí misma (delete() sigue funcionando
+        igual) — solo informa, la decisión de mostrar una confirmación es de
+        la UI.
 
-        Sin repositorio propio para `autotransferencias` (no existe ningún
-        bloque de la Fase 2 dedicado a esa tabla, ver
-        docs/DATA_MODEL_DECISIONS.md sección 13) — se consulta directo con
-        self._db.fetchone(), mismo criterio que _get_currency()/_get_account()
-        de este mismo service para tablas sin repositorio propio.
+        Autotransferencia: desde v4 las dos patas son transacciones
+        independientes, sin vínculo (docs/DATA_MODEL_DECISIONS.md sección
+        40). Se reconoce por la marca que create_transfer() pone en las dos,
+        tag = TAG_AUTOTRANSFERENCIA: alcanza para avisar que la otra pata no
+        se borra, pero no hay forma de saber cuál es.
 
         Args:
             transaction_id: La transacción a chequear.
@@ -726,35 +717,19 @@ class TransactionService:
         Returns:
             dict {
                 "es_autotransferencia": bool,
-                "transaccion_par_id": Optional[int] (la otra pata del par,
-                    si es_autotransferencia),
                 "es_origen_ahorro": bool,
             }
         """
-        fila_transferencia = self._db.fetchone(
-            """
-            SELECT transaccion_salida_id, transaccion_entrada_id
-            FROM autotransferencias
-            WHERE transaccion_salida_id = ? OR transaccion_entrada_id = ?;
-            """,
-            (transaction_id, transaction_id),
-        )
+        fila_transaccion = self._repo.obtener_por_id(transaction_id, incluir_eliminadas=True)
         fila_ahorro = self._db.fetchone(
             "SELECT id FROM movimientos_activo WHERE transaccion_id = ?;",
             (transaction_id,),
         )
 
-        transaccion_par_id = None
-        if fila_transferencia is not None:
-            transaccion_par_id = (
-                fila_transferencia["transaccion_entrada_id"]
-                if fila_transferencia["transaccion_salida_id"] == transaction_id
-                else fila_transferencia["transaccion_salida_id"]
-            )
-
         return {
-            "es_autotransferencia": fila_transferencia is not None,
-            "transaccion_par_id": transaccion_par_id,
+            "es_autotransferencia": (
+                fila_transaccion is not None and fila_transaccion["tag"] == TAG_AUTOTRANSFERENCIA
+            ),
             "es_origen_ahorro": fila_ahorro is not None,
         }
 

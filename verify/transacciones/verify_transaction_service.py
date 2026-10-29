@@ -176,9 +176,9 @@ def main() -> None:
     caso("delete() de un id inexistente devuelve success=False", False, res_delete_inexistente.success)
 
     # ============================================================
-    # create_transfer() — vínculo real en autotransferencias (hueco cerrado)
+    # create_transfer() — dos transacciones independientes (schema v4)
     # ============================================================
-    print("\n--- create_transfer() — deja un vínculo real en autotransferencias ---")
+    print("\n--- create_transfer() — dos transacciones independientes, sin vínculo ---")
     cuentas_repo = CuentasRepository(manager)
     cuenta_destino_id = cuentas_repo.crear(nombre="Cuenta Destino", tipo="debito")
 
@@ -209,42 +209,35 @@ def main() -> None:
         svc.get(in_id)["concepto"],
     )
 
-    vinculo = manager.fetchone(
-        "SELECT * FROM autotransferencias WHERE transaccion_salida_id = ? AND transaccion_entrada_id = ?;",
-        (out_id, in_id),
-    )
-    caso("create_transfer() deja una fila real en autotransferencias", True, vinculo is not None)
-    caso(
-        "el vínculo apunta a transaccion_salida_id = out_id (el id concreto, no cualquier fila)",
-        out_id,
-        vinculo["transaccion_salida_id"] if vinculo else None,
-    )
-    caso(
-        "el vínculo apunta a transaccion_entrada_id = in_id (el id concreto, no cualquier fila)",
-        in_id,
-        vinculo["transaccion_entrada_id"] if vinculo else None,
-    )
-    caso("el vínculo persiste las notas de la transferencia", "Transferencia de prueba", vinculo["notas"] if vinculo else None)
-
-    total_vinculos = manager.fetchone("SELECT COUNT(*) AS n FROM autotransferencias;")["n"]
-    caso("create_transfer() crea exactamente UN vínculo (no uno de más ni de menos)", 1, total_vinculos)
+    salida, entrada = svc.get(out_id), svc.get(in_id)
+    caso("las dos patas llevan el tag 'autotransferencia'", ("autotransferencia", "autotransferencia"),
+         (salida["tag"], entrada["tag"]))
+    caso("salida = egreso en el origen, entrada = ingreso en el destino", (
+        ("egreso", cuenta_id), ("ingreso", cuenta_destino_id),
+    ), ((salida["tipo_movimiento"], salida["cuenta_id"]), (entrada["tipo_movimiento"], entrada["cuenta_id"])))
+    caso("no existe la tabla autotransferencias (se eliminó en v4)", None, manager.fetchone(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'autotransferencias';",
+    ))
 
     # ============================================================
-    # create_transfer() — atomicidad real: rollback si el vínculo falla
+    # create_transfer() — atomicidad: si falla la segunda pata, no queda la primera
     # ============================================================
-    print("\n--- create_transfer() — rollback si crear_autotransferencia() falla a mitad de camino ---")
+    print("\n--- create_transfer() — rollback si la segunda transacción falla a mitad de camino ---")
     transacciones_antes = manager.fetchone("SELECT COUNT(*) AS n FROM transacciones;")["n"]
-    vinculos_antes = manager.fetchone("SELECT COUNT(*) AS n FROM autotransferencias;")["n"]
 
-    metodo_original = TransaccionesRepository.crear_autotransferencia
+    metodo_original = TransaccionesRepository.crear
+    llamadas = {"n": 0}
 
-    def crear_autotransferencia_que_falla(self, *args, **kwargs):
-        raise RuntimeError("Fallo simulado en crear_autotransferencia()")
+    def crear_que_falla_la_segunda(self, *args, **kwargs):
+        llamadas["n"] += 1
+        if llamadas["n"] == 2:
+            raise RuntimeError("Fallo simulado en la pata de entrada")
+        return metodo_original(self, *args, **kwargs)
 
-    TransaccionesRepository.crear_autotransferencia = crear_autotransferencia_que_falla
+    TransaccionesRepository.crear = crear_que_falla_la_segunda
     try:
         caso_excepcion(
-            "create_transfer() propaga la excepción si crear_autotransferencia() falla a mitad de camino",
+            "create_transfer() propaga la excepción si la pata de entrada falla",
             RuntimeError,
             lambda: svc.create_transfer(
                 date_str="2026-04-02",
@@ -256,19 +249,14 @@ def main() -> None:
             ),
         )
     finally:
-        TransaccionesRepository.crear_autotransferencia = metodo_original
+        TransaccionesRepository.crear = metodo_original
 
+    caso("la pata de salida llegó a escribirse antes del fallo (el caso prueba algo)", 2, llamadas["n"])
     transacciones_despues = manager.fetchone("SELECT COUNT(*) AS n FROM transacciones;")["n"]
-    vinculos_despues = manager.fetchone("SELECT COUNT(*) AS n FROM autotransferencias;")["n"]
     caso(
-        "rollback: las dos transacciones del intento fallido NO quedan persistidas (mismo conteo que antes)",
+        "rollback: la pata de salida del intento fallido NO queda persistida (mismo conteo que antes)",
         transacciones_antes,
         transacciones_despues,
-    )
-    caso(
-        "rollback: tampoco queda ningún vínculo huérfano en autotransferencias",
-        vinculos_antes,
-        vinculos_despues,
     )
 
     manager.desconectar()

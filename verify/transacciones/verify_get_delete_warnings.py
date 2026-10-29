@@ -3,10 +3,11 @@ verify/transacciones/verify_get_delete_warnings.py
 
 Verifica TransactionService.get_delete_warnings() (Parte B de la tarea de
 "borrado por fila" — Registro de transacciones): detecta correctamente
-cuándo una transacción está vinculada a una autotransferencia
-(autotransferencias.transaccion_salida_id/transaccion_entrada_id) o es el
+cuándo una transacción es una pata de una autotransferencia (desde el
+schema v4 las dos patas son independientes y se reconocen por su tag
+"autotransferencia" — docs/DATA_MODEL_DECISIONS.md sección 40) o es el
 origen de un movimiento de ahorro (movimientos_activo.transaccion_id), y
-que NO reporta ningún vínculo para una transacción suelta. También confirma
+que NO reporta nada para una transacción suelta. También confirma
 que TransactionService.delete() (ya cubierto en
 verify_transaction_service.py) sigue funcionando igual con o sin vínculos —
 get_delete_warnings() solo informa, nunca bloquea el borrado.
@@ -70,8 +71,8 @@ def main() -> None:
     ).transaction_id
     avisos_suelta = tx_svc.get_delete_warnings(tx_suelta)
     caso("transacción suelta: es_autotransferencia=False", False, avisos_suelta["es_autotransferencia"])
-    caso("transacción suelta: transaccion_par_id=None", None, avisos_suelta["transaccion_par_id"])
     caso("transacción suelta: es_origen_ahorro=False", False, avisos_suelta["es_origen_ahorro"])
+    caso("sin vínculo entre patas: el aviso ya no trae transaccion_par_id", False, "transaccion_par_id" in avisos_suelta)
 
     print("\n--- get_delete_warnings() sobre las dos patas de una autotransferencia ---")
     resultado_transfer = tx_svc.create_transfer(
@@ -82,13 +83,18 @@ def main() -> None:
     tx_entrada = resultado_transfer.data["in_transaction_id"]
 
     avisos_salida = tx_svc.get_delete_warnings(tx_salida)
-    caso("pata de salida: es_autotransferencia=True", True, avisos_salida["es_autotransferencia"])
-    caso("pata de salida: transaccion_par_id apunta a la pata de entrada", tx_entrada, avisos_salida["transaccion_par_id"])
+    caso("pata de salida: es_autotransferencia=True (por su tag)", True, avisos_salida["es_autotransferencia"])
     caso("pata de salida: es_origen_ahorro=False", False, avisos_salida["es_origen_ahorro"])
 
     avisos_entrada = tx_svc.get_delete_warnings(tx_entrada)
-    caso("pata de entrada: es_autotransferencia=True", True, avisos_entrada["es_autotransferencia"])
-    caso("pata de entrada: transaccion_par_id apunta de vuelta a la pata de salida", tx_salida, avisos_entrada["transaccion_par_id"])
+    caso("pata de entrada: es_autotransferencia=True (por su tag)", True, avisos_entrada["es_autotransferencia"])
+
+    print("\n--- borrar una pata no toca la otra (son independientes) ---")
+    tx_svc.delete(tx_salida)
+    caso("la pata de entrada sigue viva después de borrar la de salida", None,
+         manager.fetchone("SELECT deleted_at FROM transacciones WHERE id = ?;", (tx_entrada,))["deleted_at"])
+    caso("… y sigue reconocida como pata de una autotransferencia", True,
+         tx_svc.get_delete_warnings(tx_entrada)["es_autotransferencia"])
 
     print("\n--- get_delete_warnings() sobre el origen de un movimiento de ahorro ---")
     activo = savings_svc.create_activo(nombre="FCI Warnings", tipo="fci", moneda_codigo=moneda_ars).entity_id

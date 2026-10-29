@@ -1,6 +1,6 @@
 -- =============================================================
 -- DeltaBalance — db/schema.sql
--- SQLite 3 — foto del schema v3 (PRAGMA user_version = 3)
+-- SQLite 3 — foto del schema v4 (PRAGMA user_version = 4)
 -- =============================================================
 -- Este archivo es el schema REAL completo de la última versión:
 -- - v1: exactamente lo que dejaba en una base la cadena anterior (schema +
@@ -10,7 +10,9 @@
 --   resumen_cargos_extra y activo_objetivos (sección 38);
 -- - v3: monedas con clave natural — `codigo` es la PK y toda FK a monedas
 --   es `moneda_codigo TEXT` (antes `moneda_id INTEGER` → monedas.id),
---   en la misma posición (sección 39).
+--   en la misma posición (sección 39);
+-- - v4: sin autotransferencias — las dos patas de una transferencia son
+--   transacciones independientes, sin tabla de vínculo (sección 40).
 --
 -- Solo se aplica a una base NUEVA (sin tablas): DatabaseManager.inicializar()
 -- lo corre, siembra los brokers, crea la sync (preparar_sync()), carga
@@ -187,27 +189,6 @@ CREATE TABLE IF NOT EXISTS transacciones (
     FOREIGN KEY (moneda_codigo) REFERENCES monedas(codigo)
 );
 
--- =============================================================
--- AUTOTRANSFERENCIAS
--- =============================================================
--- Vínculo formal entre las dos filas de `transacciones` (egreso en origen,
--- ingreso en destino) que genera TransactionService.create_transfer().
--- Agregada recién ahora (ver docs/DATA_MODEL_DECISIONS.md) — el código
--- legacy de db/database.py ya asumía su existencia e insertaba contra
--- ella, pero nunca había sido creada en este schema.
-CREATE TABLE IF NOT EXISTS autotransferencias (
-    id                          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    transaccion_salida_id       TEXT NOT NULL REFERENCES transacciones(id),
-    transaccion_entrada_id      TEXT NOT NULL REFERENCES transacciones(id),
-
-    notas                       TEXT,
-
-    creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE(transaccion_salida_id, transaccion_entrada_id),
-    CHECK(transaccion_salida_id != transaccion_entrada_id)
-);
 
 -- =============================================================
 -- RESUMENES TARJETA
@@ -958,12 +939,6 @@ ON transacciones(moneda_codigo);
 CREATE INDEX IF NOT EXISTS idx_transacciones_tipo
 ON transacciones(tipo_movimiento);
 
-CREATE INDEX IF NOT EXISTS idx_autotransferencias_salida
-ON autotransferencias(transaccion_salida_id);
-
-CREATE INDEX IF NOT EXISTS idx_autotransferencias_entrada
-ON autotransferencias(transaccion_entrada_id);
-
 CREATE INDEX IF NOT EXISTS idx_cuotas_compra
 ON cuotas_credito(compra_id);
 
@@ -1166,4 +1141,4 @@ GROUP BY gc.hogar_id;
 -- =============================================================
 -- La misma que VERSION_SCHEMA (db/schema_migrations.py): subirlas juntas.
 -- verify/schema/verify_user_version.py chequea que coincidan.
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;

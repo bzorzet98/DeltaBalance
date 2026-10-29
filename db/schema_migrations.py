@@ -1420,7 +1420,7 @@ def preparar_sync(conn: sqlite3.Connection) -> None:
 
 # Versión que deja db/schema.sql en una base nueva (el archivo también la
 # marca con su propio PRAGMA user_version: subir los dos juntos).
-VERSION_SCHEMA = 3
+VERSION_SCHEMA = 4
 
 # db/schema.sql tal como estaba antes del versionado (congelado). Solo lo usa
 # la baseline.
@@ -1711,11 +1711,49 @@ def _migrar_a_v3(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA foreign_keys = ON;")
 
 
+# =============================================================
+# v4: SIN autotransferencias (docs/DATA_MODEL_DECISIONS.md sección 40)
+# =============================================================
+
+def _migrar_a_v4(conn: sqlite3.Connection) -> None:
+    """
+    v3 → v4: elimina la tabla autotransferencias (con sus índices). Las dos
+    patas de una transferencia ya son filas de `transacciones` con todos
+    sus datos; lo único que se pierde es el vínculo entre ellas (queda en
+    el backup previo a la migración — se avisa por el log cuántos había).
+    Desde v4 TransactionService.create_transfer() las crea independientes,
+    y get_delete_warnings() reconoce una pata por su tag. También borra lo
+    que hubiera de la tabla en sync_cambios (no estaba en
+    TABLAS_SINCRONIZADAS, así que no debería haber nada). Todo en UNA
+    transacción. Ninguna tabla tiene una FK hacia autotransferencias, y
+    ninguna vista ni trigger la usa.
+    """
+    conn.commit()
+    if _existe_tabla(conn, "autotransferencias"):
+        vinculos = conn.execute("SELECT COUNT(*) FROM autotransferencias;").fetchone()[0]
+        if vinculos:
+            logger.warning(
+                "Migración v4: se elimina autotransferencias con %d vínculo(s); las transacciones quedan "
+                "(el vínculo, en el backup previo).",
+                vinculos,
+            )
+    conn.execute("BEGIN;")
+    try:
+        conn.execute("DROP TABLE IF EXISTS autotransferencias;")
+        if _existe_tabla(conn, "sync_cambios"):
+            conn.execute("DELETE FROM sync_cambios WHERE tabla = 'autotransferencias';")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 # versión destino → función que lleva la base desde la versión anterior.
 MIGRACIONES_VERSIONADAS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrar_a_v1,
     2: _migrar_a_v2,
     3: _migrar_a_v3,
+    4: _migrar_a_v4,
 }
 
 
