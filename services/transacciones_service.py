@@ -135,7 +135,7 @@ class TransactionService:
             code: ISO-like currency code stored in the monedas table.
 
         Returns:
-            sqlite3.Row with id, codigo, simbolo, decimales.
+            sqlite3.Row with codigo, simbolo, decimales.
         """
         row = self._db.fetchone(
             "SELECT * FROM monedas WHERE codigo = ?;", (code.upper(),)
@@ -301,12 +301,12 @@ class TransactionService:
         if autocommit:
             tx_id = self._repo.crear(
                 validated_date, concept.strip(), account_id, category_id,
-                currency["id"], validated_type, minor, tag, notes,
+                currency["codigo"], validated_type, minor, tag, notes,
             )
         else:
             tx_id = self._repo.crear(
                 validated_date, concept.strip(), account_id, category_id,
-                currency["id"], validated_type, minor, tag, notes,
+                currency["codigo"], validated_type, minor, tag, notes,
                 conn=self._db.conn,
             )
 
@@ -489,14 +489,13 @@ class TransactionService:
         Returns:
             List of sqlite3.Row, ordered by date DESC then creation order (rowid) DESC.
         """
-        currency_id = None
         if currency_code:
-            currency_id = self._get_currency(currency_code)["id"]
+            currency_code = self._get_currency(currency_code)["codigo"]
 
         return self._repo.listar_enriquecida(
             cuenta_id=account_id,
             categoria_id=category_id,
-            moneda_id=currency_id,
+            moneda_codigo=currency_code,
             tipo_movimiento=movement_type,
             fecha_desde=date_from,
             fecha_hasta=date_to,
@@ -525,16 +524,15 @@ class TransactionService:
         Returns:
             Integer count of matching transactions.
         """
-        currency_id = None
         if currency_code:
-            currency_id = self._get_currency(currency_code)["id"]
+            currency_code = self._get_currency(currency_code)["codigo"]
 
         return (
             QueryBuilder("transacciones t")
-            .join("monedas m", "m.id = t.moneda_id")
+            .join("monedas m", "m.codigo = t.moneda_codigo")
             .where("t.cuenta_id",       account_id)
             .where("t.categoria_id",    category_id)
-            .where("t.moneda_id",       currency_id)
+            .where("t.moneda_codigo",   currency_code)
             .where("t.tipo_movimiento", movement_type)
             .where("t.fecha",           date_from, ">=")
             .where("t.fecha",           date_to,   "<=")
@@ -584,11 +582,11 @@ class TransactionService:
                          THEN -t.monto_minor
                          ELSE  0 END)                   AS net_minor
             FROM transacciones t
-            JOIN monedas m ON m.id = t.moneda_id
+            JOIN monedas m ON m.codigo = t.moneda_codigo
             WHERE t.fecha >= ?
             AND t.fecha < ?
             AND t.deleted_at IS NULL
-            GROUP BY m.id
+            GROUP BY m.codigo
             ORDER BY m.codigo;
             """,
             (start_date, end_date),
@@ -677,7 +675,7 @@ class TransactionService:
         if amount is not None and currency_code is not None:
             self._validate_amount(amount)
             currency = self._get_currency(currency_code)
-            campos_repo["moneda_id"] = currency["id"]
+            campos_repo["moneda_codigo"] = currency["codigo"]
             campos_repo["monto_minor"] = to_minor(amount, currency["decimales"])
 
         # tag and notes accept empty strings to clear the value

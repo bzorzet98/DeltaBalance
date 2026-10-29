@@ -18,8 +18,7 @@ Escenario: un objetivo VIEJO con plata en tres instrumentos —
    100% TERRENEITOR, plazo fijo sin asignar: asignaciones de cada
    movimiento, resumen por objetivo y el objetivo borrado.
 5. Reparto parcial: lo que no llega al 100% queda SIN ASIGNAR.
-6. Objetivo sin movimientos, y con filas en activo_objetivos (deprecated):
-   se borra igual.
+6. Objetivo sin movimientos: se borra.
 
 Correlo con:
     python verify/ahorros/verify_editar_eliminar_objetivos.py
@@ -32,7 +31,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from repositories.activo_objetivos_repository import ActivoObjetivosRepository
 from services.ahorros_service import (
     OBJETIVO_SIN_ASIGNAR,
     AsignacionInvalidaError,
@@ -73,7 +71,7 @@ def main() -> None:
     manager = DatabaseManager(db_path=db_path)
     manager.inicializar()
     svc = SavingsService(manager)
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
 
     viejo = svc.create_objetivo(nombre="VIEJO").entity_id
     moto = svc.create_objetivo(nombre="MOTO").entity_id
@@ -103,9 +101,9 @@ def main() -> None:
     def existe(objetivo_id: str) -> bool:
         return manager.fetchone("SELECT 1 AS si FROM objetivos_ahorro WHERE id = ?;", (objetivo_id,)) is not None
 
-    fci = svc.create_activo(nombre="FCI VERIFY", tipo="fci", moneda_id=moneda_ars).entity_id
-    cedear = svc.create_activo(nombre="CEDEAR VERIFY", tipo="cedear", moneda_id=moneda_ars).entity_id
-    plazo = svc.create_activo(nombre="PLAZO FIJO VERIFY", tipo="plazo_fijo", moneda_id=moneda_ars).entity_id
+    fci = svc.create_activo(nombre="FCI VERIFY", tipo="fci", moneda_codigo=moneda_ars).entity_id
+    cedear = svc.create_activo(nombre="CEDEAR VERIFY", tipo="cedear", moneda_codigo=moneda_ars).entity_id
+    plazo = svc.create_activo(nombre="PLAZO FIJO VERIFY", tipo="plazo_fijo", moneda_codigo=moneda_ars).entity_id
 
     a1 = svc.registrar_aporte(fci, 10000000, "2026-01-10", crear_transaccion=False, asignaciones=todo_a(viejo)).entity_id
     a2 = svc.registrar_aporte(fci, 5000000, "2026-01-11", crear_transaccion=False, asignaciones=[
@@ -189,18 +187,11 @@ def main() -> None:
     caso("MOTO en el FCI: 88.000 + 5.000", 9300000, parte("MOTO", fci))
     caso("SIN ASIGNAR en el FCI: los otros 5.000", 500000, parte(OBJETIVO_SIN_ASIGNAR, fci))
 
-    print("\n--- 6. Sin movimientos, y con filas en activo_objetivos (deprecated) ---")
+    print("\n--- 6. Sin movimientos ---")
     vacio = svc.create_objetivo(nombre="VACIO").entity_id
     caso("objetivo sin movimientos: get_partes_de_objetivo() vacío", [], svc.get_partes_de_objetivo(vacio))
     svc.delete_objetivo(vacio)
     caso("objetivo sin movimientos: eliminado sin repartos", False, existe(vacio))
-    con_reparto_viejo = svc.create_objetivo(nombre="CON REPARTO VIEJO").entity_id
-    ActivoObjetivosRepository(manager).crear(fci, con_reparto_viejo, 50.0)
-    svc.delete_objetivo(con_reparto_viejo)
-    caso("con una fila en activo_objetivos: eliminado igual (la FK no lo frena)", False, existe(con_reparto_viejo))
-    caso("su fila de activo_objetivos también se borró", 0, manager.fetchone(
-        "SELECT COUNT(*) AS n FROM activo_objetivos WHERE objetivo_id = ?;", (con_reparto_viejo,),
-    )["n"])
 
     print(f"\n{casos_ok}/{casos_total} casos OK")
     print(f"(La DB temporal quedó en {db_path} — no es data/deltabalance.db.)")

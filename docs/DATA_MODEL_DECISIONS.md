@@ -1615,3 +1615,202 @@ y OTROS) y una leyenda con todas las categorías, su monto y su porcentaje.
   PROYECTADO: su estimado en fijos y su real en variables. HOY no tiene este problema.
 
 Verify: `verify/dashboard/verify_resumen_mes.py`.
+
+## 37. Versionado del schema con `PRAGMA user_version` — ✅ implementado (v1 baseline)
+
+Antes de este cambio, la base no sabía en qué versión de schema estaba (`user_version`
+valía 0 en toda base). Cada arranque reaplicaba `schema.sql` completo y la cadena de
+`db/schema_migrations.py` deducía qué faltaba mirando la base (`PRAGMA table_info`,
+texto de `sqlite_master`, filas pendientes). Por eso `schema.sql` no podía ser la foto
+real del schema (ver `docs/DATA_MODEL.md` §6.1 y §6.3).
+
+**Cómo funciona ahora** (`DatabaseManager.inicializar()`):
+
+- **Base nueva** (sin tablas: el archivo no existía, o existe vacío): `db/schema.sql`,
+  que pasa a ser la **foto completa del schema v1** (37 tablas, mismas columnas en el
+  mismo orden que dejaba la cadena anterior, índices, vistas y triggers `updated_en`).
+  Después `sembrar_brokers()`, `preparar_sync()`, `seed.sql` (solo si el archivo no
+  existía) y, al final, `user_version = 1`. No corre ninguna migración.
+- **Base existente con `user_version` menor que `VERSION_SCHEMA`**: backup del archivo
+  con `hacer_backup()` (`<nombre>_backup_antes_migracion_v<N>_<fecha>_<hora>.db`,
+  después de un `wal_checkpoint(TRUNCATE)`; si no se puede pasar todo el `-wal` al
+  archivo, no se migra). Después `run_migrations(conn, version)`, que corre en orden cada
+  migración de `MIGRACIONES_VERSIONADAS` y marca `user_version` al terminar **cada una**.
+- **Base al día**: ninguna migración.
+- **`user_version` mayor que `VERSION_SCHEMA`** (base de una versión más nueva de la
+  app): `RuntimeError`, no se abre.
+- **En todos los casos**, `preparar_sync()` (fuera del versionado, decisión del usuario):
+  columna `sincronizado_en`, `sync_cambios` / `sync_estado` y los 66 triggers
+  `trg_sync_*` con su definición actual. Los triggers siguen sin estar en `schema.sql`.
+
+**Migración baseline v0 → v1** (`_migrar_a_v1()`): la cadena anterior completa, tal como
+corría en cada arranque. Primero `exigir_ids_uuid()`, después `db/schema_v0.sql`, después
+`aplicar_migraciones_columna()` y por último `aplicar_migraciones_tabla()`.
+
+- **`db/schema_v0.sql` es una copia congelada** del `schema.sql` anterior. Hace falta
+  porque reaplicar ese archivo era parte de la cadena: creaba en bases viejas las tablas,
+  índices y vistas que se le fueron agregando con `IF NOT EXISTS`, y reemplazaba
+  `vw_saldo_neto_hogar`. La foto v1 no puede cumplir ese papel: correría índices y vistas
+  sobre columnas que una base vieja todavía no tiene. **No se edita.**
+- No es una sola transacción: `ampliar_tipos_ahorro()` necesita `PRAGMA foreign_keys =
+  OFF` fuera de una, y cada paso comitea por su cuenta. Si falla a la mitad, la base queda
+  con `user_version = 0` y el próximo arranque vuelve a correr la cadena entera, que es
+  idempotente.
+- `aplicar_migraciones_columna()` / `aplicar_migraciones_tabla()` siguen existiendo con la
+  misma firma: las usa `legacy_migration/migrar_a_uuid_pk.py` directamente, sobre una copia
+  con ids enteros.
+
+**Cambios de comportamiento:**
+
+- Los brokers iniciales ya no se vuelven a sembrar en cada arranque: solo al crear la base
+  y en la baseline. Un broker inicial borrado físicamente ya no vuelve.
+- `migrar_cargos_extra_a_compras()` corre una sola vez (en la baseline). El aviso de
+  cargos que no se pueden mover deja de repetirse en cada arranque.
+- Las demás reestructuraciones (`deudas`, `presupuestos` / `ingresos_proyectados`,
+  `deudas_mensuales`, CHECK de ahorros) tampoco se vuelven a evaluar en una base en v1.
+- Una base vieja conserva el orden físico de sus columnas agregadas con `ALTER TABLE`. Con
+  una base nueva coincide en tipos, defaults, FKs e índices, no necesariamente en el
+  orden. Ningún código depende del orden; seguir usando siempre listas de columnas
+  explícitas.
+
+**Cómo agregar la versión 2:** una función `_migrar_a_v2(conn)` en
+`MIGRACIONES_VERSIONADAS` (arranca con la base exactamente en v1, sin introspección), el
+mismo cambio en `db/schema.sql` y `VERSION_SCHEMA = 2`. `MIGRACIONES_COLUMNA` y
+`MIGRACIONES_TABLA` quedan cerradas: son parte de la baseline.
+
+Verify: `verify/schema/verify_user_version.py`. Además de los caminos de arriba, compara
+tabla por tabla una base creada con la foto contra una llevada desde `schema_v0.sql` por
+la baseline: mismas columnas, en el mismo orden, mismas FKs, índices, vistas y triggers.
+
+## 38. Migración v2: eliminar las tablas sin uso — ✅ implementado
+
+Pedido explícito del usuario. Se eliminan `tipos_cambio`, `indices_inflacion`,
+`resumen_cargos_extra` y `activo_objetivos` (estado previo de cada una:
+`docs/DATA_MODEL.md` §6.2).
+
+**Migración** (`_migrar_a_v2()` en `db/schema_migrations.py`, `VERSION_SCHEMA = 2`):
+
+- Hace `DROP TABLE IF EXISTS` de las cuatro (`TABLAS_ELIMINADAS_V2`), con sus índices,
+  en una sola transacción. Ninguna otra tabla tiene una FK hacia ellas.
+- Borra de `sync_cambios` los cambios pendientes de `activo_objetivos`. Sus triggers de
+  sync se van con la tabla, antes del `DELETE` implícito de `DROP TABLE`, así que no
+  anotan ningún `'borrado'`.
+- Antes de borrar, deja en el log (warning) cuántas filas tenía cada tabla. Los datos
+  quedan en el backup `<nombre>_backup_antes_migracion_v1_<fecha>.db` que hace
+  `inicializar()`. Ese backup corre para cualquier migración pendiente, no solo para
+  v0 → v1. Una base en v0 hace un solo backup y pasa por v1 y v2 seguidas.
+
+**Código retirado:**
+
+- `repositories/resumen_cargos_extra_repository.py`,
+  `repositories/activo_objetivos_repository.py` (y su export en
+  `repositories/__init__.py`) y `DatabaseManager.obtener_tipo_cambio()`.
+- `activo_objetivos` sale de `TABLAS_SINCRONIZADAS` y de `TABLAS_PRIVADAS`
+  (`sync/sync_engine.py`). Las filas que tuviera en Supabase se ignoran: la sync baja
+  tabla por tabla, solo las de la lista. Una instalación que siga en v1 puede seguir
+  subiéndolas, sin efecto en las que ya están en v2.
+- `SavingsService.delete_activo()` / `delete_objetivo()` ya no borran filas de
+  `activo_objetivos`.
+- `ResumenesTarjetaRepository.marcar_cerrado()`: `monto_impuestos_minor` es solo la suma
+  de las cuotas de los cargos extra (`compras_cuotas.es_cargo_extra = 1`, §28).
+
+**Cambio de comportamiento:** los cargos que la baseline no había podido pasar a
+`compras_cuotas` (tipo `otro` o sin categoría especial) ya no se suman al cerrar un
+resumen. Los resúmenes ya cerrados conservan el `monto_impuestos_minor` que tenían.
+
+**Lo que no cambia:**
+
+- `migrar_cargos_extra_a_compras()` y las columnas `resumen_cargos_extra.moneda_id` /
+  `fecha` de `MIGRACIONES_COLUMNA` siguen siendo parte de la baseline: una base en v0
+  primero mueve sus cargos y después la v2 borra la tabla.
+- `db/schema_v0.sql` (congelado) sigue creando las cuatro tablas.
+- `legacy_migration/migrar_a_uuid_pk.py`: las filas de estas tablas en una base de ids
+  enteros se informan como "salteadas" (la base nueva ya no las tiene).
+
+Verify: `verify/schema/verify_user_version.py` (caso H: v1 → v2 con datos, más la
+comparación foto vs. migraciones desde v0). Se adaptaron
+`verify_resumenes_tarjeta_repository.py`, `verify_cargos_extra_sync.py` (recrea la
+tabla con su forma v1 para probar la función de la baseline),
+`verify_eliminar_instrumento.py`, `verify_editar_eliminar_objetivos.py`,
+`verify_ahorros_sync.py` y `verify_schema_completo.py`. Se borró
+`verify_resumen_cargos_extra_repository.py`.
+
+## 39. Migración v3: monedas con clave natural (`moneda_codigo`) — ✅ implementado
+
+Pedido explícito del usuario, siguiendo `docs/DATA_MODEL_TARGET.md`: `monedas` pasa a
+tener `codigo` como PRIMARY KEY, sin el id entero, y cada `moneda_id INTEGER → monedas(id)`
+pasa a `moneda_codigo TEXT → monedas(codigo)`, en la misma posición de la tabla. Son 13
+tablas: `cuentas_saldos` (parte de su PK), `empleos`, `transacciones`, `compras_cuotas`,
+`deudas`, `presupuestos`, `ingresos_proyectados`, `activos_financieros` (no estaba en el
+pedido, pero sin ella su FK quedaba rota), `movimientos_activo`, `prestamos` y los tres
+snapshots mensuales. `VERSION_SCHEMA = 3`.
+
+**Migración** (`_migrar_a_v3()` en `db/schema_migrations.py`):
+
+- Antes de tocar nada, frena (`RuntimeError`, la base queda en v2) en dos casos:
+  - si alguna moneda tiene otro id que el de `IDS_MONEDA_REMOTOS` (ver Sync, abajo);
+  - si alguna fila apunta a un `moneda_id` inexistente.
+- Todo en UNA transacción, con `PRAGMA foreign_keys = OFF` mientras dura (se vuelve a
+  prender pase lo que pase). Cada tabla se reconstruye con el procedimiento de SQLite:
+  tabla nueva al lado, copia con el código de su moneda, borrado y rename. La tabla nueva
+  sale de su propio `CREATE TABLE` de `sqlite_master` transformado, así conserva el resto
+  de sus columnas y restricciones tal como están en esa base. Después se rehacen sus
+  índices y triggers. `monedas` se reemplaza al final.
+- Las vistas salen mientras dura y se recrean al final. Cada `RENAME` revalida todas, y
+  una vista sobre una tabla que se está reemplazando la hace fallar.
+  `vw_balance_cuentas` se recrea con el join por código.
+- Las claves de `cuentas_saldos` en `sync_cambios` pasan de `'<cuenta>|1'` a
+  `'<cuenta>|ARS'`.
+- `PRAGMA foreign_key_check` antes del COMMIT.
+- Los datos no cambian, `sincronizado_en` incluido. Backup previo, como en toda migración
+  (`*_backup_antes_migracion_v2_*.db`).
+
+**Sync (decisión del usuario: traducir en el borde).** Supabase sigue guardando las filas
+con `moneda_id` entero. `sync/sync_engine.py` traduce en tres lugares:
+
+- **Al subir** (`_monedas_a_remoto()`): `moneda_codigo` → `moneda_id`.
+- **Al bajar** (`_monedas_a_local()`, dentro de `_normalizar_remota()`): `moneda_id` →
+  `moneda_codigo`.
+- **En la clave remota de `cuentas_saldos`** (`uuid_remoto()` → `_clave_remota()`): el
+  uuid sigue calculándose de `'<cuenta>|1'`.
+
+El mapa es `IDS_MONEDA_REMOTOS` (ARS=1, USD=2, USDT=3, USDC=4, BTC=5, CLP=6, BRL=7). Son
+los ids que daba el AUTOINCREMENT del seed, iguales en toda base: ningún código inserta
+otras monedas. Así:
+
+- lo ya subido no se toca;
+- no hay que volver a subir nada;
+- una instalación que siga en v2 (la app empaquetada) sigue sincronizando con una en v3.
+
+Una moneda sin id conocido (agregada después de v3) viaja como `moneda_codigo`, sin
+traducir.
+
+**Otros cambios:**
+
+- **`schema.sql` marca su propia versión.** Termina con `PRAGMA user_version = 3`, igual
+  a `VERSION_SCHEMA`; hay que subirlas juntas y el verify chequea que coincidan. Una base
+  armada solo con ese archivo (`verify/_dummy_db.py`, `tests/`) ya queda en su versión.
+  Antes quedaba en 0 y `inicializar()` le corría la baseline encima, que sobre una foto v3
+  falla.
+- **`db/seed_v0.sql` (congelado).** El seed nuevo escribe `moneda_codigo`. Para armar una
+  base vieja va `schema_v0.sql` + `seed_v0.sql`
+  (`verify/_dummy_db.py crear_dummy_db_v0()`).
+- **Triggers de sync con la clave real.** `preparar_sync()` toma la clave primaria de cada
+  tabla con `PRAGMA table_info` (`_claves_reales()`), no de `CLAVES_SYNC`. La baseline lo
+  corre sobre bases viejas, cuya `cuentas_saldos` todavía tiene `moneda_id`.
+- **`CLAVES_SYNC["cuentas_saldos"]`** = (`cuenta_id`, `moneda_codigo`).
+- **Se eliminó `DatabaseManager.obtener_moneda_id()`.**
+- **Repositories, services y `ui/`:** todo parámetro, clave de dict o variable
+  `moneda_id` pasa a `moneda_codigo` (el código) en la misma posición, y
+  `currency_id` → `currency_code`. Algunas listas que se ordenaban por moneda pasan a
+  orden alfabético de código. El primer caso es `listar_por_periodo` de los snapshots;
+  la lista completa está en el reporte de la tarea.
+
+**Lo que no se tocó** (decisión del usuario): `legacy_migration/` y `tests/`.
+`legacy_migration/migrar_a_uuid_pk.py` ya no sirve contra una base nueva v3, y
+`verify/schema/verify_uuid_pk.py` saltea esa parte. La cadena de la baseline
+(`MIGRACIONES_COLUMNA`, reestructuraciones, `migrar_cargos_extra_a_compras()`) sigue
+escrita con `moneda_id`, porque corre sobre bases v0.
+
+Verify: `verify/schema/verify_user_version.py`, casos I (v2 → v3 con datos), J (ids que no
+coinciden) y K (traducción de la sync), más la comparación foto vs. migraciones desde v0.

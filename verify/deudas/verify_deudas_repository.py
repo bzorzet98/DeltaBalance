@@ -54,8 +54,8 @@ def main() -> None:
     manager = DatabaseManager(db_path=db_path)
     manager.inicializar()
     repo = DeudasRepository(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    ars = "ARS"
+    usd = "USD"
 
     print("--- crear() / obtener_por_id() ---")
     a = repo.crear("NOE", "Préstamo", "me_deben", 40000, ars, "2026-03-01", notas="nota")
@@ -86,7 +86,7 @@ def main() -> None:
     print("\n--- get_saldo_neto_por_persona() ---")
 
     def saldos(tab: str, hasta: str) -> dict:
-        return {(f["entidad_persona"], f["moneda_id"]): f["saldo"] for f in repo.get_saldo_neto_por_persona(tab, hasta)}
+        return {(f["entidad_persona"], f["moneda_codigo"]): f["saldo"] for f in repo.get_saldo_neto_por_persona(tab, hasta)}
 
     me_deben = saldos("me_deben", "2026-12-31")
     caso("ME DEBEN — NOE ARS: 40000 − 10000", 30000, me_deben.get(("NOE", ars)))
@@ -105,7 +105,7 @@ def main() -> None:
          (fila_a2["concepto"], fila_a2["monto_minor"], fila_a2["notas"], fila_a2["tab"]))
     repo.actualizar(a, notas=None)
     caso("None explícito escribe NULL", None, repo.obtener_por_id(a)["notas"])
-    repo.actualizar(a, tab="debo", entidad_persona="NOELIA", moneda_id=usd)
+    repo.actualizar(a, tab="debo", entidad_persona="NOELIA", moneda_codigo=usd)
     fila_a3 = repo.obtener_por_id(a)
     caso("tab, persona y moneda también se actualizan", ("debo", "NOELIA", "USD"),
          (fila_a3["tab"], fila_a3["entidad_persona"], fila_a3["currency_code"]))

@@ -96,8 +96,8 @@ def main() -> None:
     manager = DatabaseManager(db_path=db_path)
     manager.inicializar()
     dashboard = DashboardService(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    ars = "ARS"
+    usd = "USD"
 
     def categoria(subcategoria: str) -> str:
         return manager.fetchone("SELECT id FROM categorias WHERE subcategoria = ?;", (subcategoria,))["id"]
@@ -108,19 +108,19 @@ def main() -> None:
     nacion = cuentas.crear(nombre="NACION MASTERCARD", tipo="credito", moneda_codigo="ARS")
     transacciones = TransaccionesRepository(manager)
 
-    def movimiento(tipo: str, fecha: str, subcategoria: str, monto_minor: int, tag=None, moneda_id: int = ars) -> str:
+    def movimiento(tipo: str, fecha: str, subcategoria: str, monto_minor: int, tag=None, moneda_codigo: str = ars) -> str:
         # El tipo va en el concepto: una entrada y una salida iguales el mismo día no son un duplicado.
         return transacciones.crear(
             fecha=fecha, concepto=f"{tipo.upper()} {subcategoria} {fecha}", cuenta_id=banco,
-            categoria_id=categoria(subcategoria), moneda_id=moneda_id, tipo_movimiento=tipo,
+            categoria_id=categoria(subcategoria), moneda_codigo=moneda_codigo, tipo_movimiento=tipo,
             monto_minor=monto_minor, tag=tag,
         )
 
-    def egreso(fecha: str, subcategoria: str, monto_minor: int, moneda_id: int = ars) -> str:
-        return movimiento("egreso", fecha, subcategoria, monto_minor, moneda_id=moneda_id)
+    def egreso(fecha: str, subcategoria: str, monto_minor: int, moneda_codigo: str = ars) -> str:
+        return movimiento("egreso", fecha, subcategoria, monto_minor, moneda_codigo=moneda_codigo)
 
-    def ingreso(fecha: str, subcategoria: str, monto_minor: int, tag=None, moneda_id: int = ars) -> str:
-        return movimiento("ingreso", fecha, subcategoria, monto_minor, tag=tag, moneda_id=moneda_id)
+    def ingreso(fecha: str, subcategoria: str, monto_minor: int, tag=None, moneda_codigo: str = ars) -> str:
+        return movimiento("ingreso", fecha, subcategoria, monto_minor, tag=tag, moneda_codigo=moneda_codigo)
 
     deudas_svc = DebtsService(manager)
 
@@ -141,8 +141,8 @@ def main() -> None:
     ingreso("2026-10-22", "DEUDA", 1000000)                              # te prestaron: capital, cuenta
     deudas_svc.create("MARTA", "PRÉSTAMO", "debo", 1000000, ars, "2026-10-22")   # ...y su fila en Deudas
     ingreso("2026-09-30", "INGRESO VARIABLE", 70000, "OTRO MES")         # no: otro mes
-    ingreso("2026-10-09", "INGRESO VARIABLE", 1000, "CLASES", moneda_id=usd)    # no en ARS: otra moneda
-    ingreso("2026-10-17", "CAMBIO MONEDA", 70000, moneda_id=usd)         # la otra punta del cambio, en USD
+    ingreso("2026-10-09", "INGRESO VARIABLE", 1000, "CLASES", moneda_codigo=usd)    # no en ARS: otra moneda
+    ingreso("2026-10-17", "CAMBIO MONEDA", 70000, moneda_codigo=usd)         # la otra punta del cambio, en USD
 
     # --- Escenario: egresos ---
     presupuestos = PresupuestosService(manager)
@@ -172,7 +172,7 @@ def main() -> None:
     egreso("2026-10-14", "DEUDA", 3000000)                         # le prestaste a LUCAS: capital, cuenta
     deudas_svc.create("LUCAS", "PRÉSTAMO", "me_deben", 3000000, ars, "2026-10-14")   # ...y su fila en Deudas
     egreso("2026-09-30", "SUPERMERCADO", 100000)                   # otro mes
-    egreso("2026-10-07", "SUPERMERCADO", 1000, moneda_id=usd)      # otra moneda
+    egreso("2026-10-07", "SUPERMERCADO", 1000, moneda_codigo=usd)      # otra moneda
 
     # --- Escenario: tarjetas ---
     fees = FeesService(manager)

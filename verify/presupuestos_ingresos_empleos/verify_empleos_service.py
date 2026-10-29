@@ -80,14 +80,14 @@ def main() -> None:
     svc = EmpleosService(manager)
 
     cuentas_repo = CuentasRepository(manager)
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cuenta_id = cuentas_repo.crear(nombre="Cuenta Sueldo Service", tipo="debito", moneda_codigo="ARS")
     categoria_sueldo = manager.fetchone(
         "SELECT id FROM categorias WHERE subcategoria = 'SUELDO / BECA';"
     )["id"]
 
     print("--- create_employment() — defaults de columna del repositorio, sin pasar porcentajes ---")
-    res_empleo_1 = svc.create_employment(nombre_empresa="Acme SA", puesto="Backend", moneda_id=moneda_ars)
+    res_empleo_1 = svc.create_employment(nombre_empresa="Acme SA", puesto="Backend", moneda_codigo=moneda_ars)
     caso("create_employment() devuelve success=True", True, res_empleo_1.success)
     empleo_1 = res_empleo_1.entity_id
 
@@ -99,7 +99,7 @@ def main() -> None:
 
     print("\n--- create_employment() — con porcentajes custom ---")
     res_empleo_2 = svc.create_employment(
-        nombre_empresa="Beta SRL", moneda_id=moneda_ars,
+        nombre_empresa="Beta SRL", moneda_codigo=moneda_ars,
         porcentaje_jubilacion=1200, porcentaje_obra_social=350, porcentaje_gremio=100, tope_copago_os_minor=5000,
     )
     empleo_2 = res_empleo_2.entity_id
@@ -107,9 +107,9 @@ def main() -> None:
     caso("create_employment() con porcentajes custom: se respetan (no el default)", 1200, fila_empleo_2["porcentaje_jubilacion"])
 
     caso_excepcion(
-        "create_employment() con moneda_id inexistente lanza CurrencyNotFoundError",
+        "create_employment() con moneda_codigo inexistente lanza CurrencyNotFoundError",
         CurrencyNotFoundError,
-        lambda: svc.create_employment(nombre_empresa="X", moneda_id=999999),
+        lambda: svc.create_employment(nombre_empresa="X", moneda_codigo="XXX"),
     )
 
     print("\n--- get_employment() / list_employments() ---")

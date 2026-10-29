@@ -5,8 +5,7 @@ Verifica eliminar / ocultar / reactivar un instrumento de ahorro
 (services/ahorros_service.py; docs/DATA_MODEL_DECISIONS.md sección 35,
 CLAUDE.md §4):
 
-1. Sin movimientos → delete_activo() lo borra del todo (también sus filas
-   del reparto deprecated activo_objetivos, que la FK exige borrar antes).
+1. Sin movimientos → delete_activo() lo borra del todo.
 2. Con historial y saldo 0 → delete_activo() lo RECHAZA (tiene
    dependencias); ocultar_activo() lo esconde sin borrar nada:
    get_resumen_por_tipo() ya no lo trae, con incluir_ocultos=True sí
@@ -29,7 +28,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
-from repositories.activo_objetivos_repository import ActivoObjetivosRepository
 from services.ahorros_service import ActivoNotFoundError, SavingsError, SavingsService
 
 
@@ -64,7 +62,7 @@ def main() -> None:
     manager = DatabaseManager(db_path=db_path)
     manager.inicializar()
     svc = SavingsService(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    ars = "ARS"
 
     def existe(activo_id: str) -> bool:
         return manager.fetchone("SELECT 1 AS si FROM activos_financieros WHERE id = ?;", (activo_id,)) is not None
@@ -77,7 +75,7 @@ def main() -> None:
         return next((e for grupo in resumen.values() for e in grupo if e["activo_id"] == activo_id), None)
 
     def fci(nombre: str) -> str:
-        return svc.create_activo(nombre=nombre, tipo="fci", moneda_id=ars).entity_id
+        return svc.create_activo(nombre=nombre, tipo="fci", moneda_codigo=ars).entity_id
 
     print("--- 1. Sin movimientos: se elimina ---")
     vacio = fci("FCI SIN MOVIMIENTOS")
@@ -86,15 +84,6 @@ def main() -> None:
     resultado = svc.delete_activo(vacio)
     caso("delete_activo(): success", True, resultado.success)
     caso("el instrumento ya no existe", False, existe(vacio))
-
-    con_reparto = fci("FCI CON REPARTO VIEJO")
-    objetivo = svc.create_objetivo(nombre="MOTO").entity_id
-    ActivoObjetivosRepository(manager).crear(con_reparto, objetivo, 50.0)
-    svc.delete_activo(con_reparto)
-    caso("con una fila en activo_objetivos (deprecated): se elimina igual", False, existe(con_reparto))
-    caso("su fila de activo_objetivos también se borró", 0, manager.fetchone(
-        "SELECT COUNT(*) AS n FROM activo_objetivos WHERE activo_id = ?;", (con_reparto,),
-    )["n"])
 
     print("\n--- 2. Con historial y saldo 0: no se elimina, se oculta ---")
     historial = fci("FCI EN CERO")
@@ -127,7 +116,7 @@ def main() -> None:
     caso("sigue existiendo y visible", (True, 1), (existe(con_saldo), activa(con_saldo)))
 
     print("\n--- 4. CEDEARs: manda la cantidad ---")
-    vendido = svc.create_activo(nombre="CEDEAR VENDIDO", tipo="cedear", moneda_id=ars).entity_id
+    vendido = svc.create_activo(nombre="CEDEAR VENDIDO", tipo="cedear", moneda_codigo=ars).entity_id
     svc.registrar_compra(vendido, 10, 1000000, 0, "2026-01-05", crear_transaccion=False)
     svc.registrar_venta(vendido, 10, 1500000, 0, "2026-03-05", crear_transaccion=False)
     datos = entrada(vendido)
@@ -136,7 +125,7 @@ def main() -> None:
     svc.ocultar_activo(vendido)
     caso("0 unidades: se oculta", 0, activa(vendido))
 
-    con_unidades = svc.create_activo(nombre="CEDEAR CON UNIDADES", tipo="cedear", moneda_id=ars).entity_id
+    con_unidades = svc.create_activo(nombre="CEDEAR CON UNIDADES", tipo="cedear", moneda_codigo=ars).entity_id
     svc.registrar_compra(con_unidades, 5, 500000, 0, "2026-01-05", crear_transaccion=False)
     caso_excepcion("con 5 unidades: ocultar_activo() → SavingsError", SavingsError,
                    lambda: svc.ocultar_activo(con_unidades))

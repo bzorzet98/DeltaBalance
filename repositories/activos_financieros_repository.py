@@ -48,7 +48,7 @@ class ActivosFinancierosRepository:
         self,
         nombre: str,
         tipo: str,
-        moneda_id: int,
+        moneda_codigo: str,
         cuenta_id: Optional[str] = None,
         broker_id: Optional[str] = None,
         comision_compra_minor: int = 0,
@@ -68,10 +68,10 @@ class ActivosFinancierosRepository:
         self._db.execute(
             """
             INSERT INTO activos_financieros
-                (id, nombre, tipo, moneda_id, cuenta_id, broker_id, comision_compra_minor, comision_venta_minor)
+                (id, nombre, tipo, moneda_codigo, cuenta_id, broker_id, comision_compra_minor, comision_venta_minor)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (activo_id, nombre, tipo, moneda_id, cuenta_id, broker_id, comision_compra_minor, comision_venta_minor),
+            (activo_id, nombre, tipo, moneda_codigo, cuenta_id, broker_id, comision_compra_minor, comision_venta_minor),
         )
         return activo_id
 
@@ -116,7 +116,7 @@ class ActivosFinancierosRepository:
         activo_id: str,
         nombre: Any = NO_CAMBIAR,
         tipo: Any = NO_CAMBIAR,
-        moneda_id: Any = NO_CAMBIAR,
+        moneda_codigo: Any = NO_CAMBIAR,
         broker_id: Any = NO_CAMBIAR,
         comision_compra_minor: Any = NO_CAMBIAR,
         comision_venta_minor: Any = NO_CAMBIAR,
@@ -124,7 +124,7 @@ class ActivosFinancierosRepository:
         cuenta_id: Any = NO_CAMBIAR,
     ) -> bool:
         """
-        Update parcial de nombre/tipo/moneda_id/broker_id/comisiones/
+        Update parcial de nombre/tipo/moneda_codigo/broker_id/comisiones/
         cuenta_id. Default NO_CAMBIAR = no tocar ese campo (None en
         broker_id / cuenta_id lo desvincula). NO incluye `activa` a
         propósito — eso es transición exclusiva de desactivar()/activar(),
@@ -133,7 +133,7 @@ class ActivosFinancierosRepository:
         campos, valores = [], []
         if nombre    is not NO_CAMBIAR: campos.append("nombre = ?");    valores.append(nombre)
         if tipo      is not NO_CAMBIAR: campos.append("tipo = ?");      valores.append(tipo)
-        if moneda_id is not NO_CAMBIAR: campos.append("moneda_id = ?"); valores.append(moneda_id)
+        if moneda_codigo is not NO_CAMBIAR: campos.append("moneda_codigo = ?"); valores.append(moneda_codigo)
         if broker_id is not NO_CAMBIAR: campos.append("broker_id = ?"); valores.append(broker_id)
         if cuenta_id is not NO_CAMBIAR: campos.append("cuenta_id = ?"); valores.append(cuenta_id)
         if comision_compra_minor is not NO_CAMBIAR:
@@ -169,8 +169,8 @@ class ActivosFinancierosRepository:
 
     def eliminar(self, activo_id: str, conn: Optional[sqlite3.Connection] = None) -> None:
         """
-        DELETE físico. Las FK de movimientos_activo / activo_objetivos lo
-        rechazan si quedan filas que lo referencian: quién puede borrarse
+        DELETE físico. La FK de movimientos_activo lo rechaza si quedan
+        filas que lo referencian: quién puede borrarse
         (y qué se borra antes, en la misma transacción `conn`) lo decide
         SavingsService.delete_activo().
         """

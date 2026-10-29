@@ -509,7 +509,7 @@ def construir(
                             campo propio en el formulario — ver docstring.
     """
     monedas = accounts_service.list_currencies()
-    monedas_por_id = {m["id"]: m for m in monedas}
+    monedas_por_codigo = {m["codigo"]: m for m in monedas}
     moneda_ars = next((m for m in monedas if m["codigo"] == MONEDA_DOLAR_OFICIAL_CODIGO), None)
     decimales_dolar_oficial = moneda_ars["decimales"] if moneda_ars else DECIMALES_DEFAULT
 
@@ -545,7 +545,7 @@ def construir(
             on_select=lambda e: _on_cambio_activo(),
         )
         campo_moneda_activo_nuevo = CampoFiltrable(
-            page, [(str(m["id"]), m["codigo"]) for m in monedas],
+            page, [(m["codigo"], m["codigo"]) for m in monedas],
             on_seleccionar=lambda id_: _on_cambio_activo(), placeholder="Moneda del activo nuevo", dense=False,
         )
         # Cuenta asociada al activo nuevo (Tarea 6g) — opcional, mismo
@@ -581,17 +581,17 @@ def construir(
         )
 
     def _info_activo_actual() -> Optional[dict]:
-        """{'tipo':, 'moneda_id':} del activo resuelto en este momento (fijo, elegido, o "nuevo" con moneda ya elegida) — None si todavía no alcanza para saberlo."""
+        """{'tipo':, 'moneda_codigo':} del activo resuelto en este momento (fijo, elegido, o "nuevo" con moneda ya elegida) — None si todavía no alcanza para saberlo."""
         if activo_fijo is not None:
-            return {"tipo": activo_fijo["tipo"], "moneda_id": activo_fijo["moneda_id"]}
+            return {"tipo": activo_fijo["tipo"], "moneda_codigo": activo_fijo["moneda_codigo"]}
         if campo_activo is None or campo_activo.id_seleccionado is None:
             return None
         if campo_activo.id_seleccionado == _ID_ACTIVO_NUEVO:
             if not campo_moneda_activo_nuevo.id_seleccionado:
                 return None
-            return {"tipo": dropdown_tipo_activo_nuevo.value, "moneda_id": int(campo_moneda_activo_nuevo.id_seleccionado)}
+            return {"tipo": dropdown_tipo_activo_nuevo.value, "moneda_codigo": campo_moneda_activo_nuevo.id_seleccionado}
         activo = next((a for a in activos_existentes if a["id"] == campo_activo.id_seleccionado), None)
-        return {"tipo": activo["tipo"], "moneda_id": activo["moneda_id"]} if activo else None
+        return {"tipo": activo["tipo"], "moneda_codigo": activo["moneda_codigo"]} if activo else None
 
     # ------------------------------------------------------------
     # CAMPOS DE MONTO (Monto total / Cantidad / Precio unitario) — se
@@ -603,7 +603,7 @@ def construir(
     def _reconstruir_campos_monto() -> None:
         info = _info_activo_actual()
         if info is not None:
-            moneda = monedas_por_id.get(info["moneda_id"])
+            moneda = monedas_por_codigo.get(info["moneda_codigo"])
             decimales = moneda["decimales"] if moneda else DECIMALES_DEFAULT
             codigo_moneda = moneda["codigo"] if moneda else ""
             mostrar_cantidad = info["tipo"] in TIPOS_ACTIVO_CON_CANTIDAD
@@ -687,7 +687,7 @@ def construir(
         try:
             resultado_activo = savings_service.create_activo(
                 nombre=nombre_nuevo, tipo=dropdown_tipo_activo_nuevo.value,
-                moneda_id=int(campo_moneda_activo_nuevo.id_seleccionado),
+                moneda_codigo=campo_moneda_activo_nuevo.id_seleccionado,
                 cuenta_id=(
                     campo_cuenta_activo_nuevo.id_seleccionado
                     if campo_cuenta_activo_nuevo.id_seleccionado else None
@@ -713,7 +713,7 @@ def construir(
             texto_error.value = "Elegí un activo (existente o nuevo, con su moneda) antes de confirmar."
             page.update()
             return
-        moneda_activo = monedas_por_id.get(info_activo["moneda_id"])
+        moneda_activo = monedas_por_codigo.get(info_activo["moneda_codigo"])
         decimales = moneda_activo["decimales"] if moneda_activo else DECIMALES_DEFAULT
         mostrar_cantidad = info_activo["tipo"] in TIPOS_ACTIVO_CON_CANTIDAD
 
@@ -864,7 +864,7 @@ def construir_nuevo_activo(
     """
     monedas = accounts_service.list_currencies()
     moneda_default = next((m for m in monedas if m["codigo"] == MONEDA_DOLAR_OFICIAL_CODIGO), monedas[0] if monedas else None)
-    monedas_por_id = {str(m["id"]): m for m in monedas}
+    monedas_por_codigo = {m["codigo"]: m for m in monedas}
     cuentas_activas = _cuentas_no_credito(accounts_service.list_accounts(solo_activas=True))
 
     campo_nombre = ft.TextField(label="NOMBRE DEL ACTIVO", autofocus=True)
@@ -879,8 +879,8 @@ def construir_nuevo_activo(
     )
     dropdown_moneda = ft.Dropdown(
         label="MONEDA", dense=True,
-        options=[ft.dropdown.Option(key=str(m["id"]), text=m["codigo"]) for m in monedas],
-        value=str(moneda_default["id"]) if moneda_default else None,
+        options=[ft.dropdown.Option(key=m["codigo"], text=m["codigo"]) for m in monedas],
+        value=moneda_default["codigo"] if moneda_default else None,
     )
     campo_cuenta = CampoFiltrable(
         page, [(str(c["id"]), c["nombre"]) for c in cuentas_activas],
@@ -905,7 +905,7 @@ def construir_nuevo_activo(
         if not nombre:
             _error("EL NOMBRE DEL ACTIVO NO PUEDE ESTAR VACÍO.")
             return
-        moneda = monedas_por_id.get(dropdown_moneda.value or "")
+        moneda = monedas_por_codigo.get(dropdown_moneda.value or "")
         if moneda is None:
             _error("ELEGÍ LA MONEDA DEL ACTIVO.")
             return
@@ -918,7 +918,7 @@ def construir_nuevo_activo(
             resultado = savings_service.create_activo(
                 nombre=nombre,
                 tipo=dropdown_tipo.value,
-                moneda_id=moneda["id"],
+                moneda_codigo=moneda["codigo"],
                 cuenta_id=campo_cuenta.id_seleccionado or None,
                 broker_id=campo_broker.id_seleccionado or None,
                 comision_compra_minor=comision_compra or 0,
@@ -956,7 +956,7 @@ def construir_editar_activo(
     SavingsService.get_resumen_por_tipo().
     """
     monedas = accounts_service.list_currencies()
-    monedas_por_id = {str(m["id"]): m for m in monedas}
+    monedas_por_codigo = {m["codigo"]: m for m in monedas}
     con_movimientos = activo["movimientos"] > 0
 
     opciones_broker = [(b["id"], b["nombre"]) for b in savings_service.get_brokers()]
@@ -978,8 +978,8 @@ def construir_editar_activo(
     )
     dropdown_moneda = ft.Dropdown(
         label="MONEDA", dense=True,
-        options=[ft.dropdown.Option(key=str(m["id"]), text=m["codigo"]) for m in monedas],
-        value=str(activo["moneda_id"]), disabled=con_movimientos,
+        options=[ft.dropdown.Option(key=m["codigo"], text=m["codigo"]) for m in monedas],
+        value=activo["moneda_codigo"], disabled=con_movimientos,
         tooltip="YA TIENE MOVIMIENTOS: SU MONEDA NO SE CAMBIA." if con_movimientos else None,
     )
     campo_cuenta = CampoFiltrable(
@@ -1003,7 +1003,7 @@ def construir_editar_activo(
 
     def _confirmar(e=None) -> None:
         texto_error.value = ""
-        moneda = monedas_por_id.get(dropdown_moneda.value or "")
+        moneda = monedas_por_codigo.get(dropdown_moneda.value or "")
         if moneda is None:
             _error("ELEGÍ LA MONEDA DEL ACTIVO.")
             return
@@ -1017,7 +1017,7 @@ def construir_editar_activo(
                 activo["activo_id"],
                 nombre=campo_nombre.value or "",
                 broker_id=campo_broker.id_seleccionado or None,
-                moneda_id=moneda["id"],  # la misma que tenía no es un cambio
+                moneda_codigo=moneda["codigo"],  # la misma que tenía no es un cambio
                 cuenta_id=campo_cuenta.id_seleccionado or None,
                 comision_compra_minor=comision_compra or 0,
                 comision_venta_minor=comision_venta or 0,
@@ -1047,7 +1047,7 @@ def construir_movimiento(
     """
     Movimiento de un activo (ver docstring del módulo). `activo`: una
     entrada de SavingsService.get_resumen_por_tipo() (activo_id, activo,
-    tipo, por_unidades, moneda_id, moneda, decimales, comisiones por
+    tipo, por_unidades, moneda_codigo, moneda, decimales, comisiones por
     defecto).
 
     Acciones / CEDEARs (moneda por movimiento, docs/DATA_MODEL_DECISIONS.md
@@ -1060,20 +1060,20 @@ def construir_movimiento(
     opciones_tipo = TIPOS_MOVIMIENTO_POR_UNIDADES if activo["por_unidades"] else TIPOS_MOVIMIENTO_POR_MONTO
     claves_tipo = [clave for clave, _ in opciones_tipo]
     monedas = accounts_service.list_currencies()
-    monedas_por_id = {str(m["id"]): m for m in monedas}
+    monedas_por_codigo = {m["codigo"]: m for m in monedas}
     moneda_ars = next((m for m in monedas if m["codigo"] == MONEDA_DOLAR_OFICIAL_CODIGO), None)
     decimales_dolar = moneda_ars["decimales"] if moneda_ars else DECIMALES_DEFAULT
     dropdown_moneda = ft.Dropdown(
         label="MONEDA", dense=True,
-        options=[ft.dropdown.Option(key=str(m["id"]), text=m["codigo"]) for m in monedas],
-        value=str(activo["moneda_id"]),
+        options=[ft.dropdown.Option(key=m["codigo"], text=m["codigo"]) for m in monedas],
+        value=activo["moneda_codigo"],
         on_select=lambda e: _al_cambiar_moneda(),
     )
 
     def _moneda() -> dict:
         """La moneda del movimiento: la elegida (acciones / CEDEARs) o la del activo."""
-        moneda = monedas_por_id.get(dropdown_moneda.value or "") if activo["por_unidades"] else None
-        return moneda or {"id": activo["moneda_id"], "codigo": activo["moneda"], "decimales": activo["decimales"]}
+        moneda = monedas_por_codigo.get(dropdown_moneda.value or "") if activo["por_unidades"] else None
+        return moneda or {"codigo": activo["moneda_codigo"], "decimales": activo["decimales"]}
 
     def _labels_monto() -> None:
         codigo = _moneda()["codigo"]
@@ -1230,7 +1230,7 @@ def construir_movimiento(
         moneda = _moneda()
         decimales = moneda["decimales"]
         # Solo acciones / CEDEARs mandan moneda: en el resto la pone el service (la del activo).
-        moneda_id = int(moneda["id"]) if activo["por_unidades"] else None
+        moneda_codigo = moneda["codigo"] if activo["por_unidades"] else None
         monto, valido_monto = _minor_de_campo(refs["monto"], decimales)
         if not valido_monto or not monto:
             _error("INGRESÁ UN MONTO VÁLIDO.")
@@ -1253,12 +1253,12 @@ def construir_movimiento(
                     resultado = savings_service.registrar_compra(
                         activo["activo_id"], int(texto_cantidad), monto, comision or 0, fecha,
                         transaccion_id=transaccion_id, dolar_momento_minor=dolar, asignaciones=asignaciones,
-                        moneda_id=moneda_id,
+                        moneda_codigo=moneda_codigo,
                     )
                 else:
                     resultado = savings_service.registrar_venta(
                         activo["activo_id"], int(texto_cantidad), monto, comision or 0, fecha,
-                        transaccion_id=transaccion_id, asignaciones=asignaciones, moneda_id=moneda_id,
+                        transaccion_id=transaccion_id, asignaciones=asignaciones, moneda_codigo=moneda_codigo,
                     )
             else:
                 if tipo == "aporte":
@@ -1271,7 +1271,7 @@ def construir_movimiento(
                     )
                 else:
                     resultado = savings_service.registrar_rendimiento(
-                        activo["activo_id"], monto, fecha, asignaciones=asignaciones, moneda_id=moneda_id,
+                        activo["activo_id"], monto, fecha, asignaciones=asignaciones, moneda_codigo=moneda_codigo,
                     )
         except (SavingsError, ValueError) as err:
             _error(str(err))

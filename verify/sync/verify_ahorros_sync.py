@@ -3,9 +3,9 @@ verify/sync/verify_ahorros_sync.py
 
 Verifica que Ahorros se sincronice (pedido del usuario: lo cargado con
 `python main.py` no aparecía en la app empaquetada, que usa otra base):
-brokers, activos_financieros, objetivos_ahorro, movimientos_activo,
-asignaciones y activo_objetivos en TABLAS_SINCRONIZADAS
-(db/schema_migrations.py), y TABLAS NUEVAS de sync/sync_engine.py.
+brokers, activos_financieros, objetivos_ahorro, movimientos_activo y
+asignaciones en TABLAS_SINCRONIZADAS (db/schema_migrations.py; activo_objetivos
+se eliminó en v2), y TABLAS NUEVAS de sync/sync_engine.py.
 
 Escenario, con dos bases temporales del MISMO usuario y un Supabase falso
 en memoria (verify/sync/_fake_supabase.py):
@@ -44,7 +44,7 @@ from sync.sync_engine import PREFIJO_TABLA_BAJADA, SyncEngine
 BRUNO = "f5ca8a42-a039-4a46-998e-2b01dbb28e9c"
 MARCA_EN_EL_FUTURO = "9999-12-31T00:00:00+00:00"
 TABLAS_AHORROS = (
-    "brokers", "activos_financieros", "objetivos_ahorro", "movimientos_activo", "asignaciones", "activo_objetivos",
+    "brokers", "activos_financieros", "objetivos_ahorro", "movimientos_activo", "asignaciones",
 )
 
 
@@ -95,7 +95,7 @@ def main() -> None:
         caso("cada base sembró su broker COCOS con su propio UUID", True, cocos_d != cocos_e)
 
         ahorros_d = SavingsService(md)
-        ars = md.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+        ars = "ARS"
         caja = md.fetchone("SELECT id FROM cuentas WHERE nombre = 'Caja Efectivo';")["id"]
         objetivo = ahorros_d.create_objetivo("VIAJE", 100000000).entity_id
         activo = ahorros_d.create_activo("FCI COCOS", "fci", ars, cuenta_id=caja, broker_id=cocos_d).entity_id

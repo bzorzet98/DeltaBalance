@@ -71,9 +71,9 @@ def main() -> None:
     manager.inicializar()
     svc = AccountsService(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
-    moneda_usdt = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USDT';")["id"]
+    moneda_ars = "ARS"
+    moneda_usd = "USD"
+    moneda_usdt = "USDT"
     categoria_ingreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'ingreso' LIMIT 1;")["id"]
 
     print("--- list_currencies() ---")
@@ -158,9 +158,9 @@ def main() -> None:
         lambda: svc.create_account(nombre="Cuenta duplicada", tipo="debito", monedas=[moneda_ars, moneda_ars]),
     )
     caso_excepcion(
-        "create_account() con moneda_id inexistente lanza CurrencyNotFoundError",
+        "create_account() con moneda_codigo inexistente lanza CurrencyNotFoundError",
         CurrencyNotFoundError,
-        lambda: svc.create_account(nombre="Cuenta X", tipo="debito", monedas=[999999]),
+        lambda: svc.create_account(nombre="Cuenta X", tipo="debito", monedas=["XXX"]),
     )
     caso_excepcion(
         "create_account() con cuenta_pago_id inexistente lanza ParentAccountNotFoundError",
@@ -168,7 +168,7 @@ def main() -> None:
         lambda: svc.create_account(nombre="Otra tarjeta", tipo="credito", monedas=[moneda_ars], cuenta_pago_id=999999),
     )
     caso(
-        "create_account() con moneda_id inexistente no crea nada (falla antes de tocar la DB)",
+        "create_account() con moneda_codigo inexistente no crea nada (falla antes de tocar la DB)",
         False,
         "Cuenta X" in [c["nombre"] for c in svc.list_accounts(solo_activas=False)],
     )
@@ -176,7 +176,7 @@ def main() -> None:
         "create_account() con una moneda válida y otra inexistente en la lista también lanza CurrencyNotFoundError "
         "(todas se validan antes de abrir la transacción, no solo la primera)",
         CurrencyNotFoundError,
-        lambda: svc.create_account(nombre="Cuenta Y", tipo="debito", monedas=[moneda_ars, 999999]),
+        lambda: svc.create_account(nombre="Cuenta Y", tipo="debito", monedas=[moneda_ars, "XXX"]),
     )
     caso(
         "esa llamada fallida tampoco dejó la cuenta creada a medias — atómico: ninguna moneda válida quedó insertada sola",
@@ -201,7 +201,7 @@ def main() -> None:
     caso_excepcion(
         "add_currency_to_account() con moneda inexistente lanza CurrencyNotFoundError",
         CurrencyNotFoundError,
-        lambda: svc.add_currency_to_account(cuenta_debito, 999999),
+        lambda: svc.add_currency_to_account(cuenta_debito, "XXX"),
     )
 
     print("\n--- get_account() / list_accounts() ---")
@@ -281,7 +281,7 @@ def main() -> None:
     print("\n--- archive_account() — bloqueado si el saldo no es 0 en alguna moneda ---")
     manager.execute(
         """
-        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
+        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, monto_minor)
         VALUES (?, ?, ?, ?, ?, ?, ?);
         """,
         ("2026-01-15", "Ingreso de prueba", cuenta_debito, categoria_ingreso, moneda_ars, "ingreso", 50000),
@@ -311,7 +311,7 @@ def main() -> None:
     cuenta_soft_deleted = svc.create_account(nombre="Cuenta con transacción borrada", tipo="efectivo", monedas=[moneda_ars]).account_id
     manager.execute(
         """
-        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor, deleted_at)
+        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, monto_minor, deleted_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?);
         """,
         ("2026-01-10", "Transacción luego borrada", cuenta_soft_deleted, categoria_ingreso, moneda_ars, "ingreso", 1000, "2026-01-11 00:00:00"),
@@ -334,7 +334,7 @@ def main() -> None:
     # Caso D: saldo inicial != 0 en cuentas_saldos, sin transacciones ni dependientes
     cuenta_con_saldo_inicial = svc.create_account(nombre="Cuenta con saldo inicial cargado", tipo="efectivo", monedas=[moneda_ars]).account_id
     manager.execute(
-        "UPDATE cuentas_saldos SET saldo_inicial_minor = ? WHERE cuenta_id = ? AND moneda_id = ?;",
+        "UPDATE cuentas_saldos SET saldo_inicial_minor = ? WHERE cuenta_id = ? AND moneda_codigo = ?;",
         (10000, cuenta_con_saldo_inicial, moneda_ars),
     )
     caso_excepcion(
@@ -367,7 +367,7 @@ def main() -> None:
     cuenta_usd = svc.create_account(nombre="Cuenta USD", tipo="efectivo", monedas=[moneda_usd]).account_id
     manager.execute(
         """
-        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
+        INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, monto_minor)
         VALUES (?, ?, ?, ?, ?, ?, ?);
         """,
         ("2026-01-16", "Ingreso USD de prueba", cuenta_usd, categoria_ingreso, moneda_usd, "ingreso", 10000),

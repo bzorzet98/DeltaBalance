@@ -73,8 +73,8 @@ def main() -> None:
     manager = DatabaseManager(db_path=db_path)
     manager.inicializar()  # base nueva: `deudas` ya nace con la estructura final
     svc = DebtsService(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    ars = "ARS"
+    usd = "USD"
 
     # ============================================================
     print("--- create() ---")
@@ -138,7 +138,7 @@ def main() -> None:
          (svc.get(borde_inicio)["tab"], svc.get(borde_inicio)["monto_minor"]))
     svc.update(borde_inicio, tab="me_deben")
     caso("update() de tab", "me_deben", svc.get(borde_inicio)["tab"])
-    svc.update(borde_inicio, moneda_id=usd)
+    svc.update(borde_inicio, moneda_codigo=usd)
     caso("update() de moneda", "USD", svc.get(borde_inicio)["currency_code"])
     caso_excepcion("tab inválido en update() → DebtError", DebtError, lambda: svc.update(borde_inicio, tab="a_favor"))
     caso_excepcion("monto 0 en update() → DebtError", DebtError, lambda: svc.update(borde_inicio, monto_minor=0))
@@ -160,7 +160,7 @@ def main() -> None:
     def saldo(tab: str, persona: str, hasta: str | None = "2026-12-31") -> int | None:
         return next(
             (e["saldo_minor"] for e in svc.summary_by_person(tab, hasta)
-             if e["entidad_persona"] == persona and e["moneda_id"] == ars),
+             if e["entidad_persona"] == persona and e["moneda_codigo"] == ars),
             None,
         )
 
@@ -172,7 +172,7 @@ def main() -> None:
     caso("ME DEBEN — KEVIN: lo que te debe, aparte", 1200, saldo("me_deben", "KEVIN"))
     caso_excepcion("hasta_fecha mal formada → DebtError", DebtError, lambda: svc.summary_by_person("me_deben", "31/12/2026"))
     caso_excepcion("tab inválido → DebtError", DebtError, lambda: svc.summary_by_person("a_favor"))
-    resumen = {e["entidad_persona"]: e for e in svc.summary_by_person("debo", "2026-12-31") if e["moneda_id"] == ars}
+    resumen = {e["entidad_persona"]: e for e in svc.summary_by_person("debo", "2026-12-31") if e["moneda_codigo"] == ars}
     caso("summary_by_person() trae moneda_codigo y símbolo", ("ARS", "$"),
          (resumen["KEVIN"]["moneda_codigo"], resumen["KEVIN"]["moneda_simbolo"]))
 

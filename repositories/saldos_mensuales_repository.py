@@ -7,7 +7,7 @@ db/schema_migrations.py MIGRACIONES_TABLA). Sin lógica de negocio: qué se
 guarda, para qué meses y cómo se calcula lo decide
 services/snapshots_service.py.
 
-upsert() usa INSERT OR REPLACE sobre el UNIQUE(cuenta_id, moneda_id, mes,
+upsert() usa INSERT OR REPLACE sobre el UNIQUE(cuenta_id, moneda_codigo, mes,
 anio): recalcular un mes pisa el snapshot anterior (fila nueva, con
 calculado_en actualizado por el DEFAULT).
 
@@ -35,17 +35,17 @@ class SaldosMensualesRepository:
     def upsert(
         self,
         cuenta_id: str,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         saldo_minor: int,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         sql = """
-            INSERT OR REPLACE INTO saldos_mensuales (cuenta_id, moneda_id, mes, anio, saldo_minor)
+            INSERT OR REPLACE INTO saldos_mensuales (cuenta_id, moneda_codigo, mes, anio, saldo_minor)
             VALUES (?, ?, ?, ?, ?);
         """
-        params = (cuenta_id, moneda_id, mes, anio, saldo_minor)
+        params = (cuenta_id, moneda_codigo, mes, anio, saldo_minor)
         if conn is not None:
             conn.execute(sql, params)
             return
@@ -55,22 +55,22 @@ class SaldosMensualesRepository:
     # READ
     # ----------------------------------------------------------
 
-    def obtener(self, cuenta_id: str, moneda_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def obtener(self, cuenta_id: str, moneda_codigo: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("saldos_mensuales", include_deleted=True)
             .where("cuenta_id", cuenta_id)
-            .where("moneda_id", moneda_id)
+            .where("moneda_codigo", moneda_codigo)
             .where("mes", mes)
             .where("anio", anio)
             .ejecutar_uno(self._db.conn)
         )
 
-    def listar_por_cuenta(self, cuenta_id: str, moneda_id: int) -> list[sqlite3.Row]:
+    def listar_por_cuenta(self, cuenta_id: str, moneda_codigo: str) -> list[sqlite3.Row]:
         """Todos los snapshots de una (cuenta, moneda), del más viejo al más nuevo."""
         return (
             QueryBuilder("saldos_mensuales", include_deleted=True)
             .where("cuenta_id", cuenta_id)
-            .where("moneda_id", moneda_id)
+            .where("moneda_codigo", moneda_codigo)
             .order("anio")
             .order("mes")
             .ejecutar(self._db.conn)
@@ -83,7 +83,7 @@ class SaldosMensualesRepository:
             .where("mes", mes)
             .where("anio", anio)
             .order("cuenta_id")
-            .order("moneda_id")
+            .order("moneda_codigo")
             .ejecutar(self._db.conn)
         )
 

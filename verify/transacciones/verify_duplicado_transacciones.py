@@ -62,7 +62,7 @@ def main() -> None:
     repo = TransaccionesRepository(manager)
 
     cuenta_a = cuentas_repo.crear(nombre="Cuenta A Dup TX", tipo="efectivo", moneda_codigo="ARS")
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
 
     campos_comunes = dict(
@@ -70,7 +70,7 @@ def main() -> None:
         concepto="Supermercado duplicado",
         cuenta_id=cuenta_a,
         categoria_id=cat_egreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         tipo_movimiento="egreso",
         monto_minor=150000,
     )

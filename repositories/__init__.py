@@ -12,7 +12,6 @@ from repositories.deudas_repository import DeudasRepository
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
 from repositories.cuotas_credito_repository import CuotasCreditoRepository
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
-from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 from repositories.presupuestos_repository import PresupuestosRepository
 from repositories.ingresos_proyectados_repository import IngresosProyectadosRepository
 from repositories.empleos_repository import EmpleosRepository
@@ -34,7 +33,6 @@ __all__ = [
     "ComprasCuotasRepository",
     "CuotasCreditoRepository",
     "ResumenesTarjetaRepository",
-    "ResumenCargosExtraRepository",
     "PresupuestosRepository",
     "IngresosProyectadosRepository",
     "EmpleosRepository",

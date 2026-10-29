@@ -36,7 +36,7 @@ Purpose:
     ('en_resumen'). add_extra_charge() / delete_extra_charge() /
     list_extra_charges_in_month(); resumen_por_tarjeta() and
     close_statement() count them apart from the purchases.
-    resumen_cargos_extra is deprecated (it does not sync).
+    The old resumen_cargos_extra table was dropped in schema v2 (section 38).
 
     Key workflows:
         1. create_purchase()      → creates compras_cuotas + auto-generates N cuotas_credito,
@@ -252,7 +252,7 @@ class FeesService:
             code: Currency code. E.g. 'ARS', 'USD'.
 
         Returns:
-            sqlite3.Row with id, codigo, decimales.
+            sqlite3.Row with codigo, simbolo, decimales.
         """
         row = self._db.fetchone(
             "SELECT * FROM monedas WHERE codigo = ?;", (code.upper(),)
@@ -481,7 +481,7 @@ class FeesService:
                 concepto=concept.strip(),
                 cuenta_id=account_id,
                 categoria_id=category_id,
-                moneda_id=currency["id"],
+                moneda_codigo=currency["codigo"],
                 monto_total_minor=total_minor,
                 total_cuotas=total_fees,
                 monto_por_cuota_minor=per_fee_minor,
@@ -550,14 +550,13 @@ class FeesService:
         Returns:
             List of sqlite3.Row ordered by fecha_compra DESC.
         """
-        currency_id = None
         if currency_code:
-            currency_id = self._get_currency(currency_code)["id"]
+            currency_code = self._get_currency(currency_code)["codigo"]
 
         return self._compras_repo.listar_enriquecida(
             cuenta_id=account_id,
             estado=estado,
-            moneda_id=currency_id,
+            moneda_codigo=currency_code,
             pagina=page,
             por_pagina=per_page,
         )
@@ -662,9 +661,8 @@ class FeesService:
         if not (1 <= month <= 12):
             raise ValueError(f"Month must be between 1 and 12. Received: {month}.")
 
-        currency_id = None
         if currency_code:
-            currency_id = self._get_currency(currency_code)["id"]
+            currency_code = self._get_currency(currency_code)["codigo"]
 
         return (
             QueryBuilder("cuotas_credito qc", include_deleted=True)
@@ -679,13 +677,13 @@ class FeesService:
             )
             .join("compras_cuotas pc", "pc.id = qc.compra_id")
             .join("cuentas c",         "c.id = pc.cuenta_id")
-            .join("monedas m",         "m.id = pc.moneda_id")
+            .join("monedas m",         "m.codigo = pc.moneda_codigo")
             .where("qc.mes_proyectado",  month)
             .where("qc.anio_proyectado", year)
             .where("qc.estado",          estado)
             .where("pc.cuenta_id",       account_id)
-            .where("pc.moneda_id",       currency_id)
-            .group_by("c.id", "m.id")
+            .where("pc.moneda_codigo",   currency_code)
+            .group_by("c.id", "m.codigo")
             .order("c.nombre")
             .ejecutar(self._db.conn)
         )
@@ -735,8 +733,8 @@ class FeesService:
         criterio que DashboardService.get_movimientos_por_cuenta()). Una
         tarjeta con solo cargos extra ese mes también aparece.
 
-        Un grupo por (cuenta_id, moneda_id) — cada cargo extra está en su
-        moneda (compras_cuotas.moneda_id):
+        Un grupo por (cuenta_id, moneda_codigo) — cada cargo extra está en su
+        moneda (compras_cuotas.moneda_codigo):
         - monto_cuotas_minor: suma de monto_cuota_minor de las cuotas de
           COMPRAS (es_cargo_extra = 0). Excluye estado='omitido' (cuotas de
           compras canceladas vía cancel_purchase() — no son "a pagar").
@@ -755,7 +753,7 @@ class FeesService:
             anio: Año de 4 dígitos.
 
         Returns:
-            Lista de dicts {cuenta_id, account_name, moneda_id,
+            Lista de dicts {cuenta_id, account_name, moneda_codigo,
             currency_code, currency_symbol, decimales, monto_cuotas_minor,
             monto_cargos_extra_minor, monto_total_minor,
             cargos_extra_multiples_monedas}, ordenada por account_name.
@@ -769,7 +767,7 @@ class FeesService:
             {
                 "cuenta_id":                       fila["cuenta_id"],
                 "account_name":                    fila["account_name"],
-                "moneda_id":                       fila["moneda_id"],
+                "moneda_codigo":                   fila["moneda_codigo"],
                 "currency_code":                   fila["currency_code"],
                 "currency_symbol":                 fila["currency_symbol"],
                 "decimales":                       fila["decimales"],
@@ -807,7 +805,7 @@ class FeesService:
             .select(
                 "c.id AS cuenta_id",
                 "c.nombre AS account_name",
-                "m.id AS moneda_id",
+                "m.codigo AS moneda_codigo",
                 "m.codigo AS currency_code",
                 "m.simbolo AS currency_symbol",
                 "m.decimales",
@@ -816,12 +814,12 @@ class FeesService:
             )
             .join("compras_cuotas pc", "pc.id = qc.compra_id")
             .join("cuentas c",         "c.id = pc.cuenta_id")
-            .join("monedas m",         "m.id = pc.moneda_id")
+            .join("monedas m",         "m.codigo = pc.moneda_codigo")
             .where("qc.mes_proyectado",  mes)
             .where("qc.anio_proyectado", anio)
             .where("qc.estado", "omitido", "!=")
             .where("c.tipo", "credito")
-            .group_by("c.id", "m.id")
+            .group_by("c.id", "m.codigo")
             .order("c.nombre")
             .ejecutar(self._db.conn)
         )
@@ -1056,7 +1054,7 @@ class FeesService:
             )
         self._require_statement_open(statement)
         categoria = self._categoria_de_cargo(charge_type)
-        moneda_id, moneda_codigo = self._moneda_de_cargo(statement["cuenta_id"], currency_code)
+        moneda_codigo = self._moneda_de_cargo(statement["cuenta_id"], currency_code)
         mes, anio = statement["mes"], statement["anio"]
         fecha = self._validate_date(date_str) if date_str else f"{anio:04d}-{mes:02d}-01"
 
@@ -1067,7 +1065,7 @@ class FeesService:
                 concepto=concept.strip(),
                 cuenta_id=statement["cuenta_id"],
                 categoria_id=categoria["id"],
-                moneda_id=moneda_id,
+                moneda_codigo=moneda_codigo,
                 monto_total_minor=amount_minor,
                 total_cuotas=1,
                 monto_por_cuota_minor=amount_minor,
@@ -1176,7 +1174,7 @@ class FeesService:
         An extra charge as list_extra_charges() / list_extra_charges_in_month()
         return it: id (its compras_cuotas id), cuenta_id, account_name,
         concepto, categoria_id, category_name, tipo (charge_type, from its
-        special category), monto_minor (with its sign), fecha, moneda_id,
+        special category), monto_minor (with its sign), fecha, moneda_codigo,
         currency_code, currency_symbol, decimales, and from its fee:
         resumen_id, mes / anio (the statement's month) and estado_cuota.
         `compra`: the enriched shape (get_purchase()).
@@ -1193,7 +1191,7 @@ class FeesService:
             "tipo":            _CHARGE_TYPE_POR_SUBCATEGORIA.get(clave_categoria("", compra["category_name"])[1]),
             "monto_minor":     compra["monto_total_minor"],
             "fecha":           compra["fecha_compra"],
-            "moneda_id":       compra["moneda_id"],
+            "moneda_codigo":   compra["moneda_codigo"],
             "currency_code":   compra["currency_code"],
             "currency_symbol": compra["currency_symbol"],
             "decimales":       compra["decimales"],
@@ -1222,17 +1220,17 @@ class FeesService:
             )
         return max(candidatas, key=lambda c: c["activa"])
 
-    def _moneda_de_cargo(self, cuenta_id: str, currency_code: Optional[str]) -> tuple[int, str]:
-        """(moneda_id, codigo) of a charge: currency_code, or the card's only currency."""
+    def _moneda_de_cargo(self, cuenta_id: str, currency_code: Optional[str]) -> str:
+        """moneda_codigo of a charge: currency_code, or the card's only currency."""
         if currency_code:
             moneda = self._get_currency(currency_code)
-            return moneda["id"], moneda["codigo"]
+            return moneda["codigo"]
         saldos = self._cuentas_repo.listar_saldos(cuenta_id)
         if len(saldos) != 1:
             raise FeesError(
                 f"Account id={cuenta_id} operates in {len(saldos)} currencies: pass currency_code."
             )
-        return saldos[0]["moneda_id"], saldos[0]["codigo"]
+        return saldos[0]["moneda_codigo"]
 
     @staticmethod
     def _require_statement_open(statement: sqlite3.Row) -> None:
@@ -1253,8 +1251,7 @@ class FeesService:
         recalculated as the sum of every cuotas_credito row linked to this
         statement that belongs to a purchase, monto_impuestos_minor as the
         sum of its extra charges (the linked fees of es_cargo_extra rows —
-        section 28 — plus any row left in the deprecated
-        resumen_cargos_extra; see ResumenesTarjetaRepository.marcar_cerrado()), and
+        section 28; see ResumenesTarjetaRepository.marcar_cerrado()), and
         porcentaje_impuesto_bp is derived from both
         (monto_impuestos_minor*10000 // monto_consumos_minor, 0 if there are
         no consumos). This is one of the two intentionally sanctioned
@@ -1543,13 +1540,13 @@ class FeesService:
         nueva_moneda = None
         if moneda_codigo is not None:
             moneda = self._get_currency(moneda_codigo)  # ValueError if unknown
-            if moneda["id"] != purchase["moneda_id"]:
+            if moneda["codigo"] != purchase["moneda_codigo"]:
                 accion = "its currency can no longer be changed"
                 self._require_fees_pending(purchase_id, cuotas, accion)
                 self._require_purchase_not_shared(purchase_id, accion)
                 self._require_fees_not_shared(purchase_id, cuotas, accion)
                 nueva_moneda = moneda
-                campos_repo["moneda_id"] = moneda["id"]
+                campos_repo["moneda_codigo"] = moneda["codigo"]
 
         nuevo_monto_cuota_minor = None
         if monto_total_minor is not None:

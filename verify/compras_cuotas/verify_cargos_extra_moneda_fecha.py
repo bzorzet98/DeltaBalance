@@ -61,7 +61,7 @@ def main() -> None:
     cuentas_repo = CuentasRepository(manager)
     svc = FeesService(manager)
 
-    usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    usd = "USD"
     categoria = manager.fetchone("SELECT id FROM categorias WHERE subcategoria = 'SUPERMERCADO';")["id"]
 
     print("--- Migración ---")

@@ -11,7 +11,7 @@ queda como reexport para ui/app.py.
 Reglas de dominio (acá, no en el repositorio):
 - El concepto se normaliza: sin espacios de más y en MAYÚSCULAS (así
   copy_recurrentes() reconoce el mismo concepto en el mes destino).
-- Montos enteros (minor units) >= 0; moneda_id tiene que existir; mes
+- Montos enteros (minor units) >= 0; moneda_codigo tiene que existir; mes
   entre 1 y 12.
 - Edición y borrado directos: un ingreso no tiene dependencias con estado
   propio (ventana de corrección temprana, CLAUDE.md §4).
@@ -39,7 +39,7 @@ from utils.validaciones import recurring_flag, validate_concept, validate_period
 from repositories.ingresos_proyectados_repository import IngresosProyectadosRepository
 
 # update(): campos que se pueden cambiar.
-CAMPOS_EDITABLES = ("concepto", "monto_estimado_minor", "monto_real_minor", "moneda_id", "es_recurrente", "notas")
+CAMPOS_EDITABLES = ("concepto", "monto_estimado_minor", "monto_real_minor", "moneda_codigo", "es_recurrente", "notas")
 
 # Marca de las entradas de total al final de list_by_month().
 CLAVE_TOTAL = "es_total"
@@ -76,7 +76,7 @@ class IngresosService:
     """
     Usage:
         svc = IngresosService(db)
-        svc.create("Beca doctoral", 121739300, 0, moneda_id=1, mes=10, anio=2026, es_recurrente=1)
+        svc.create("Beca doctoral", 121739300, 0, moneda_codigo="ARS", mes=10, anio=2026, es_recurrente=1)
         svc.list_by_month(10, 2026)      # [{...fila...}, ..., {"es_total": True, "currency_code": "ARS", ...}]
         svc.copy_recurrentes(10, 2026, 11, 2026)   # 1
     """
@@ -102,10 +102,10 @@ class IngresosService:
             raise IngresoError("EL MONTO NO PUEDE SER NEGATIVO.")
         return monto_minor
 
-    def _moneda(self, moneda_id: Any) -> int:
-        if moneda_id not in {fila["id"] for fila in self._db.obtener_monedas()}:
-            raise IngresoError(f"LA MONEDA id={moneda_id} NO EXISTE.")
-        return moneda_id
+    def _moneda(self, moneda_codigo: Any) -> str:
+        if moneda_codigo not in {fila["codigo"] for fila in self._db.obtener_monedas()}:
+            raise IngresoError(f"LA MONEDA {moneda_codigo} NO EXISTE.")
+        return moneda_codigo
 
     @staticmethod
     def _notas(valor: Optional[str]) -> Optional[str]:
@@ -126,7 +126,7 @@ class IngresosService:
         concepto: str,
         monto_estimado_minor: int,
         monto_real_minor: int,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         es_recurrente: int = 0,
@@ -145,7 +145,7 @@ class IngresosService:
             concepto=concepto,
             monto_estimado_minor=self._monto(monto_estimado_minor),
             monto_real_minor=self._monto(monto_real_minor),
-            moneda_id=self._moneda(moneda_id),
+            moneda_codigo=self._moneda(moneda_codigo),
             mes=mes,
             anio=anio,
             es_recurrente=self._recurrente(es_recurrente),
@@ -161,7 +161,7 @@ class IngresosService:
         """
         Los ingresos de ese mes (dicts, enriquecidos con currency_code,
         currency_symbol y decimales), en orden de alta, y al final una
-        entrada de total por moneda: {CLAVE_TOTAL: True, moneda_id,
+        entrada de total por moneda: {CLAVE_TOTAL: True, moneda_codigo,
         currency_code, currency_symbol, decimales, total_estimado_minor,
         total_real_minor}.
 
@@ -175,7 +175,7 @@ class IngresosService:
 
     def get_totales(self, mes: int, anio: int) -> dict:
         """
-        Totales del mes por moneda: {currency_code: {moneda_id,
+        Totales del mes por moneda: {currency_code: {moneda_codigo,
         currency_symbol, decimales, total_estimado_minor, total_real_minor}}.
 
         Raises:
@@ -189,7 +189,7 @@ class IngresosService:
         totales: dict[str, dict] = {}
         for fila in filas:
             total = totales.setdefault(fila["currency_code"], {
-                "moneda_id": fila["moneda_id"],
+                "moneda_codigo": fila["moneda_codigo"],
                 "currency_symbol": fila["currency_symbol"] or "",
                 "decimales": fila["decimales"],
                 "total_estimado_minor": 0,
@@ -226,7 +226,7 @@ class IngresosService:
             "concepto": self._concepto,
             "monto_estimado_minor": self._monto,
             "monto_real_minor": self._monto,
-            "moneda_id": self._moneda,
+            "moneda_codigo": self._moneda,
             "es_recurrente": self._recurrente,
             "notas": self._notas,
         }

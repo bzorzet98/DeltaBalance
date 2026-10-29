@@ -5,7 +5,7 @@ Verifica PresupuestosRepository (repositories/presupuestos_repository.py):
 upsert() (camino INSERT y camino UPDATE del ON CONFLICT — el camino UPDATE
 reescribe monto_estimado_minor, es_recurrente y notas; es_recurrente se
 prueba con dos transiciones (1→0 y 0→1) para confirmar que de verdad se
-reescribe y no es una coincidencia de default; moneda_id NO se reescribe en
+reescribe y no es una coincidencia de default; moneda_codigo NO se reescribe en
 el camino UPDATE), obtener_por_periodo, listar_por_periodo con filtros
 cruzados y shape enriquecido, actualizar_ejecutado, copiar_periodo
 (incluyendo el caso de overlap parcial — INSERT OR IGNORE no sobreescribe
@@ -61,11 +61,11 @@ def main() -> None:
 
     categorias = manager.fetchall("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 2;")
     cat_1, cat_2 = categorias[0]["id"], categorias[1]["id"]
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
 
     print("--- upsert() — camino INSERT ---")
     filas_afectadas_1 = repo.upsert(
-        categoria_id=cat_1, mes=1, anio=2026, moneda_id=moneda_ars,
+        categoria_id=cat_1, mes=1, anio=2026, moneda_codigo=moneda_ars,
         monto_estimado_minor=100000, es_recurrente=True, notas="Presupuesto inicial",
     )
     caso("upsert() (INSERT) devuelve 1 fila afectada (rowcount real, no un id fabricado)", 1, filas_afectadas_1)
@@ -80,7 +80,7 @@ def main() -> None:
 
     print("\n--- upsert() — camino UPDATE (ON CONFLICT): reescribe monto_estimado_minor, es_recurrente y notas ---")
     filas_afectadas_2 = repo.upsert(
-        categoria_id=cat_1, mes=1, anio=2026, moneda_id=moneda_ars,
+        categoria_id=cat_1, mes=1, anio=2026, moneda_codigo=moneda_ars,
         monto_estimado_minor=150000, es_recurrente=False, notas="Presupuesto corregido",
     )
     caso("upsert() (UPDATE) devuelve 1 fila afectada", 1, filas_afectadas_2)
@@ -97,7 +97,7 @@ def main() -> None:
     )
 
     filas_afectadas_3 = repo.upsert(
-        categoria_id=cat_1, mes=1, anio=2026, moneda_id=moneda_ars,
+        categoria_id=cat_1, mes=1, anio=2026, moneda_codigo=moneda_ars,
         monto_estimado_minor=150000, es_recurrente=True, notas="Presupuesto corregido",
     )
     caso("upsert() (UPDATE) devuelve 1 fila afectada (segunda vez)", 1, filas_afectadas_3)
@@ -115,7 +115,7 @@ def main() -> None:
     caso("obtener_por_periodo() de un período sin presupuesto devuelve None", None, repo.obtener_por_periodo(cat_1, 2, 2026))
 
     print("\n--- listar_por_periodo() — filtro cruzado + shape enriquecido ---")
-    repo.upsert(categoria_id=cat_2, mes=1, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=50000)
+    repo.upsert(categoria_id=cat_2, mes=1, anio=2026, moneda_codigo=moneda_ars, monto_estimado_minor=50000)
     listado_enero = repo.listar_por_periodo(1, 2026)
     ids_cats_enero = {(r["categoria_id"]) for r in listado_enero}
     caso("listar_por_periodo(1, 2026) incluye ambas categorías", True, cat_1 in ids_cats_enero and cat_2 in ids_cats_enero)
@@ -128,13 +128,13 @@ def main() -> None:
     print("\n--- upsert(conn=...) — participa de una transacción externa ---")
     conn_externo = manager.conn
     with manager.transaction():
-        repo.upsert(categoria_id=cat_1, mes=3, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=200000, conn=conn_externo)
+        repo.upsert(categoria_id=cat_1, mes=3, anio=2026, moneda_codigo=moneda_ars, monto_estimado_minor=200000, conn=conn_externo)
     caso("upsert(conn=...) persiste tras comitear", 200000, repo.obtener_por_periodo(cat_1, 3, 2026)["monto_estimado_minor"])
 
     print("\n--- upsert(conn=...) — rollback simulado ---")
     try:
         with manager.transaction():
-            repo.upsert(categoria_id=cat_1, mes=4, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=999, conn=conn_externo)
+            repo.upsert(categoria_id=cat_1, mes=4, anio=2026, moneda_codigo=moneda_ars, monto_estimado_minor=999, conn=conn_externo)
             raise RuntimeError("Fallo simulado a mitad de la transacción externa")
     except RuntimeError:
         pass
@@ -160,7 +160,7 @@ def main() -> None:
     caso("copiar_periodo() con overlap total copia 0 filas (todo ya existe)", 0, copiados_2)
 
     print("\n--- copiar_periodo() — overlap parcial ---")
-    repo.upsert(categoria_id=cat_1, mes=6, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=999999, notas="Ya existía, no debe pisarse")
+    repo.upsert(categoria_id=cat_1, mes=6, anio=2026, moneda_codigo=moneda_ars, monto_estimado_minor=999999, notas="Ya existía, no debe pisarse")
     copiados_3 = repo.copiar_periodo(mes_origen=1, anio_origen=2026, mes_destino=6, anio_destino=2026)
     caso("copiar_periodo() con overlap parcial solo copia la fila faltante (cat_2)", 1, copiados_3)
     caso(
@@ -204,7 +204,7 @@ def main() -> None:
     categorias_5 = manager.fetchall("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 5;")
     cat_4, cat_5 = categorias_5[3]["id"], categorias_5[4]["id"]
     filas_formula = repo.upsert(
-        categoria_id=cat_4, mes=1, anio=2026, moneda_id=moneda_ars,
+        categoria_id=cat_4, mes=1, anio=2026, moneda_codigo=moneda_ars,
         monto_estimado_minor=17700, formula_estimado="=15000+3200-500",
     )
     caso("upsert() con formula_estimado devuelve 1 fila afectada", 1, filas_formula)
@@ -213,12 +213,12 @@ def main() -> None:
     caso("upsert() con formula_estimado persiste el texto de la fórmula tal cual (con el '=')", "=15000+3200-500", fila_con_formula["formula_estimado"])
 
     print("\n--- upsert() — formula_estimado: guardar SIN fórmula deja la columna en NULL ---")
-    repo.upsert(categoria_id=cat_5, mes=1, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=50000)
+    repo.upsert(categoria_id=cat_5, mes=1, anio=2026, moneda_codigo=moneda_ars, monto_estimado_minor=50000)
     fila_sin_formula = repo.obtener_por_periodo(cat_5, 1, 2026)
     caso("upsert() sin pasar formula_estimado (default None) deja la columna en NULL", None, fila_sin_formula["formula_estimado"])
 
     print("\n--- upsert() — formula_estimado: sobreescribir una fila con fórmula con un número directo limpia a NULL ---")
-    repo.upsert(categoria_id=cat_4, mes=1, anio=2026, moneda_id=moneda_ars, monto_estimado_minor=99999)  # sin formula_estimado -> None
+    repo.upsert(categoria_id=cat_4, mes=1, anio=2026, moneda_codigo=moneda_ars, monto_estimado_minor=99999)  # sin formula_estimado -> None
     fila_tras_sobreescribir = repo.obtener_por_periodo(cat_4, 1, 2026)
     caso("upsert() sobre una fila que tenía fórmula: el nuevo monto_estimado_minor se persiste", 99999, fila_tras_sobreescribir["monto_estimado_minor"])
     caso(

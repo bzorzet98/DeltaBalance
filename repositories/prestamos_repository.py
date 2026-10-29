@@ -54,7 +54,7 @@ class PrestamosRepository:
         capital_original_minor: int,
         tasa_anual_bp: int,
         sistema_amortizacion: str,
-        moneda_id: int,
+        moneda_codigo: str,
         fecha_inicio: str,
         plazo_meses: int,
         cuenta_debito_id: Optional[str] = None,
@@ -74,13 +74,13 @@ class PrestamosRepository:
         sql = """
             INSERT INTO prestamos
                 (id, entidad, tipo, capital_original_minor, tasa_anual_bp,
-                 sistema_amortizacion, moneda_id, fecha_inicio, plazo_meses,
+                 sistema_amortizacion, moneda_codigo, fecha_inicio, plazo_meses,
                  cuenta_debito_id, notas)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             prestamo_id, entidad, tipo, capital_original_minor, tasa_anual_bp,
-            sistema_amortizacion, moneda_id, fecha_inicio, plazo_meses,
+            sistema_amortizacion, moneda_codigo, fecha_inicio, plazo_meses,
             cuenta_debito_id, notas,
         )
         if conn is not None:
@@ -114,7 +114,7 @@ class PrestamosRepository:
                 "m.codigo AS currency_code",
                 "c.nombre AS account_name",
             )
-            .join("monedas m", "m.id = p.moneda_id")
+            .join("monedas m", "m.codigo = p.moneda_codigo")
             .left_join("cuentas c", "c.id = p.cuenta_debito_id")
             .where("p.id", prestamo_id)
             .ejecutar_uno(self._db.conn)
@@ -138,7 +138,7 @@ class PrestamosRepository:
                 "m.codigo AS currency_code",
                 "c.nombre AS account_name",
             )
-            .join("monedas m", "m.id = p.moneda_id")
+            .join("monedas m", "m.codigo = p.moneda_codigo")
             .left_join("cuentas c", "c.id = p.cuenta_debito_id")
             .where("p.estado", estado)
             .where("p.tipo", tipo)

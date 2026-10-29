@@ -31,10 +31,10 @@ Purpose:
     Ninguna de las tres columnas nunca mezcla monto de monedas distintas en
     un mismo total: get_patrimonio_total() ya viene separado por moneda_codigo
     (AccountsService), get_gasto_por_categoria() agrupa por
-    (categoria_id, moneda_id) — no solo por categoria_id — y
+    (categoria_id, moneda_codigo) — no solo por categoria_id — y
     get_comparacion_presupuesto() solo suma como "real" el gasto que está en
     la MISMA moneda que el presupuesto de esa categoría (presupuestos tiene
-    un único moneda_id por fila, UNIQUE(categoria_id, mes, anio) del schema).
+    un único moneda_codigo por fila, UNIQUE(categoria_id, mes, anio) del schema).
 
     get_resumen_mes() (pantalla DASHBOARD, ui/screens/resumen_mes.py — el
     "dashboard.py" de ui/screens/ es la pantalla del Registro): todo lo del
@@ -238,7 +238,7 @@ class DashboardService:
     def get_gasto_por_categoria(self, mes: int, anio: int) -> list[dict]:
         """
         Suma todas las transacciones tipo='egreso' del mes/año dado,
-        agrupadas por (categoria_id, moneda_id) — si una categoría tuvo
+        agrupadas por (categoria_id, moneda_codigo) — si una categoría tuvo
         gasto en más de una moneda en el mismo mes, aparece como una
         entrada por cada moneda, nunca mezcladas en un solo total. Excluye
         transacciones eliminadas lógicamente (deleted_at IS NOT NULL),
@@ -250,7 +250,7 @@ class DashboardService:
 
         Returns:
             Lista de dicts {categoria_id, categoria_nombre,
-            categoria_principal, monto_total_minor, moneda_id}, ordenada de
+            categoria_principal, monto_total_minor, moneda_codigo}, ordenada de
             mayor a menor monto_total_minor.
 
         Raises:
@@ -264,7 +264,7 @@ class DashboardService:
                 t.categoria_id,
                 cat.subcategoria AS categoria_nombre,
                 cat.categoria_principal,
-                t.moneda_id,
+                t.moneda_codigo,
                 SUM(t.monto_minor) AS monto_total_minor
             FROM transacciones t
             JOIN categorias cat ON cat.id = t.categoria_id
@@ -272,7 +272,7 @@ class DashboardService:
               AND t.fecha >= ?
               AND t.fecha < ?
               AND t.deleted_at IS NULL
-            GROUP BY t.categoria_id, t.moneda_id
+            GROUP BY t.categoria_id, t.moneda_codigo
             ORDER BY monto_total_minor DESC;
             """,
             (inicio, fin),
@@ -284,7 +284,7 @@ class DashboardService:
                 "categoria_nombre": fila["categoria_nombre"],
                 "categoria_principal": fila["categoria_principal"],
                 "monto_total_minor": fila["monto_total_minor"],
-                "moneda_id": fila["moneda_id"],
+                "moneda_codigo": fila["moneda_codigo"],
             }
             for fila in filas
         ]
@@ -296,7 +296,7 @@ class DashboardService:
     def get_movimientos_por_cuenta(self, mes: int, anio: int) -> list[dict]:
         """
         Desglose de movimientos del mes/año dado, agrupado por
-        (cuenta_id, moneda_id) — SOLO cuentas con al menos una transacción
+        (cuenta_id, moneda_codigo) — SOLO cuentas con al menos una transacción
         real en ese período: el INNER JOIN contra `cuentas` hace la
         detección dinámica sola (nunca se parte de una lista fija de todas
         las cuentas existentes, ni se filtra por `activa` — una cuenta ya
@@ -312,7 +312,7 @@ class DashboardService:
             anio: Año de 4 dígitos.
 
         Returns:
-            Lista de dicts {cuenta_id, account_name, moneda_id,
+            Lista de dicts {cuenta_id, account_name, moneda_codigo,
             currency_code, currency_symbol, decimales,
             total_income_minor, total_expense_minor, net_minor}, ordenada
             por account_name.
@@ -327,7 +327,7 @@ class DashboardService:
             SELECT
                 c.id            AS cuenta_id,
                 c.nombre        AS account_name,
-                m.id            AS moneda_id,
+                m.codigo        AS moneda_codigo,
                 m.codigo        AS currency_code,
                 m.simbolo       AS currency_symbol,
                 m.decimales,
@@ -342,11 +342,11 @@ class DashboardService:
                          ELSE  0 END)                   AS net_minor
             FROM transacciones t
             JOIN cuentas c ON c.id = t.cuenta_id
-            JOIN monedas m ON m.id = t.moneda_id
+            JOIN monedas m ON m.codigo = t.moneda_codigo
             WHERE t.fecha >= ?
               AND t.fecha < ?
               AND t.deleted_at IS NULL
-            GROUP BY c.id, m.id
+            GROUP BY c.id, m.codigo
             ORDER BY c.nombre;
             """,
             (inicio, fin),
@@ -388,8 +388,8 @@ class DashboardService:
         pero sin presupuesto no aparece acá — para verla completa está
         get_gasto_por_categoria()).
 
-        El cruce es por (categoria_id, moneda_id): `presupuestos` tiene un
-        único moneda_id por fila (UNIQUE(categoria_id, mes, anio) del
+        El cruce es por (categoria_id, moneda_codigo): `presupuestos` tiene un
+        único moneda_codigo por fila (UNIQUE(categoria_id, mes, anio) del
         schema), así que solo se suma como real_minor el gasto que está en
         esa misma moneda — nunca se mezcla con gasto de esa categoría en
         otra moneda.
@@ -409,7 +409,7 @@ class DashboardService:
         gastos = self.get_gasto_por_categoria(mes, anio)
 
         real_por_clave = {
-            (gasto["categoria_id"], gasto["moneda_id"]): gasto["monto_total_minor"]
+            (gasto["categoria_id"], gasto["moneda_codigo"]): gasto["monto_total_minor"]
             for gasto in gastos
         }
 
@@ -419,7 +419,7 @@ class DashboardService:
                 "categoria_nombre": presupuesto["subcategoria"],
                 "estimado_minor": presupuesto["monto_estimado_minor"],
                 "real_minor": real_por_clave.get(
-                    (presupuesto["categoria_id"], presupuesto["moneda_id"]), 0
+                    (presupuesto["categoria_id"], presupuesto["moneda_codigo"]), 0
                 ),
             }
             for presupuesto in presupuestos
@@ -548,16 +548,15 @@ class DashboardService:
         inicio, fin = self._rango_mes(mes, anio)
         fecha_corte = (date.fromisoformat(fin) - timedelta(days=1)).isoformat()
         monedas_por_codigo = {m["codigo"]: m for m in self._db.obtener_monedas()}
-        codigos_por_id = {m["id"]: codigo for codigo, m in monedas_por_codigo.items()}
         datos_moneda = monedas_por_codigo.get(moneda)
         if datos_moneda is None:
             raise ValueError(f"MONEDA DESCONOCIDA: {moneda}.")
-        moneda_id = datos_moneda["id"]
+        moneda_codigo = datos_moneda["codigo"]
         yo = normalizar_persona(usuario_local)
         usadas: set[str] = set()  # monedas con algún dato este mes (monedas_disponibles)
         reglas = self._reglas_categorias()
         registro = self._registro_del_mes(
-            self._transacciones_del_mes(inicio, fecha_corte), moneda_id, reglas, usadas,
+            self._transacciones_del_mes(inicio, fecha_corte), moneda_codigo, reglas, usadas,
         )
 
         # --- Ingresos (fijos: el estimado de IngresosService.list_by_month() y el real del Registro) ---
@@ -569,7 +568,7 @@ class DashboardService:
                 "origen": ORIGEN_ESTIMADO, "estimado_minor": f["monto_estimado_minor"], "real_minor": 0,
             }
             for f in filas_ingresos
-            if not f.get(CLAVE_TOTAL) and f["moneda_id"] == moneda_id
+            if not f.get(CLAVE_TOTAL) and f["moneda_codigo"] == moneda_codigo
         ] + registro["ingresos_fijos"]
         ingresos_variables = registro["ingresos_variables"]
         ingresos = self._con_subtotales(
@@ -581,7 +580,7 @@ class DashboardService:
         presupuestos = self._presupuestos_service.list_by_month(mes, anio, usuario_local)
         usadas.update(p["currency_code"] for p in presupuestos["fijos"])
         fijos_registro, con_presupuesto, sin_presupuesto = self._egresos_registro(
-            mes, anio, moneda_id, registro["egresos"], presupuestos["variables"], reglas,
+            mes, anio, moneda_codigo, registro["egresos"], presupuestos["variables"], reglas,
         )
         egresos_fijos = [
             {
@@ -589,7 +588,7 @@ class DashboardService:
                 "origen": ORIGEN_ESTIMADO, "estimado_minor": p["monto_estimado_minor"], "real_minor": 0,
             }
             for p in presupuestos["fijos"]
-            if p["moneda_id"] == moneda_id
+            if p["moneda_codigo"] == moneda_codigo
         ] + fijos_registro
         egresos = self._con_subtotales(
             {
@@ -609,7 +608,7 @@ class DashboardService:
                 "cuenta": (t["account_name"] or "").upper(), "a_pagar_minor": t["monto_total_minor"],
             }
             for t in tarjetas
-            if t["moneda_id"] == moneda_id and t["monto_total_minor"] != 0
+            if t["moneda_codigo"] == moneda_codigo and t["monto_total_minor"] != 0
         ]
         total_a_pagar = sum(t["a_pagar_minor"] for t in por_cuenta)
         pagos_realizados = registro["pagos_tarjeta_minor"]
@@ -628,13 +627,13 @@ class DashboardService:
 
         # --- Deudas (acumuladas al último día del mes) ---
         compartidos = self._gastos_compartidos_hasta(fin)
-        usadas.update(codigos_por_id[g["moneda_id"]] for g in compartidos if g["moneda_id"] in codigos_por_id)
+        usadas.update(g["moneda_codigo"] for g in compartidos if g["moneda_codigo"] in monedas_por_codigo)
         me_deben: list[dict] = []
         debo: list[dict] = []
         for tab in ("me_deben", "debo"):
             for fila in self._debts_service.summary_by_person(tab, hasta_fecha=fecha_corte):
                 usadas.add(fila["moneda_codigo"])
-                if fila["moneda_id"] == moneda_id:
+                if fila["moneda_codigo"] == moneda_codigo:
                     self._a_su_lado(
                         me_deben, debo, fila["entidad_persona"], TIPO_DEUDA_INFORMAL, fila["saldo_minor"],
                         a_favor=(tab == "me_deben"), moneda_codigo=moneda,
@@ -642,7 +641,7 @@ class DashboardService:
         if yo:
             pendientes: dict[tuple[str, bool, str], int] = defaultdict(int)
             for g in compartidos:
-                if g["estado"] != "pendiente" or g["moneda_id"] != moneda_id:
+                if g["estado"] != "pendiente" or g["moneda_codigo"] != moneda_codigo:
                     continue
                 pagaste_vos = normalizar_persona(g["pagador"]) == yo
                 pendientes[(g["hogar_id"], pagaste_vos, "" if pagaste_vos else normalizar_persona(g["pagador"]))] += (
@@ -873,7 +872,7 @@ class DashboardService:
         return ROL_EGRESO_FIJO if clave in reglas["de_fijos"] else ROL_EGRESO_VARIABLE
 
     def _registro_del_mes(
-        self, transacciones: list[sqlite3.Row], moneda_id: int, reglas: dict, usadas: set[str],
+        self, transacciones: list[sqlite3.Row], moneda_codigo: str, reglas: dict, usadas: set[str],
     ) -> dict:
         """
         Reparte `transacciones` (las del mes) en la moneda pedida según su
@@ -896,7 +895,7 @@ class DashboardService:
         pagos_tarjeta = 0
         for t in transacciones:
             usadas.add(t["currency_code"])
-            if t["moneda_id"] != moneda_id:
+            if t["moneda_codigo"] != moneda_codigo:
                 continue
             rol = self._rol(reglas, t["categoria_id"], t["categoria_principal"], t["category_name"], t["tipo_movimiento"])
             categoria = _normalizado(t["category_name"])
@@ -945,7 +944,7 @@ class DashboardService:
         }
 
     def _egresos_registro(
-        self, mes: int, anio: int, moneda_id: int, egresos: dict[str, tuple[str, str]],
+        self, mes: int, anio: int, moneda_codigo: str, egresos: dict[str, tuple[str, str]],
         variables: list[dict], reglas: dict,
     ) -> tuple[list[dict], list[dict], list[dict]]:
         """
@@ -967,7 +966,7 @@ class DashboardService:
         categorias = dict(egresos)
         presupuesto_por_categoria: dict[str, int] = {}
         for p in variables:
-            if p["categoria_id"] is None or p["moneda_id"] != moneda_id:
+            if p["categoria_id"] is None or p["moneda_codigo"] != moneda_codigo:
                 continue  # COMPARTIDOS (sin categoría) no es una categoría; otra moneda, en su resumen
             rol = self._rol(reglas, p["categoria_id"], p["categoria_principal"], p["subcategoria"], "egreso")
             if rol not in (ROL_EGRESO_FIJO, ROL_EGRESO_VARIABLE):
@@ -979,7 +978,7 @@ class DashboardService:
         con_presupuesto: list[dict] = []
         sin_presupuesto: list[dict] = []
         for categoria_id, (rol, categoria) in categorias.items():
-            real = self._presupuestos_service.get_real_variable(categoria_id, moneda_id, mes, anio)
+            real = self._presupuestos_service.get_real_variable(categoria_id, moneda_codigo, mes, anio)
             presupuesto = presupuesto_por_categoria.get(categoria_id)
             if real == 0 and presupuesto is None:
                 continue  # todo su gasto era la parte del otro de un compartido
@@ -1022,7 +1021,7 @@ class DashboardService:
             SELECT g.hogar_id, g.pagador, g.fecha, g.estado,
                    g.monto_adeudado_minor, g.monto_pendiente_minor,
                    cat.subcategoria AS categoria,
-                   COALESCE(t.moneda_id, cc.moneda_id, ccq.moneda_id, ?) AS moneda_id
+                   COALESCE(t.moneda_codigo, cc.moneda_codigo, ccq.moneda_codigo, ?) AS moneda_codigo
             FROM gastos_compartidos g
             JOIN categorias cat          ON cat.id = g.categoria_id
             LEFT JOIN transacciones t    ON g.origen_tipo = 'transaccion'   AND t.id = g.origen_id
@@ -1031,7 +1030,7 @@ class DashboardService:
             LEFT JOIN compras_cuotas ccq ON ccq.id = q.compra_id
             WHERE g.fecha < ?;
             """,
-            (sin_origen["id"] if sin_origen is not None else None, fin),
+            (sin_origen["codigo"] if sin_origen is not None else None, fin),
         )
         return [dict(fila) for fila in filas]
 

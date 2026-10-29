@@ -17,8 +17,8 @@ QueryBuilder con include_deleted=True hardcodeado, igual que
 DeudasRepository — mismo motivo (evitar que QueryBuilder inyecte
 `deleted_at IS NULL` contra una columna que no existe).
 
-crear()/actualizar() reciben moneda_id y montos ya resueltos en minor units
-— resolver moneda_codigo→id y montos float→minor es responsabilidad de
+crear()/actualizar() reciben moneda_codigo y montos ya resueltos en minor units
+— validar moneda_codigo y convertir montos float→minor es responsabilidad de
 quien llama (hoy FeesService.create_purchase() ya lo hace así).
 
 crear() acepta un `conn` opcional desde el arranque (a diferencia de los
@@ -112,7 +112,7 @@ class ComprasCuotasRepository:
         concepto: str,
         cuenta_id: str,
         categoria_id: str,
-        moneda_id: int,
+        moneda_codigo: str,
         monto_total_minor: int,
         total_cuotas: int,
         monto_por_cuota_minor: int,
@@ -150,12 +150,12 @@ class ComprasCuotasRepository:
         compra_id = nuevo_id()
         sql = """
             INSERT INTO compras_cuotas
-                (id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
+                (id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_codigo,
                  monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag, es_cargo_extra)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
-            compra_id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_id,
+            compra_id, fecha_compra, concepto, cuenta_id, categoria_id, moneda_codigo,
             monto_total_minor, total_cuotas, monto_por_cuota_minor, notas, tag, 1 if es_cargo_extra else 0,
         )
         if conn is not None:
@@ -194,7 +194,7 @@ class ComprasCuotasRepository:
             )
             .join("cuentas c", "c.id = pc.cuenta_id")
             .join("categorias cat", "cat.id = pc.categoria_id")
-            .join("monedas m", "m.id = pc.moneda_id")
+            .join("monedas m", "m.codigo = pc.moneda_codigo")
             .where("pc.id", compra_id)
             .ejecutar_uno(self._db.conn)
         )
@@ -203,7 +203,7 @@ class ComprasCuotasRepository:
         self,
         cuenta_id: Optional[str] = None,
         estado: Optional[str] = None,
-        moneda_id: Optional[int] = None,
+        moneda_codigo: Optional[str] = None,
         pagina: int = 1,
         por_pagina: int = 50,
     ) -> list[sqlite3.Row]:
@@ -215,7 +215,7 @@ class ComprasCuotasRepository:
             QueryBuilder("compras_cuotas", include_deleted=True)
             .where("cuenta_id", cuenta_id)
             .where("estado", estado)
-            .where("moneda_id", moneda_id)
+            .where("moneda_codigo", moneda_codigo)
             .order("fecha_compra", "DESC")
             .paginar(pagina, por_pagina)
             .ejecutar(self._db.conn)
@@ -225,7 +225,7 @@ class ComprasCuotasRepository:
         self,
         cuenta_id: Optional[str] = None,
         estado: Optional[str] = None,
-        moneda_id: Optional[int] = None,
+        moneda_codigo: Optional[str] = None,
         pagina: int = 1,
         por_pagina: int = 50,
     ) -> list[sqlite3.Row]:
@@ -246,10 +246,10 @@ class ComprasCuotasRepository:
             )
             .join("cuentas c", "c.id = pc.cuenta_id")
             .join("categorias cat", "cat.id = pc.categoria_id")
-            .join("monedas m", "m.id = pc.moneda_id")
+            .join("monedas m", "m.codigo = pc.moneda_codigo")
             .where("pc.cuenta_id", cuenta_id)
             .where("pc.estado", estado)
-            .where("pc.moneda_id", moneda_id)
+            .where("pc.moneda_codigo", moneda_codigo)
             .order("pc.fecha_compra", "DESC")
             .paginar(pagina, por_pagina)
             .ejecutar(self._db.conn)
@@ -266,7 +266,7 @@ class ComprasCuotasRepository:
         concepto: Any = NO_CAMBIAR,
         cuenta_id: Any = NO_CAMBIAR,
         categoria_id: Any = NO_CAMBIAR,
-        moneda_id: Any = NO_CAMBIAR,
+        moneda_codigo: Any = NO_CAMBIAR,
         monto_total_minor: Any = NO_CAMBIAR,
         total_cuotas: Any = NO_CAMBIAR,
         monto_por_cuota_minor: Any = NO_CAMBIAR,
@@ -291,7 +291,7 @@ class ComprasCuotasRepository:
         if concepto               is not NO_CAMBIAR: campos.append("concepto = ?");               valores.append(concepto)
         if cuenta_id               is not NO_CAMBIAR: campos.append("cuenta_id = ?");               valores.append(cuenta_id)
         if categoria_id            is not NO_CAMBIAR: campos.append("categoria_id = ?");            valores.append(categoria_id)
-        if moneda_id               is not NO_CAMBIAR: campos.append("moneda_id = ?");               valores.append(moneda_id)
+        if moneda_codigo               is not NO_CAMBIAR: campos.append("moneda_codigo = ?");               valores.append(moneda_codigo)
         if monto_total_minor       is not NO_CAMBIAR: campos.append("monto_total_minor = ?");       valores.append(monto_total_minor)
         if total_cuotas            is not NO_CAMBIAR: campos.append("total_cuotas = ?");            valores.append(total_cuotas)
         if monto_por_cuota_minor   is not NO_CAMBIAR: campos.append("monto_por_cuota_minor = ?");   valores.append(monto_por_cuota_minor)

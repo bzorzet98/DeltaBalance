@@ -5,7 +5,11 @@ Verifica la reestructuración de `deudas` a su estructura FINAL — tabs
 'me_deben' / 'debo' + monto_minor con signo — (db/schema_migrations.py
 reestructurar_deudas(), docs/DATA_MODEL_DECISIONS.md sección 22), contra
 DBs temporales que arrancan con cada una de las dos estructuras anteriores
-y datos cargados a mano (sqlite3 crudo, sin pasar por inicializar()).
+y datos cargados a mano (sqlite3 crudo, sin pasar por inicializar()). Esas
+DBs son bases VIEJAS (verify/_dummy_db.py crear_dummy_db_v0(), user_version 0,
+moneda_id entero): inicializar() les corre el baseline (que reestructura
+`deudas`) y después v1 → v2 y v2 → v3, así que el resultado se chequea con
+los nombres de v3 (moneda_codigo = 'ARS').
 
 Cubre:
   - Estructura ORIGINAL (monto_original_minor/estado + deuda_pagos):
@@ -39,7 +43,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from verify._dummy_db import crear_dummy_db
+from verify._dummy_db import crear_dummy_db, crear_dummy_db_v0
 from db.database import DatabaseManager
 from services.deudas_service import DebtsService
 
@@ -112,8 +116,11 @@ CREATE TABLE deudas (
 );
 """
 
-# deudas_mensuales antes de tener `tab`.
+# deudas_mensuales antes de tener `tab` (la dummy DB v0 — db/schema_v0.sql —
+# ya la trae con `tab`: se la pisa). moneda_id INTEGER es correcto acá: son
+# estructuras de una base v0, anteriores a la migración v3.
 DDL_DEUDAS_MENSUALES_SIN_TAB = """
+DROP TABLE IF EXISTS deudas_mensuales;
 CREATE TABLE deudas_mensuales (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     entidad_persona TEXT NOT NULL,
@@ -171,10 +178,15 @@ def main() -> None:
     # 1) Estructura ORIGINAL
     # ============================================================
     print("=== Estructura ORIGINAL (monto_original_minor + deuda_pagos) ===\n")
-    db_path = Path(crear_dummy_db())  # schema.sql + seed (ya con la estructura final): se la pisa a mano
-    print(f"Dummy DB creada en: {db_path}\n")
+    # Base VIEJA (schema_v0.sql + seed_v0.sql, user_version 0, moneda_id
+    # entero): su `deudas` ya es la final, se la pisa a mano con la ORIGINAL.
+    # inicializar() le corre el baseline (v0 → v1, que reestructura `deudas`),
+    # v1 → v2 y v2 → v3 (moneda_id → moneda_codigo). Sobre crear_dummy_db()
+    # (ya en v3) no correría ninguna migración.
+    db_path = Path(crear_dummy_db_v0())
+    print(f"Dummy DB v0 creada en: {db_path}\n")
     crudo = sqlite3.connect(db_path)
-    ars = crudo.execute("SELECT id FROM monedas WHERE codigo = 'ARS';").fetchone()[0]
+    ars = crudo.execute("SELECT id FROM monedas WHERE codigo = 'ARS';").fetchone()[0]  # id entero: base v0
     crudo.execute("DROP TABLE deudas;")
     crudo.execute(DDL_ORIGINAL.format(tabla="deudas"))
     crudo.executescript(DDL_DEUDA_PAGOS.format(tabla="deudas") + DDL_OBJETOS_VIEJOS.format(tabla="deudas")
@@ -210,7 +222,8 @@ def main() -> None:
 
     backups_antes = backups(db_path)
     manager = DatabaseManager(db_path=db_path)
-    manager.inicializar()  # columnas → tablas → reestructurar_deudas()
+    manager.inicializar()  # baseline (columnas → tablas → reestructurar_deudas()) → v2 → v3
+    ars = "ARS"  # desde acá la base está en v3: la moneda es su código
 
     print("--- Estructura y limpieza ---")
     chequear_limpieza(manager, db_path, backups_antes)
@@ -222,6 +235,8 @@ def main() -> None:
     caso("Noe: fecha = fecha_inicio", "2026-01-10", fila_noe["fecha"] if fila_noe else None)
     caso("Noe: el vencimiento pasa a las notas", "nota de Noe — VENCE: 2026-06-30", fila_noe["notas"] if fila_noe else None)
     caso("persona normalizada: 'Noe' → 'NOE'", "NOE", fila_noe["entidad_persona"] if fila_noe else None)
+    caso("Noe: moneda_codigo = 'ARS' (v3 convirtió el moneda_id entero a código)", "ARS",
+         fila_noe["moneda_codigo"] if fila_noe else None)
     fila_kevin = manager.fetchone("SELECT * FROM deudas WHERE id = ?;", (kevin,))
     caso("Kevin → tab debo (era en_contra), en positivo", ("debo", 5000),
          (fila_kevin["tab"], fila_kevin["monto_minor"]) if fila_kevin else None)
@@ -262,10 +277,10 @@ def main() -> None:
     # 2) Estructura LIBRO (reestructuración anterior)
     # ============================================================
     print("\n=== Estructura LIBRO (tipo + monto_minor positivo, con deudas_old) ===\n")
-    db_libro = Path(crear_dummy_db())
-    print(f"Dummy DB creada en: {db_libro}\n")
+    db_libro = Path(crear_dummy_db_v0())  # base vieja, igual que en 1)
+    print(f"Dummy DB v0 creada en: {db_libro}\n")
     crudo = sqlite3.connect(db_libro)
-    ars = crudo.execute("SELECT id FROM monedas WHERE codigo = 'ARS';").fetchone()[0]
+    ars = crudo.execute("SELECT id FROM monedas WHERE codigo = 'ARS';").fetchone()[0]  # id entero: base v0
     crudo.execute("DROP TABLE deudas;")
     crudo.execute(DDL_LIBRO)
     # Lo que dejó la reestructuración anterior: la tabla original como
@@ -327,6 +342,8 @@ def main() -> None:
     caso("MARIA del Excel, a_favor → me_deben +80.00", ("me_deben", 8000), tab_y_monto(l_maria))
     caso("MARIA del Excel, en_contra (un pago que te hizo) → me_deben −30.00", ("me_deben", -3000), tab_y_monto(l_maria_pago))
     caso("PEDRO en_contra desde el Registro → debo +20.00", ("debo", 2000), tab_y_monto(l_pedro))
+    caso("todas las filas quedaron con moneda_codigo = 'ARS' (v3)", ["ARS"],
+         [f["moneda_codigo"] for f in manager.fetchall("SELECT DISTINCT moneda_codigo FROM deudas;")])
     caso("total de filas: las 7 (deudas_old y sus pagos no se vuelven a migrar)", 7,
          manager.fetchone("SELECT COUNT(*) AS n FROM deudas;")["n"])
 

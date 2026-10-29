@@ -55,8 +55,8 @@ def main() -> None:
     manager = DatabaseManager(db_path=db_path)
     manager.inicializar()
     repo = DeudasRepository(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    campos = dict(entidad_persona="NOE", concepto="Cena", tab="me_deben", monto_minor=5000, moneda_id=ars, fecha="2026-03-01")
+    ars = "ARS"
+    campos = dict(entidad_persona="NOE", concepto="Cena", tab="me_deben", monto_minor=5000, moneda_codigo=ars, fecha="2026-03-01")
 
     def contar() -> int:
         return manager.fetchone("SELECT COUNT(*) AS n FROM deudas WHERE entidad_persona = 'NOE';")["n"]

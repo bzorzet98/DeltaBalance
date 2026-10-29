@@ -58,7 +58,7 @@ def main() -> None:
     # --- Datos de apoyo: dos cuentas y dos categorías de tipo distinto ---
     cuenta_a = cuentas_repo.crear(nombre="Cuenta A Repo TX", tipo="efectivo", moneda_codigo="ARS")
     cuenta_b = cuentas_repo.crear(nombre="Cuenta B Repo TX", tipo="efectivo", moneda_codigo="ARS")
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cat_ingreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'ingreso' LIMIT 1;")["id"]
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
 
@@ -68,7 +68,7 @@ def main() -> None:
         concepto="Test A",
         cuenta_id=cuenta_a,
         categoria_id=cat_ingreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         tipo_movimiento="ingreso",
         monto_minor=100000,
     )
@@ -77,7 +77,7 @@ def main() -> None:
         concepto="Test B",
         cuenta_id=cuenta_b,
         categoria_id=cat_egreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         tipo_movimiento="egreso",
         monto_minor=50000,
     )
@@ -149,7 +149,7 @@ def main() -> None:
         with manager.transaction():
             tx_atom_1 = repo.crear(
                 fecha="2026-03-01", concepto="Atomic 1", cuenta_id=cuenta_a,
-                categoria_id=cat_ingreso, moneda_id=moneda_ars,
+                categoria_id=cat_ingreso, moneda_codigo=moneda_ars,
                 tipo_movimiento="ingreso", monto_minor=1000,
                 conn=conn_externo,
             )
@@ -168,13 +168,13 @@ def main() -> None:
     with manager.transaction():
         tx_atom_a = repo.crear(
             fecha="2026-03-01", concepto="Atomic A", cuenta_id=cuenta_a,
-            categoria_id=cat_ingreso, moneda_id=moneda_ars,
+            categoria_id=cat_ingreso, moneda_codigo=moneda_ars,
             tipo_movimiento="ingreso", monto_minor=2000,
             conn=conn_externo,
         )
         tx_atom_b = repo.crear(
             fecha="2026-03-01", concepto="Atomic B", cuenta_id=cuenta_b,
-            categoria_id=cat_egreso, moneda_id=moneda_ars,
+            categoria_id=cat_egreso, moneda_codigo=moneda_ars,
             tipo_movimiento="egreso", monto_minor=2000,
             conn=conn_externo,
         )
@@ -203,7 +203,7 @@ def main() -> None:
         concepto="Test C",
         cuenta_id=cuenta_a,
         categoria_id=cat_ingreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         tipo_movimiento="ingreso",
         monto_minor=5000,
         tag="tag_original",
@@ -247,17 +247,17 @@ def main() -> None:
     # mismo mecanismo que usa AccountsService.create_account(monedas=[]).
     cuenta_sin_moneda = cuentas_repo.crear(nombre="Cuenta Sin Moneda TX", tipo="debito", moneda_codigo=None)
     fila_saldo_previa = manager.fetchone(
-        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_codigo = ?;",
         (cuenta_sin_moneda, moneda_ars),
     )
     caso("la cuenta recién creada sin moneda no tiene fila en cuentas_saldos todavía", None, fila_saldo_previa)
 
     tx_lazy_1 = repo.crear(
         fecha="2026-05-01", concepto="Primera vez en esta moneda", cuenta_id=cuenta_sin_moneda,
-        categoria_id=cat_ingreso, moneda_id=moneda_ars, tipo_movimiento="ingreso", monto_minor=30000,
+        categoria_id=cat_ingreso, moneda_codigo=moneda_ars, tipo_movimiento="ingreso", monto_minor=30000,
     )
     fila_saldo_creada = manager.fetchone(
-        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_codigo = ?;",
         (cuenta_sin_moneda, moneda_ars),
     )
     caso("crear() en una combinación cuenta+moneda sin saldo_inicial previo lo genera solo", True, fila_saldo_creada is not None)
@@ -266,10 +266,10 @@ def main() -> None:
 
     tx_lazy_2 = repo.crear(
         fecha="2026-05-02", concepto="Segunda vez en la misma moneda", cuenta_id=cuenta_sin_moneda,
-        categoria_id=cat_ingreso, moneda_id=moneda_ars, tipo_movimiento="ingreso", monto_minor=5000,
+        categoria_id=cat_ingreso, moneda_codigo=moneda_ars, tipo_movimiento="ingreso", monto_minor=5000,
     )
     filas_saldo_tras_segunda = manager.fetchall(
-        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_codigo = ?;",
         (cuenta_sin_moneda, moneda_ars),
     )
     caso("una segunda transacción en la misma combinación NO duplica la fila de saldo (reusa la existente)", 1, len(filas_saldo_tras_segunda))
@@ -280,11 +280,11 @@ def main() -> None:
     with manager.transaction():
         tx_lazy_atomico = repo.crear(
             fecha="2026-05-03", concepto="Perezosa con conn externo", cuenta_id=cuenta_sin_moneda_atomica,
-            categoria_id=cat_ingreso, moneda_id=moneda_ars, tipo_movimiento="ingreso", monto_minor=7000,
+            categoria_id=cat_ingreso, moneda_codigo=moneda_ars, tipo_movimiento="ingreso", monto_minor=7000,
             conn=conn_externo,
         )
     fila_saldo_atomica = manager.fetchone(
-        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_id = ?;",
+        "SELECT * FROM cuentas_saldos WHERE cuenta_id = ? AND moneda_codigo = ?;",
         (cuenta_sin_moneda_atomica, moneda_ars),
     )
     caso("crear(conn=...) también resuelve la moneda de forma perezosa, dentro de la misma transacción externa", True, fila_saldo_atomica is not None)

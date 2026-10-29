@@ -17,7 +17,7 @@ existen.
 Reglas de dominio (acá, no en el repositorio):
 - La persona se normaliza (utils/personas.py): "Noe" y "NOE" son la misma.
 - tab 'me_deben' o 'debo'; monto_minor entero distinto de 0 (el signo se
-  guarda tal cual); fecha 'YYYY-MM-DD'; moneda_id tiene que existir.
+  guarda tal cual); fecha 'YYYY-MM-DD'; moneda_codigo tiene que existir.
 - Edición y borrado directos: una fila no tiene dependencias con estado
   propio (ventana de corrección temprana, CLAUDE.md §4 — sin dependencias,
   sin fricción).
@@ -41,7 +41,7 @@ from repositories.deudas_repository import TABS, DeudaDuplicadaError, DeudasRepo
 from utils.personas import normalizar_persona
 
 # update(): campos que se pueden cambiar.
-CAMPOS_EDITABLES = ("entidad_persona", "concepto", "tab", "monto_minor", "moneda_id", "fecha", "notas", "tag")
+CAMPOS_EDITABLES = ("entidad_persona", "concepto", "tab", "monto_minor", "moneda_codigo", "fecha", "notas", "tag")
 
 
 # =============================================================
@@ -75,8 +75,8 @@ class DebtsService:
     """
     Usage:
         svc = DebtsService(db)
-        svc.create("Noe", "Préstamo", "me_deben", 4000000, moneda_id=1, fecha="2026-03-01")
-        svc.create("Noe", "Me devolvió una parte", "me_deben", -1000000, moneda_id=1, fecha="2026-03-15")
+        svc.create("Noe", "Préstamo", "me_deben", 4000000, moneda_codigo="ARS", fecha="2026-03-01")
+        svc.create("Noe", "Me devolvió una parte", "me_deben", -1000000, moneda_codigo="ARS", fecha="2026-03-15")
         svc.summary_by_person("me_deben")   # [{"entidad_persona": "NOE", "saldo_minor": 3000000, ...}]
     """
 
@@ -118,10 +118,10 @@ class DebtsService:
             raise DebtError(f"Invalid date '{fecha}'. Expected 'YYYY-MM-DD'.") from None
         return fecha
 
-    def _moneda(self, moneda_id: int) -> int:
-        if moneda_id not in {fila["id"] for fila in self._db.obtener_monedas()}:
-            raise DebtError(f"Currency id={moneda_id} not found.")
-        return moneda_id
+    def _moneda(self, moneda_codigo: str) -> str:
+        if moneda_codigo not in {fila["codigo"] for fila in self._db.obtener_monedas()}:
+            raise DebtError(f"Currency code={moneda_codigo} not found.")
+        return moneda_codigo
 
     @staticmethod
     def _texto(valor: Optional[str]) -> Optional[str]:
@@ -149,7 +149,7 @@ class DebtsService:
         concepto: Optional[str],
         tab: str,
         monto_minor: int,
-        moneda_id: int,
+        moneda_codigo: str,
         fecha: str,
         notas: Optional[str] = None,
         origen_tipo: str = "manual",
@@ -176,7 +176,7 @@ class DebtsService:
                 concepto=self._texto(concepto),
                 tab=tab,
                 monto_minor=self._monto(monto_minor),
-                moneda_id=self._moneda(moneda_id),
+                moneda_codigo=self._moneda(moneda_codigo),
                 fecha=self._fecha(fecha),
                 notas=self._texto(notas),
                 origen_tipo=origen_tipo.strip(),
@@ -252,7 +252,7 @@ class DebtsService:
             "tag": self._texto,
             "tab": self._tab,
             "monto_minor": self._monto,
-            "moneda_id": self._moneda,
+            "moneda_codigo": self._moneda,
             "fecha": self._fecha,
         }
         campos = {campo: validadores[campo](valor) for campo, valor in kwargs.items()}
@@ -281,7 +281,7 @@ class DebtsService:
         """
         Saldo neto por persona y moneda en ese tab, con las filas de fecha <=
         hasta_fecha (None = último día del mes actual): [{entidad_persona,
-        moneda_id, saldo_minor, moneda_codigo, moneda_simbolo, decimales}],
+        moneda_codigo, saldo_minor, moneda_simbolo, decimales}],
         por persona. Incluye los saldos en 0 (saldado).
 
         Cómo leer saldo_minor (verde si > 0, rojo si < 0):
@@ -293,15 +293,14 @@ class DebtsService:
         """
         tab = self._tab(tab)
         tope = self._fecha(hasta_fecha) if hasta_fecha is not None else self._fin_de_mes_actual()
-        monedas = {fila["id"]: fila for fila in self._db.obtener_monedas()}
+        monedas_por_codigo = {fila["codigo"]: fila for fila in self._db.obtener_monedas()}
         resumen = []
         for fila in self._repo.get_saldo_neto_por_persona(tab, tope):
-            moneda = monedas.get(fila["moneda_id"])
+            moneda = monedas_por_codigo.get(fila["moneda_codigo"])
             resumen.append({
                 "entidad_persona": fila["entidad_persona"],
-                "moneda_id": fila["moneda_id"],
+                "moneda_codigo": fila["moneda_codigo"],
                 "saldo_minor": fila["saldo"],
-                "moneda_codigo": moneda["codigo"] if moneda else "",
                 "moneda_simbolo": (moneda["simbolo"] or "") if moneda else "",
                 "decimales": moneda["decimales"] if moneda else 2,
             })

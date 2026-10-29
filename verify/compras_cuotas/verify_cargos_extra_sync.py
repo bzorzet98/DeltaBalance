@@ -13,11 +13,15 @@ sincroniza (docs/DATA_MODEL_DECISIONS.md sección 28):
   y anotadas en sync_cambios). Nada en resumen_cargos_extra.
 - resumen_por_tarjeta() los suma aparte de las compras;
   close_statement() los cuenta como impuestos, no como consumos.
-- Migración (db/schema_migrations.py migrar_cargos_extra_a_compras()): los
-  cargos que ya estaban en resumen_cargos_extra pasan a compras_cuotas con
-  su moneda y su fecha (o las deducidas), su cuota sigue al estado del
-  resumen, el tipo 'otro' se queda donde estaba, y correrla de nuevo no
-  duplica nada.
+- Migración (db/schema_migrations.py migrar_cargos_extra_a_compras(), que
+  corre dentro de la baseline v0 → v1): se prueba de punta a punta sobre una
+  base VIEJA (verify/_dummy_db.py crear_dummy_db_v0(), user_version 0,
+  moneda_id entero) con cargos cargados a mano en resumen_cargos_extra.
+  DatabaseManager.inicializar() le corre v0 → v1 (mueve los cargos a
+  compras_cuotas con su moneda y su fecha, o las deducidas; su cuota sigue
+  al estado del resumen; el tipo 'otro' se queda donde estaba), v1 → v2
+  (borra resumen_cargos_extra, con el 'otro' adentro) y v2 → v3 (la moneda
+  pasa a moneda_codigo). Volver a inicializar no duplica nada.
 - Eliminación (delete_extra_charge()): borra la compra y su cuota mientras
   el resumen está abierto; con el resumen cerrado o pagado, no.
 
@@ -26,15 +30,16 @@ Correlo con:
 """
 
 from pathlib import Path
+import sqlite3
 import sys
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from verify._dummy_db import crear_dummy_db
+from verify._dummy_db import crear_dummy_db, crear_dummy_db_v0
 from db.database import DatabaseManager
-from db.schema_migrations import migrar_cargos_extra_a_compras
+from db.schema_migrations import MIGRACIONES_COLUMNA
 from repositories.cuentas_repository import CuentasRepository
-from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 from services.compras_cuotas_service import (
     FeesError,
     FeesService,
@@ -70,32 +75,31 @@ def main() -> None:
     cuentas_repo = CuentasRepository(manager)
     svc = FeesService(manager)
 
-    usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
     categoria_normal = manager.fetchone("SELECT id FROM categorias WHERE subcategoria = 'SUPERMERCADO';")["id"]
 
-    def compra(compra_id: str) -> dict:
-        fila = manager.fetchone(
+    def compra(compra_id: str, mgr: DatabaseManager = manager) -> dict:
+        fila = mgr.fetchone(
             """
             SELECT pc.*, cat.subcategoria AS categoria, m.codigo AS moneda
             FROM compras_cuotas pc
             JOIN categorias cat ON cat.id = pc.categoria_id
-            JOIN monedas m ON m.id = pc.moneda_id
+            JOIN monedas m ON m.codigo = pc.moneda_codigo
             WHERE pc.id = ?;
             """,
             (compra_id,),
         )
         return dict(fila) if fila is not None else {}
 
-    def cuotas(compra_id: str) -> list[dict]:
-        return [dict(f) for f in manager.fetchall("SELECT * FROM cuotas_credito WHERE compra_id = ?;", (compra_id,))]
+    def cuotas(compra_id: str, mgr: DatabaseManager = manager) -> list[dict]:
+        return [dict(f) for f in mgr.fetchall("SELECT * FROM cuotas_credito WHERE compra_id = ?;", (compra_id,))]
 
     def en_sync_cambios(tabla: str, clave: str) -> bool:
         return manager.fetchone(
             "SELECT 1 FROM sync_cambios WHERE tabla = ? AND clave = ? AND operacion = 'guardado';", (tabla, clave),
         ) is not None
 
-    def cargos_viejos() -> list[str]:
-        return [f["id"] for f in manager.fetchall("SELECT id FROM resumen_cargos_extra ORDER BY rowid;")]
+    def existe_tabla(nombre: str, mgr: DatabaseManager = manager) -> bool:
+        return mgr.fetchone("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?;", (nombre,)) is not None
 
     visa = cuentas_repo.crear(nombre="VISA", tipo="credito", moneda_codigo="ARS")
     resumen_julio = svc.open_statement(visa, 7, 2026).entity_id
@@ -125,7 +129,7 @@ def main() -> None:
     caso("… y anotadas en sync_cambios", (True, True), (
         en_sync_cambios("compras_cuotas", paises), en_sync_cambios("cuotas_credito", cuotas_paises[0]["id"]),
     ))
-    caso("nada en resumen_cargos_extra (deprecada)", [], cargos_viejos())
+    caso("resumen_cargos_extra ya no existe (eliminada en v2)", False, existe_tabla("resumen_cargos_extra"))
 
     sin_moneda = svc.add_extra_charge(resumen_julio, concept="RECARGO", charge_type="recargo", amount_minor=2000).entity_id
     caso("sin moneda: la única de la tarjeta (ARS)", "ARS", compra(sin_moneda).get("moneda"))
@@ -165,52 +169,110 @@ def main() -> None:
     caso("con el resumen cerrado: StatementAlreadyClosedError", True,
          lanza(lambda: svc.delete_extra_charge(paises), StatementAlreadyClosedError))
     caso("… y el cargo sigue ahí", 1, compra(paises).get("es_cargo_extra"))
-
-    # ============================================================
-    print("\n--- Migración de resumen_cargos_extra (cargos de la versión anterior) ---")
-    # ============================================================
-    viejo_repo = ResumenCargosExtraRepository(manager)
-    resumen_agosto = svc.open_statement(visa, 8, 2026).entity_id
-    sellos = viejo_repo.agregar(resumen_agosto, "SELLOS", "impuesto", 1500, moneda_id=usd, fecha="2026-08-10")
-    reintegro = viejo_repo.agregar(resumen_agosto, "REINTEGRO VIEJO", "ajuste", -800)  # sin moneda ni fecha
-    otro = viejo_repo.agregar(resumen_agosto, "OTRO VIEJO", "otro", 100)  # sin categoría especial
-    resumen_junio = svc.open_statement(visa, 6, 2026).entity_id
-    iva_pagado = viejo_repo.agregar(resumen_junio, "IVA", "impuesto", 2100)
-    svc.pay_statement(resumen_junio, payment_date="2026-07-05", monto_pagado_minor=2100)
-
-    migrar_cargos_extra_a_compras(manager.conn)
-
-    fila = compra(sellos)
-    caso("SELLOS pasó a compras_cuotas con el MISMO id", 1, fila.get("es_cargo_extra"))
-    caso("… con su moneda (USD), su fecha y su categoría", ("USD", "2026-08-10", "IMPUESTO TARJETA"),
-         (fila.get("moneda"), fila.get("fecha_compra"), fila.get("categoria")))
-    caso("… y su cuota en agosto, en su resumen", (8, 2026, resumen_agosto, "en_resumen", 1500), tuple(
-        cuotas(sellos)[0][k] for k in ("mes_proyectado", "anio_proyectado", "resumen_id", "estado", "monto_cuota_minor")
-    ))
-    fila = compra(reintegro)
-    caso("REINTEGRO VIEJO (sin moneda ni fecha): ARS — la única de la tarjeta — y el día 1 del mes",
-         ("ARS", "2026-08-01", -800), (fila.get("moneda"), fila.get("fecha_compra"), fila.get("monto_total_minor")))
-    caso("… con la categoría de ajuste", "AJUSTE/REINTEGRO TARJETA", fila.get("categoria"))
-    caso("el cargo de un resumen pagado queda con su cuota 'pagado'", "pagado", cuotas(iva_pagado)[0]["estado"])
-    caso("los migrados quedan pendientes de subir (sincronizado_en NULL)", (None, None),
-         (compra(sellos).get("sincronizado_en"), cuotas(sellos)[0]["sincronizado_en"]))
-    caso("… y anotados en sync_cambios", True, en_sync_cambios("compras_cuotas", sellos))
-    caso("en resumen_cargos_extra queda solo el de tipo 'otro' (sin categoría especial)", [otro], cargos_viejos())
-    caso("el de tipo 'otro' no se migró", {}, compra(otro))
-
-    cantidad = manager.fetchone("SELECT COUNT(*) AS n FROM compras_cuotas WHERE es_cargo_extra = 1;")["n"]
-    migrar_cargos_extra_a_compras(manager.conn)
-    manager.inicializar()
-    caso("correrla de nuevo (y volver a inicializar) no duplica nada", cantidad,
-         manager.fetchone("SELECT COUNT(*) AS n FROM compras_cuotas WHERE es_cargo_extra = 1;")["n"])
-    caso("los migrados de agosto aparecen en el mes", {sellos, reintegro},
-         {c["id"] for c in svc.list_extra_charges_in_month(8, 2026)})
-    caso("borrar un migrado de un resumen pagado → StatementAlreadyPaidError", True,
-         lanza(lambda: svc.delete_extra_charge(iva_pagado), StatementAlreadyPaidError))
-    svc.delete_extra_charge(reintegro)
-    caso("borrar un migrado de un resumen abierto: se borra con su cuota", ({}, []), (compra(reintegro), cuotas(reintegro)))
-
     manager.desconectar()
+
+    # ============================================================
+    print("\n--- Migración de resumen_cargos_extra (base vieja v0 → inicializar()) ---")
+    # ============================================================
+    # migrar_cargos_extra_a_compras() es parte del baseline (escribe
+    # compras_cuotas.moneda_id): no se puede correr sobre una base v3. Se arma
+    # una base VIEJA con sqlite3 crudo — ahí moneda_id entero es lo correcto —
+    # y se deja que inicializar() le corra todas las migraciones.
+    db_v0 = crear_dummy_db_v0()
+    print(f"Dummy DB v0 creada en: {db_v0}\n")
+    crudo = sqlite3.connect(str(db_v0))
+    ars_id = crudo.execute("SELECT id FROM monedas WHERE codigo = 'ARS';").fetchone()[0]  # id entero: base v0
+    usd_id = crudo.execute("SELECT id FROM monedas WHERE codigo = 'USD';").fetchone()[0]  # id entero: base v0
+
+    # En schema_v0.sql resumen_cargos_extra no tiene moneda_id ni fecha: las
+    # agrega el baseline (MIGRACIONES_COLUMNA). Para cargar un cargo CON
+    # moneda y fecha se agregan antes, con el mismo DDL; el baseline ve que ya
+    # están y las saltea.
+    for migracion in MIGRACIONES_COLUMNA:
+        if migracion.tabla == "resumen_cargos_extra":
+            crudo.execute(f"ALTER TABLE resumen_cargos_extra ADD COLUMN {migracion.ddl_columna};")
+
+    visa_v0 = str(uuid.uuid4())
+    crudo.execute("INSERT INTO cuentas (id, nombre, tipo) VALUES (?, 'VISA VIEJA', 'credito');", (visa_v0,))
+    crudo.execute("INSERT INTO cuentas_saldos (cuenta_id, moneda_id) VALUES (?, ?);", (visa_v0, ars_id))
+
+    def resumen_viejo(mes: int, estado: str, fecha_pago=None, pagado_minor: int = 0) -> str:
+        resumen_id = str(uuid.uuid4())
+        crudo.execute(
+            "INSERT INTO resumenes_tarjeta (id, cuenta_id, mes, anio, monto_total_pagado_minor, fecha_pago, estado) "
+            "VALUES (?, ?, ?, 2026, ?, ?, ?);",
+            (resumen_id, visa_v0, mes, pagado_minor, fecha_pago, estado),
+        )
+        return resumen_id
+
+    def cargo_viejo(resumen_id: str, concepto: str, tipo: str, monto_minor: int, moneda_id=None, fecha=None) -> str:
+        """Un cargo con la forma de la versión anterior, directo en resumen_cargos_extra."""
+        cargo_id = str(uuid.uuid4())
+        crudo.execute(
+            "INSERT INTO resumen_cargos_extra (id, resumen_id, concepto, tipo, monto_minor, moneda_id, fecha) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?);",
+            (cargo_id, resumen_id, concepto, tipo, monto_minor, moneda_id, fecha),
+        )
+        return cargo_id
+
+    resumen_agosto = resumen_viejo(8, "abierto")
+    resumen_junio = resumen_viejo(6, "pagado", fecha_pago="2026-07-05", pagado_minor=2100)
+    sellos = cargo_viejo(resumen_agosto, "SELLOS", "impuesto", 1500, moneda_id=usd_id, fecha="2026-08-10")
+    reintegro = cargo_viejo(resumen_agosto, "REINTEGRO VIEJO", "ajuste", -800)  # sin moneda ni fecha
+    otro = cargo_viejo(resumen_agosto, "OTRO VIEJO", "otro", 100)  # sin categoría especial
+    iva_pagado = cargo_viejo(resumen_junio, "IVA", "impuesto", 2100)
+    crudo.commit()
+    crudo.close()
+
+    manager_v0 = DatabaseManager(db_path=db_v0)
+    try:
+        manager_v0.inicializar()
+        migro_ok = True
+    except Exception as e:
+        migro_ok = False
+        print(f"   Excepción en inicializar(): {e!r}")
+    caso("inicializar() migra la base vieja (v0 → v3) sin error", True, migro_ok)
+    if not migro_ok:
+        print(f"\n--- Resumen: {casos_ok}/{casos_total} casos OK ---")
+        return
+    svc_v0 = FeesService(manager_v0)
+
+    fila = compra(sellos, manager_v0)
+    caso("SELLOS pasó a compras_cuotas con el MISMO id", 1, fila.get("es_cargo_extra"))
+    caso("… con su moneda (moneda_codigo 'USD'), su fecha y su categoría", ("USD", "2026-08-10", "IMPUESTO TARJETA"),
+         (fila.get("moneda_codigo"), fila.get("fecha_compra"), fila.get("categoria")))
+    cuotas_sellos = cuotas(sellos, manager_v0)
+    caso("… y su cuota en agosto, en su resumen (abierto → 'en_resumen')",
+         (8, 2026, resumen_agosto, "en_resumen", 1500),
+         tuple(cuotas_sellos[0][k] for k in ("mes_proyectado", "anio_proyectado", "resumen_id", "estado", "monto_cuota_minor"))
+         if cuotas_sellos else None)
+    fila = compra(reintegro, manager_v0)
+    caso("REINTEGRO VIEJO (sin moneda ni fecha): 'ARS' — la única de la tarjeta — y el día 1 del mes",
+         ("ARS", "2026-08-01", -800), (fila.get("moneda_codigo"), fila.get("fecha_compra"), fila.get("monto_total_minor")))
+    caso("… con la categoría de ajuste", "AJUSTE/REINTEGRO TARJETA", fila.get("categoria"))
+    cuotas_iva = cuotas(iva_pagado, manager_v0)
+    caso("el cargo de un resumen pagado queda con su cuota 'pagado'", "pagado",
+         cuotas_iva[0]["estado"] if cuotas_iva else None)
+    caso("los migrados quedan pendientes de subir (sincronizado_en NULL)", (None, None),
+         (compra(sellos, manager_v0).get("sincronizado_en"), cuotas_sellos[0]["sincronizado_en"] if cuotas_sellos else "?"))
+    caso("el de tipo 'otro' no se migró", {}, compra(otro, manager_v0))
+    caso("… y resumen_cargos_extra (con él adentro) ya no existe: la borró v2", False,
+         existe_tabla("resumen_cargos_extra", manager_v0))
+
+    cantidad = manager_v0.fetchone("SELECT COUNT(*) AS n FROM compras_cuotas WHERE es_cargo_extra = 1;")["n"]
+    caso("quedaron 3 cargos extra (SELLOS, REINTEGRO, IVA)", 3, cantidad)
+    manager_v0.inicializar()
+    caso("volver a inicializar no duplica nada", cantidad,
+         manager_v0.fetchone("SELECT COUNT(*) AS n FROM compras_cuotas WHERE es_cargo_extra = 1;")["n"])
+    caso("los migrados de agosto aparecen en el mes", {sellos, reintegro},
+         {c["id"] for c in svc_v0.list_extra_charges_in_month(8, 2026)})
+    caso("borrar un migrado de un resumen pagado → StatementAlreadyPaidError", True,
+         lanza(lambda: svc_v0.delete_extra_charge(iva_pagado), StatementAlreadyPaidError))
+    svc_v0.delete_extra_charge(reintegro)
+    caso("borrar un migrado de un resumen abierto: se borra con su cuota", ({}, []),
+         (compra(reintegro, manager_v0), cuotas(reintegro, manager_v0)))
+
+    manager_v0.desconectar()
     print(f"\n--- Resumen: {casos_ok}/{casos_total} casos OK ---")
 
 

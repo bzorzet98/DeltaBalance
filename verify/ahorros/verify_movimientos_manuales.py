@@ -70,7 +70,7 @@ def main() -> None:
     svc = SavingsService(manager)
     cuentas_repo = CuentasRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cuenta = cuentas_repo.crear(
         nombre="Banco (verify movimientos manuales)", tipo="debito", moneda_codigo="ARS", saldo_inicial=100000.0,
     )
@@ -90,8 +90,8 @@ def main() -> None:
         return [(f["objetivo_id"], f["porcentaje"], f["monto_asignado_minor"]) for f in filas]
 
     # Un FCI y una acción CON cuenta: sin el flag, cada movimiento crearía su transacción.
-    fci = svc.create_activo(nombre="FCI manual", tipo="fci", moneda_id=moneda_ars, cuenta_id=cuenta).entity_id
-    accion = svc.create_activo(nombre="ACCION manual", tipo="accion", moneda_id=moneda_ars, cuenta_id=cuenta).entity_id
+    fci = svc.create_activo(nombre="FCI manual", tipo="fci", moneda_codigo=moneda_ars, cuenta_id=cuenta).entity_id
+    accion = svc.create_activo(nombre="ACCION manual", tipo="accion", moneda_codigo=moneda_ars, cuenta_id=cuenta).entity_id
     obj_a = svc.create_objetivo(nombre="OBJETIVO A").entity_id
     obj_b = svc.create_objetivo(nombre="OBJETIVO B").entity_id
     reparto_60_40 = [{"objetivo_id": obj_a, "porcentaje": 60.0}, {"objetivo_id": obj_b, "porcentaje": 40.0}]

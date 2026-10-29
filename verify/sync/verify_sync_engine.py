@@ -200,7 +200,7 @@ def main() -> None:
     cuentas_1 = AccountsService(m1)
     transacciones_1 = TransactionService(m1)
     deudas_1 = DebtsService(m1)
-    ars = m1.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    ars = "ARS"
     categoria = m1.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' ORDER BY id LIMIT 1;")["id"]
     cuenta = cuentas_1.create_account(nombre="Banco Sync", tipo="debito", monedas=[ars]).account_id
     tx = transacciones_1.create(

@@ -9,7 +9,7 @@ nombre de la persona, el signo de monto_minor y para qué meses se guarda lo
 decide services/snapshots_service.py.
 
 upsert() usa INSERT OR REPLACE sobre el UNIQUE(entidad_persona, tab,
-moneda_id, mes, anio). Sin `deleted_at`: QueryBuilder con
+moneda_codigo, mes, anio). Sin `deleted_at`: QueryBuilder con
 include_deleted=True. Las escrituras aceptan `conn` para participar de la
 transacción del service.
 """
@@ -33,17 +33,17 @@ class DeudasMensualesRepository:
         self,
         entidad_persona: str,
         tab: str,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         monto_minor: int,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         sql = """
-            INSERT OR REPLACE INTO deudas_mensuales (entidad_persona, tab, moneda_id, mes, anio, monto_minor)
+            INSERT OR REPLACE INTO deudas_mensuales (entidad_persona, tab, moneda_codigo, mes, anio, monto_minor)
             VALUES (?, ?, ?, ?, ?, ?);
         """
-        params = (entidad_persona, tab, moneda_id, mes, anio, monto_minor)
+        params = (entidad_persona, tab, moneda_codigo, mes, anio, monto_minor)
         if conn is not None:
             conn.execute(sql, params)
             return
@@ -53,12 +53,12 @@ class DeudasMensualesRepository:
     # READ
     # ----------------------------------------------------------
 
-    def obtener(self, entidad_persona: str, tab: str, moneda_id: int, mes: int, anio: int) -> Optional[sqlite3.Row]:
+    def obtener(self, entidad_persona: str, tab: str, moneda_codigo: str, mes: int, anio: int) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("deudas_mensuales", include_deleted=True)
             .where("entidad_persona", entidad_persona)
             .where("tab", tab)
-            .where("moneda_id", moneda_id)
+            .where("moneda_codigo", moneda_codigo)
             .where("mes", mes)
             .where("anio", anio)
             .ejecutar_uno(self._db.conn)
@@ -72,7 +72,7 @@ class DeudasMensualesRepository:
             .where("anio", anio)
             .where("tab", tab)
             .order("entidad_persona")
-            .order("moneda_id")
+            .order("moneda_codigo")
             .ejecutar(self._db.conn)
         )
 

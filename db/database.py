@@ -2,7 +2,8 @@
 DeltaBalance — db/database.py
 
 Clase de conexión a la base de datos SQLite: apertura/cierre, transacciones,
-inicialización (schema + seed + migraciones de columna y de tabla), backup, y las
+inicialización (schema + seed en una base nueva, migraciones versionadas por
+PRAGMA user_version en una existente — db/schema_migrations.py), backup, y las
 utilidades crudas (fetchall/fetchone/execute) que usan repositories/ y
 services/ para ejecutar SQL directo cuando hace falta.
 
@@ -150,32 +151,89 @@ class DatabaseManager:
 
     def inicializar(self, force: bool = False):
         """
-        Crea la base de datos aplicando schema.sql y seed.sql.
+        Deja la base lista para usar, según su PRAGMA user_version
+        (db/schema_migrations.py, docs/DATA_MODEL_DECISIONS.md sección 37):
+
+        - Base nueva (sin tablas: el archivo no existía, o existe vacío):
+          schema.sql — la foto de la versión actual —, brokers iniciales,
+          sync, seed.sql (solo si el archivo no existía: un archivo creado
+          vacío a propósito, como el destino de
+          legacy_migration/migrar_a_uuid_pk.py, queda sin seed) y, al final,
+          user_version = VERSION_SCHEMA.
+        - Base existente con user_version menor: backup del archivo y
+          después las migraciones que falten (run_migrations(), que marca la
+          versión al terminar cada una).
+        - Base existente al día: ninguna migración.
+        - En todos los casos, preparar_sync() (fuera del versionado).
+
         Si force=True, elimina la DB existente primero.
+
+        Raises:
+            RuntimeError si la base es de una versión más nueva que este
+            código, si tiene ids enteros o si una migración falla (la
+            versión queda en la última que terminó bien).
         """
         if force:
             self.eliminar_db()
 
         ya_existia = self.db_path.exists()
         conn = self.conectar()
+        nueva = schema_migrations.base_vacia(conn)
+        version = schema_migrations.leer_version(conn)
 
-        # Aplicar schema
-        with open(self.schema_path, "r", encoding="utf-8") as f:
-            conn.executescript(f.read())
-
-        # Migraciones de columna sobre tablas existentes, y después las tablas
-        # nuevas sobre bases existentes (snapshots mensuales) — ver
-        # db/schema_migrations.py.
-        schema_migrations.aplicar_migraciones_columna(conn)
-        schema_migrations.aplicar_migraciones_tabla(conn)
-
-        # Aplicar seed solo si la DB era nueva
-        if not ya_existia:
-            with open(self.seed_path, "r", encoding="utf-8") as f:
+        if nueva:
+            with open(self.schema_path, "r", encoding="utf-8") as f:
                 conn.executescript(f.read())
+            # Antes de preparar_sync(), como en la cadena anterior: los
+            # brokers de una base nueva no quedan anotados en sync_cambios.
+            schema_migrations.sembrar_brokers(conn)
+        elif version > schema_migrations.VERSION_SCHEMA:
+            raise RuntimeError(
+                f"La base de datos está en la versión de schema {version} y esta versión de la app "
+                f"llega hasta la {schema_migrations.VERSION_SCHEMA}. Actualizá la app antes de abrirla."
+            )
+        elif version < schema_migrations.VERSION_SCHEMA:
+            self._backup_antes_de_migrar(version)
+            schema_migrations.run_migrations(conn, version)
+
+        # Fuera del versionado, en cada arranque: columna sincronizado_en,
+        # tablas de control y los triggers trg_sync_* con su definición
+        # actual.
+        schema_migrations.preparar_sync(conn)
+
+        if nueva:
+            # El seed va después de preparar_sync(), como antes del
+            # versionado: sus filas (categorías, "Caja Efectivo") quedan
+            # anotadas en sync_cambios por los triggers.
+            if not ya_existia:
+                with open(self.seed_path, "r", encoding="utf-8") as f:
+                    conn.executescript(f.read())
+            # La marca, al final: solo una base completa queda en la versión actual.
+            schema_migrations.marcar_version(conn, schema_migrations.VERSION_SCHEMA)
             logger.info("Base de datos inicializada en: %s", self.db_path)
         else:
             logger.debug("Base de datos ya existente en: %s", self.db_path)
+
+    def _backup_antes_de_migrar(self, version: int) -> Path:
+        """
+        hacer_backup() antes de migrar una base existente:
+        <nombre>_backup_antes_migracion_v<version>_<fecha>_<hora>.db, al lado
+        del archivo. hacer_backup() copia solo el archivo principal: antes se
+        pasa todo el -wal a él (checkpoint) — si no se puede pasar completo
+        (otra conexión leyendo), no se migra, porque el backup quedaría sin
+        los últimos cambios.
+        """
+        conn = self.conn
+        conn.commit()
+        ocupada, paginas_wal, paginas_copiadas = conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+        if ocupada or (paginas_wal != -1 and paginas_copiadas != paginas_wal):
+            raise RuntimeError(
+                "No se pudo hacer el backup previo a la migración de la base: hay otra conexión abierta "
+                "sobre el archivo. Cerrá las otras instancias de la app y volvé a abrirla."
+            )
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        destino = self.db_path.parent / f"{self.db_path.stem}_backup_antes_migracion_v{version}_{ts}.db"
+        return self.hacer_backup(destino)
 
     def esta_inicializada(self) -> bool:
         """Verifica si la DB existe y tiene las tablas principales."""
@@ -258,38 +316,12 @@ class DatabaseManager:
     def obtener_moneda_por_codigo(self, codigo: str) -> Optional[sqlite3.Row]:
         return self.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (codigo,))
 
-    def obtener_moneda_id(self, codigo: str) -> int:
-        row = self.obtener_moneda_por_codigo(codigo)
-        if row is None:
-            raise ValueError(f"Moneda no encontrada: {codigo}")
-        return row["id"]
+    # obtener_moneda_id() se eliminó en v3: el código ES la clave de la
+    # moneda (docs/DATA_MODEL_DECISIONS.md sección 39).
 
-    # ===========================================================
-    # TIPOS DE CAMBIO
-    # ===========================================================
-    # No hay TiposCambioRepository. obtener_tipo_cambio() no tiene caller
-    # real confirmado hoy tampoco, pero por el mismo motivo que MONEDAS
-    # arriba — no está cubierto por ningún repositorio — queda fuera de
-    # esta limpieza. registrar_tipo_cambio() SÍ se elimina acá: es uno de
-    # los 3 métodos sin caller identificados en la auditoría de rowcount
-    # (docs/AUDITORIA_EXECUTE_ROWCOUNT.md) que ya estaba decidido que se
-    # iban en esta limpieza.
-
-    def obtener_tipo_cambio(
-        self, fecha: str, moneda_origen: str, moneda_destino: str = "ARS"
-    ) -> Optional[float]:
-        """Devuelve la tasa de cambio para una fecha dada, o None si no existe."""
-        origen_id  = self.obtener_moneda_id(moneda_origen)
-        destino_id = self.obtener_moneda_id(moneda_destino)
-        row = self.fetchone(
-            """
-            SELECT tasa_minor FROM tipos_cambio
-            WHERE fecha <= ? AND moneda_origen_id = ? AND moneda_destino_id = ?
-            ORDER BY fecha DESC LIMIT 1;
-            """,
-            (fecha, origen_id, destino_id),
-        )
-        return row["tasa_minor"] / 10000 if row else None
+    # (TIPOS DE CAMBIO: obtener_tipo_cambio() se eliminó junto con la tabla
+    # tipos_cambio en la migración v2 — docs/DATA_MODEL_DECISIONS.md sección
+    # 38. No tenía caller.)
 
     # ===========================================================
     # VISTAS / PROYECCIONES
@@ -298,8 +330,7 @@ class DatabaseManager:
     # confirmado hoy (TransactionService.monthly_summary() ya es el
     # reemplazo moderno de resumen_mensual, pero database.py no lo sabe ni
     # lo necesita saber) — no están cubiertos por ningún repositorio, así
-    # que quedan fuera de esta limpieza igual que MONEDAS/TIPOS DE CAMBIO
-    # arriba. proyeccion_tarjeta_proximos_meses() SÍ se eliminó: dependía
+    # que quedan fuera de esta limpieza igual que MONEDAS arriba. proyeccion_tarjeta_proximos_meses() SÍ se eliminó: dependía
     # de obtener_cuotas_por_mes() (bloque COMPRAS_CUOTAS, ya migrado a
     # CuotasCreditoRepository.listar_por_mes() y borrado en esta misma
     # limpieza) y tampoco tenía caller real — dejarla habría dejado un
@@ -318,7 +349,7 @@ class DatabaseManager:
                 SUM(CASE WHEN t.tipo_movimiento = 'ingreso'
                          THEN t.monto_minor ELSE -t.monto_minor END)           AS balance_minor
             FROM transacciones t
-            JOIN monedas m ON m.id = t.moneda_id
+            JOIN monedas m ON m.codigo = t.moneda_codigo
             WHERE strftime('%m', t.fecha) = printf('%02d', ?)
               AND strftime('%Y', t.fecha) = CAST(? AS TEXT)
             GROUP BY m.codigo;

@@ -94,7 +94,7 @@ class EmpleosRepository:
     def crear_empleo(
         self,
         nombre_empresa: str,
-        moneda_id: int,
+        moneda_codigo: str,
         puesto: Optional[str] = None,
         porcentaje_jubilacion: int = 1100,
         porcentaje_obra_social: int = 300,
@@ -113,12 +113,12 @@ class EmpleosRepository:
         self._db.execute(
             """
             INSERT INTO empleos
-                (id, nombre_empresa, puesto, moneda_id, porcentaje_jubilacion,
+                (id, nombre_empresa, puesto, moneda_codigo, porcentaje_jubilacion,
                  porcentaje_obra_social, porcentaje_gremio, tope_copago_os_minor)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?);
             """,
             (
-                empleo_id, nombre_empresa, puesto, moneda_id, porcentaje_jubilacion,
+                empleo_id, nombre_empresa, puesto, moneda_codigo, porcentaje_jubilacion,
                 porcentaje_obra_social, porcentaje_gremio, tope_copago_os_minor,
             ),
         )

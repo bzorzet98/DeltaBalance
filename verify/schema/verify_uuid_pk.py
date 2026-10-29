@@ -16,13 +16,18 @@ A. Base nueva (db/schema.sql actual):
   - foreign_key_check vacío, integrity_check ok.
 B. Guarda: una base con ids enteros frena inicializar() con un mensaje que
    dice qué script correr.
-C. migration/migrar_a_uuid_pk.py de punta a punta sobre una base VIEJA
-   armada acá (el schema.sql actual con los ids vueltos a INTEGER) con
+C. legacy_migration/migrar_a_uuid_pk.py de punta a punta sobre una base
+   VIEJA armada acá (db/schema_v0.sql — el schema anterior a PRAGMA
+   user_version — con los ids vueltos a INTEGER) con
    datos: mismas filas y sumas, todos los ids UUID, FKs traducidas
    (incluida la de una cuenta a otra), origen polimórfico de deudas y
    gastos compartidos traducido (pago_migrado → NULL), snapshots con su
    cuenta traducida, orden de alta conservado, sincronizado_en en NULL,
    foreign_key_check vacío.
+   SALTEADA desde v3: el script copia una base con moneda_id entero en una
+   base v3 nueva (moneda_codigo) y no está actualizado para eso — decisión
+   del usuario. El escenario queda en _parte_c_migrar_a_uuid_pk(), sin
+   llamarse, por si el script se actualiza.
 
 Correlo con:
     python verify/schema/verify_uuid_pk.py
@@ -36,10 +41,9 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
-from verify._dummy_db import SCHEMA_PATH, SEED_PATH, crear_dummy_db
+from verify._dummy_db import SEED_PATH, crear_dummy_db
 from db.database import DatabaseManager
-from db.schema_migrations import aplicar_migraciones_columna
-from migration.migrar_a_uuid_pk import crear_destino, migrar, preparar_origen
+from db.schema_migrations import SCHEMA_V0_PATH, aplicar_migraciones_columna
 from services.cuentas_service import AccountsService
 from services.deudas_service import DebtsService
 from services.compras_cuotas_service import FeesService
@@ -48,7 +52,9 @@ from services.transacciones_service import TransactionService
 UUID_V4 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 SIN_UUID = {"monedas", "saldos_mensuales", "deudas_mensuales", "compartidos_mensuales", "sync_cambios", "sync_estado"}
 
-# Para armar la base VIEJA: el schema.sql actual con los ids vueltos a enteros.
+# Para armar la base VIEJA: db/schema_v0.sql (el schema anterior a PRAGMA
+# user_version — db/schema.sql ya es la foto v1, con tablas que una base de
+# ids enteros nunca tuvo) con los ids vueltos a enteros.
 ID_TEXTO = re.compile(r"^(\s*id\s+)TEXT PRIMARY KEY NOT NULL DEFAULT \(.*\),$", re.MULTILINE)
 FK_TEXTO = re.compile(
     r"^(\s*)(cuenta_pago_id|cuenta_id|categoria_id|transaccion_salida_id|transaccion_entrada_id|compra_id|"
@@ -70,104 +76,21 @@ CREATE TABLE saldos_mensuales (
 """
 
 
-def main() -> None:
-    casos_ok = 0
-    casos_total = 0
+def _parte_c_migrar_a_uuid_pk(caso, es_uuid) -> None:
+    """
+    Parte C (NO se llama desde main()): legacy_migration/migrar_a_uuid_pk.py
+    sobre una base vieja de ids enteros. El script no está actualizado para
+    v3 (copia moneda_id entero en una base nueva con moneda_codigo) — decisión
+    del usuario —, así que este escenario fallaría. Queda acá tal cual por si
+    el script se actualiza; el import va adentro para que el resto del
+    archivo no dependa de él.
+    """
+    from legacy_migration.migrar_a_uuid_pk import crear_destino, migrar, preparar_origen
 
-    def caso(descripcion: str, esperado, obtenido) -> None:
-        nonlocal casos_ok, casos_total
-        casos_total += 1
-        if esperado == obtenido:
-            casos_ok += 1
-            print(f"✅ {descripcion} — esperado: {esperado!r}, obtenido: {obtenido!r}")
-        else:
-            print(f"❌ {descripcion} — esperado: {esperado!r}, obtenido: {obtenido!r}")
-
-    def es_uuid(valor) -> bool:
-        return isinstance(valor, str) and bool(UUID_V4.match(valor))
-
-    # ============================================================
-    print("=== A. Base nueva ===\n")
-    # ============================================================
-    db_path = crear_dummy_db()
-    print(f"Dummy DB: {db_path}\n")
-    manager = DatabaseManager(db_path=db_path)
-    manager.inicializar()
-    tablas = [f["name"] for f in manager.fetchall("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';")]
-    malas = []
-    for tabla in tablas:
-        columnas = {f["name"]: f for f in manager.fetchall(f"PRAGMA table_info({tabla});")}
-        if tabla in SIN_UUID or "id" not in columnas:
-            continue
-        info = columnas["id"]
-        if not (info["pk"] and (info["type"] or "").upper() == "TEXT" and info["notnull"]):
-            malas.append(tabla)
-    caso("todas las tablas con `id` (salvo monedas y snapshots) lo tienen TEXT, PRIMARY KEY y NOT NULL", [], malas)
-    caso("monedas sigue con id entero", "INTEGER",
-         next(f["type"] for f in manager.fetchall("PRAGMA table_info(monedas);") if f["name"] == "id").upper())
-    categorias = manager.fetchall("SELECT id FROM categorias;")
-    caso("el seed nace con UUIDs (DEFAULT de categorias.id)", True, bool(categorias) and all(es_uuid(f["id"]) for f in categorias))
-    caja = manager.fetchone("SELECT id FROM cuentas WHERE nombre = 'Caja Efectivo';")
-    caso("'Caja Efectivo' tiene un UUID", True, caja is not None and es_uuid(caja["id"]))
-    caso("… y su saldo inicial apunta a ella (seed por nombre, no por id 1)", 1,
-         manager.fetchone("SELECT COUNT(*) AS n FROM cuentas_saldos WHERE cuenta_id = ?;", (caja["id"],))["n"])
-
-    cuentas = AccountsService(manager)
-    transacciones = TransactionService(manager)
-    fees = FeesService(manager)
-    deudas = DebtsService(manager)
-    ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    categoria = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
-    tarjeta = cuentas.create_account(nombre="Visa UUID", tipo="credito", monedas=[ars]).account_id
-    caso("create_account() devuelve un UUID", True, es_uuid(tarjeta))
-    primera = transacciones.create(
-        date_str="2026-09-10", concept="Primera", account_id=caja["id"], category_id=categoria,
-        currency_code="ARS", amount=100.0, movement_type="egreso",
-    ).transaction_id
-    segunda = transacciones.create(
-        date_str="2026-09-10", concept="Segunda", account_id=caja["id"], category_id=categoria,
-        currency_code="ARS", amount=200.0, movement_type="egreso",
-    ).transaction_id
-    caso("TransactionService.create() devuelve un UUID", True, es_uuid(primera))
-    del_dia = [t["id"] for t in transacciones.list_transactions(date_from="2026-09-10", date_to="2026-09-10")]
-    caso("mismo día: la más nueva primero (orden de alta, no por UUID)", [segunda, primera], del_dia[:2])
-    compra = fees.create_purchase(
-        date_str="2026-09-10", concept="Heladera", account_id=tarjeta, category_id=categoria,
-        currency_code="ARS", total_amount=3000.0, total_fees=3,
-    ).entity_id
-    cuotas = fees.get_fees_for_purchase(compra)
-    caso("create_purchase(): la compra y sus 3 cuotas con UUID", (True, 3, True),
-         (es_uuid(compra), len(cuotas), all(es_uuid(c["id"]) for c in cuotas)))
-    caso("las cuotas apuntan a la compra", {compra}, {c["compra_id"] for c in cuotas})
-    deuda = deudas.create("Noe", "Cena", "me_deben", 5000, ars, "2026-09-10", origen_tipo="transaccion", origen_id=primera)
-    fila_deuda = deudas.get(deuda.entity_id)
-    caso("una deuda con origen transacción: UUID propio y origen_id = el UUID de la transacción", (True, primera),
-         (es_uuid(deuda.entity_id), fila_deuda["origen_id"]))
-    caso("foreign_key_check vacío", [], [tuple(f) for f in manager.fetchall("PRAGMA foreign_key_check;")])
-    caso("integrity_check ok", "ok", manager.fetchone("PRAGMA integrity_check;")[0])
-    manager.desconectar()
-
-    # ============================================================
-    print("\n=== B. Guarda: una base con ids enteros ===\n")
-    # ============================================================
-    with tempfile.TemporaryDirectory(prefix="verify_uuid_guarda_") as carpeta:
-        vieja = sqlite3.connect(Path(carpeta) / "vieja.db")
-        vieja.execute("CREATE TABLE transacciones (id INTEGER PRIMARY KEY AUTOINCREMENT, concepto TEXT);")
-        try:
-            aplicar_migraciones_columna(vieja)
-            caso("inicializar() frena con ids enteros", "RuntimeError", "no frenó")
-        except RuntimeError as err:
-            caso("inicializar() frena con ids enteros (y el mensaje dice qué correr)", True, "migrar_a_uuid_pk.py" in str(err))
-        finally:
-            vieja.close()
-
-    # ============================================================
-    print("\n=== C. migration/migrar_a_uuid_pk.py sobre una base vieja ===\n")
-    # ============================================================
     with tempfile.TemporaryDirectory(prefix="verify_uuid_migracion_") as carpeta:
         origen = Path(carpeta) / "vieja.db"
         destino = Path(carpeta) / "nueva.db"
-        schema_viejo = FK_TEXTO.sub(r"\1\2\3INTEGER", ID_TEXTO.sub(r"\1INTEGER PRIMARY KEY AUTOINCREMENT,", SCHEMA_PATH.read_text(encoding="utf-8")))
+        schema_viejo = FK_TEXTO.sub(r"\1\2\3INTEGER", ID_TEXTO.sub(r"\1INTEGER PRIMARY KEY AUTOINCREMENT,", SCHEMA_V0_PATH.read_text(encoding="utf-8")))
         crudo = sqlite3.connect(origen)
         crudo.row_factory = sqlite3.Row
         crudo.executescript(schema_viejo)
@@ -292,6 +215,107 @@ def main() -> None:
             caso("la base migrada abre con inicializar() (pasa la guarda)", True, f"falló: {err}")
         finally:
             nueva_app.desconectar()
+
+
+def main() -> None:
+    casos_ok = 0
+    casos_total = 0
+
+    def caso(descripcion: str, esperado, obtenido) -> None:
+        nonlocal casos_ok, casos_total
+        casos_total += 1
+        if esperado == obtenido:
+            casos_ok += 1
+            print(f"✅ {descripcion} — esperado: {esperado!r}, obtenido: {obtenido!r}")
+        else:
+            print(f"❌ {descripcion} — esperado: {esperado!r}, obtenido: {obtenido!r}")
+
+    def es_uuid(valor) -> bool:
+        return isinstance(valor, str) and bool(UUID_V4.match(valor))
+
+    # ============================================================
+    print("=== A. Base nueva ===\n")
+    # ============================================================
+    db_path = crear_dummy_db()
+    print(f"Dummy DB: {db_path}\n")
+    manager = DatabaseManager(db_path=db_path)
+    manager.inicializar()
+    tablas = [f["name"] for f in manager.fetchall("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%';")]
+    malas = []
+    for tabla in tablas:
+        columnas = {f["name"]: f for f in manager.fetchall(f"PRAGMA table_info({tabla});")}
+        if tabla in SIN_UUID or "id" not in columnas:
+            continue
+        info = columnas["id"]
+        if not (info["pk"] and (info["type"] or "").upper() == "TEXT" and info["notnull"]):
+            malas.append(tabla)
+    caso("todas las tablas con `id` (salvo monedas y snapshots) lo tienen TEXT, PRIMARY KEY y NOT NULL", [], malas)
+    columnas_monedas = {f["name"]: f for f in manager.fetchall("PRAGMA table_info(monedas);")}
+    caso("monedas no tiene id: su clave es `codigo` TEXT PRIMARY KEY (v3)", (False, "TEXT", True),
+         ("id" in columnas_monedas,
+          (columnas_monedas["codigo"]["type"] or "").upper() if "codigo" in columnas_monedas else None,
+          bool(columnas_monedas["codigo"]["pk"]) if "codigo" in columnas_monedas else None))
+    categorias = manager.fetchall("SELECT id FROM categorias;")
+    caso("el seed nace con UUIDs (DEFAULT de categorias.id)", True, bool(categorias) and all(es_uuid(f["id"]) for f in categorias))
+    caja = manager.fetchone("SELECT id FROM cuentas WHERE nombre = 'Caja Efectivo';")
+    caso("'Caja Efectivo' tiene un UUID", True, caja is not None and es_uuid(caja["id"]))
+    caso("… y su saldo inicial apunta a ella (seed por nombre, no por id 1)", 1,
+         manager.fetchone("SELECT COUNT(*) AS n FROM cuentas_saldos WHERE cuenta_id = ?;", (caja["id"],))["n"])
+
+    cuentas = AccountsService(manager)
+    transacciones = TransactionService(manager)
+    fees = FeesService(manager)
+    deudas = DebtsService(manager)
+    ars = "ARS"
+    categoria =manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
+    tarjeta = cuentas.create_account(nombre="Visa UUID", tipo="credito", monedas=[ars]).account_id
+    caso("create_account() devuelve un UUID", True, es_uuid(tarjeta))
+    primera = transacciones.create(
+        date_str="2026-09-10", concept="Primera", account_id=caja["id"], category_id=categoria,
+        currency_code="ARS", amount=100.0, movement_type="egreso",
+    ).transaction_id
+    segunda = transacciones.create(
+        date_str="2026-09-10", concept="Segunda", account_id=caja["id"], category_id=categoria,
+        currency_code="ARS", amount=200.0, movement_type="egreso",
+    ).transaction_id
+    caso("TransactionService.create() devuelve un UUID", True, es_uuid(primera))
+    del_dia = [t["id"] for t in transacciones.list_transactions(date_from="2026-09-10", date_to="2026-09-10")]
+    caso("mismo día: la más nueva primero (orden de alta, no por UUID)", [segunda, primera], del_dia[:2])
+    compra = fees.create_purchase(
+        date_str="2026-09-10", concept="Heladera", account_id=tarjeta, category_id=categoria,
+        currency_code="ARS", total_amount=3000.0, total_fees=3,
+    ).entity_id
+    cuotas = fees.get_fees_for_purchase(compra)
+    caso("create_purchase(): la compra y sus 3 cuotas con UUID", (True, 3, True),
+         (es_uuid(compra), len(cuotas), all(es_uuid(c["id"]) for c in cuotas)))
+    caso("las cuotas apuntan a la compra", {compra}, {c["compra_id"] for c in cuotas})
+    deuda = deudas.create("Noe", "Cena", "me_deben", 5000, ars, "2026-09-10", origen_tipo="transaccion", origen_id=primera)
+    fila_deuda = deudas.get(deuda.entity_id)
+    caso("una deuda con origen transacción: UUID propio y origen_id = el UUID de la transacción", (True, primera),
+         (es_uuid(deuda.entity_id), fila_deuda["origen_id"]))
+    caso("foreign_key_check vacío", [], [tuple(f) for f in manager.fetchall("PRAGMA foreign_key_check;")])
+    caso("integrity_check ok", "ok", manager.fetchone("PRAGMA integrity_check;")[0])
+    manager.desconectar()
+
+    # ============================================================
+    print("\n=== B. Guarda: una base con ids enteros ===\n")
+    # ============================================================
+    with tempfile.TemporaryDirectory(prefix="verify_uuid_guarda_") as carpeta:
+        vieja = sqlite3.connect(Path(carpeta) / "vieja.db")
+        vieja.execute("CREATE TABLE transacciones (id INTEGER PRIMARY KEY AUTOINCREMENT, concepto TEXT);")
+        try:
+            aplicar_migraciones_columna(vieja)
+            caso("inicializar() frena con ids enteros", "RuntimeError", "no frenó")
+        except RuntimeError as err:
+            caso("inicializar() frena con ids enteros (y el mensaje dice qué correr)", True, "migrar_a_uuid_pk.py" in str(err))
+        finally:
+            vieja.close()
+
+    # ============================================================
+    print("\n=== C. legacy_migration/migrar_a_uuid_pk.py sobre una base vieja ===\n")
+    # ============================================================
+    print("⏭️  SKIPPED: legacy_migration/migrar_a_uuid_pk.py no está actualizado para v3 (decisión del usuario)")
+    # El escenario sigue en _parte_c_migrar_a_uuid_pk(caso, es_uuid), sin llamarse.
 
     print(f"\n{casos_ok}/{casos_total} casos OK")
 

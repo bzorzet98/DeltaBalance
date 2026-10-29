@@ -37,7 +37,7 @@ Reglas de dominio (acá, no en el repositorio):
 - Concepto de un fijo: sin espacios de más y en MAYÚSCULAS, no vacío.
 - Un solo variable por categoría (y un solo COMPARTIDOS) por mes — la
   regla del viejo UNIQUE(categoria_id, mes, anio): PresupuestoDuplicadoError.
-- Montos enteros (minor units) >= 0; moneda_id tiene que existir; mes entre
+- Montos enteros (minor units) >= 0; moneda_codigo tiene que existir; mes entre
   1 y 12. El real de un variable no se edita (se calcula).
 - Edición y borrado directos: un presupuesto no tiene dependencias con
   estado propio (ventana de corrección temprana, CLAUDE.md §4).
@@ -80,8 +80,8 @@ MONEDA_SIN_ORIGEN_CODIGO = "ARS"
 
 # update(): campos que se pueden cambiar según el tipo.
 CAMPOS_EDITABLES = {
-    "fijo": ("concepto", "monto_estimado_minor", "monto_real_minor", "moneda_id", "es_recurrente"),
-    "variable": ("categoria_id", "monto_estimado_minor", "moneda_id", "es_recurrente"),
+    "fijo": ("concepto", "monto_estimado_minor", "monto_real_minor", "moneda_codigo", "es_recurrente"),
+    "variable": ("categoria_id", "monto_estimado_minor", "moneda_codigo", "es_recurrente"),
 }
 
 
@@ -132,9 +132,9 @@ class PresupuestosService:
     """
     Usage:
         svc = PresupuestosService(db)
-        svc.create_fijo("Alquiler", 15000000, moneda_id=1, mes=10, anio=2026, es_recurrente=1)
-        svc.create_variable(categoria_super, 8000000, moneda_id=1, mes=10, anio=2026)
-        svc.create_variable(CATEGORIA_COMPARTIDOS, 7500000, moneda_id=1, mes=10, anio=2026)
+        svc.create_fijo("Alquiler", 15000000, moneda_codigo="ARS", mes=10, anio=2026, es_recurrente=1)
+        svc.create_variable(categoria_super, 8000000, moneda_codigo="ARS", mes=10, anio=2026)
+        svc.create_variable(CATEGORIA_COMPARTIDOS, 7500000, moneda_codigo="ARS", mes=10, anio=2026)
         svc.list_by_month(10, 2026, usuario_local="BRUNO")   # {"fijos": [...], "variables": [...]}
     """
 
@@ -160,10 +160,10 @@ class PresupuestosService:
             raise PresupuestoError("EL MONTO NO PUEDE SER NEGATIVO.")
         return monto_minor
 
-    def _moneda(self, moneda_id: Any) -> int:
-        if moneda_id not in {fila["id"] for fila in self._db.obtener_monedas()}:
-            raise CurrencyNotFoundError(f"LA MONEDA id={moneda_id} NO EXISTE.")
-        return moneda_id
+    def _moneda(self, moneda_codigo: Any) -> str:
+        if moneda_codigo not in {fila["codigo"] for fila in self._db.obtener_monedas()}:
+            raise CurrencyNotFoundError(f"LA MONEDA {moneda_codigo} NO EXISTE.")
+        return moneda_codigo
 
     def _destino_variable(self, categoria_id: Optional[str]) -> tuple[Optional[str], Optional[str]]:
         """categoria_id pedido → (categoria_id, concepto) a guardar: el ítem COMPARTIDOS o una categoría existente."""
@@ -205,7 +205,7 @@ class PresupuestosService:
         self,
         concepto: str,
         monto_estimado_minor: int,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         es_recurrente: int = 0,
@@ -223,7 +223,7 @@ class PresupuestosService:
         mes, anio = self._periodo(mes, anio)
         presupuesto_id = self._repo.crear(
             tipo="fijo",
-            moneda_id=self._moneda(moneda_id),
+            moneda_codigo=self._moneda(moneda_codigo),
             mes=mes,
             anio=anio,
             monto_estimado_minor=self._monto(monto_estimado_minor),
@@ -237,7 +237,7 @@ class PresupuestosService:
         self,
         categoria_id: str,
         monto_estimado_minor: int,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         es_recurrente: int = 0,
@@ -259,7 +259,7 @@ class PresupuestosService:
         self._sin_duplicado(mes, anio, categoria, concepto)
         presupuesto_id = self._repo.crear(
             tipo="variable",
-            moneda_id=self._moneda(moneda_id),
+            moneda_codigo=self._moneda(moneda_codigo),
             mes=mes,
             anio=anio,
             monto_estimado_minor=self._monto(monto_estimado_minor),
@@ -298,11 +298,11 @@ class PresupuestosService:
             es_compartidos = p["categoria_id"] is None
             if es_compartidos:
                 real = (
-                    self.get_real_variable_compartidos(p["moneda_id"], mes, anio, usuario_local)
+                    self.get_real_variable_compartidos(p["moneda_codigo"], mes, anio, usuario_local)
                     if usuario_local else None
                 )
             else:
-                real = self.get_real_variable(p["categoria_id"], p["moneda_id"], mes, anio)
+                real = self.get_real_variable(p["categoria_id"], p["moneda_codigo"], mes, anio)
             p.update(
                 nombre=(p["concepto"] if es_compartidos else p["subcategoria"]) or "",
                 es_compartidos=es_compartidos,
@@ -328,7 +328,7 @@ class PresupuestosService:
     # REAL CALCULADO DE LOS VARIABLES (ver docstring del módulo)
     # ----------------------------------------------------------
 
-    def get_real_variable(self, categoria_id: str, moneda_id: int, mes: int, anio: int) -> int:
+    def get_real_variable(self, categoria_id: str, moneda_codigo: str, mes: int, anio: int) -> int:
         """
         Egresos del Registro de ese mes en esa categoría y moneda (sin las
         transacciones eliminadas). Una transacción compartida cuenta solo
@@ -346,18 +346,18 @@ class PresupuestosService:
             LEFT JOIN gastos_compartidos g
                    ON g.origen_tipo = 'transaccion' AND g.origen_id = t.id
             WHERE t.categoria_id = ?
-              AND t.moneda_id = ?
+              AND t.moneda_codigo = ?
               AND t.tipo_movimiento = 'egreso'
               AND t.fecha >= ?
               AND t.fecha < ?
               AND t.deleted_at IS NULL;
             """,
-            (categoria_id, moneda_id, inicio, fin),
+            (categoria_id, moneda_codigo, inicio, fin),
         )
         return fila["real_minor"]
 
     def get_real_variable_compartidos(
-        self, moneda_id: int, mes: int, anio: int, usuario_local: Optional[str] = None,
+        self, moneda_codigo: str, mes: int, anio: int, usuario_local: Optional[str] = None,
     ) -> int:
         """
         Lo que el usuario debe por los gastos compartidos del mes (por su
@@ -378,7 +378,7 @@ class PresupuestosService:
         filas = self._db.fetchall(
             """
             SELECT g.pagador, g.monto_adeudado_minor,
-                   COALESCE(t.moneda_id, cc.moneda_id, ccq.moneda_id, ?) AS moneda_id
+                   COALESCE(t.moneda_codigo, cc.moneda_codigo, ccq.moneda_codigo, ?) AS moneda_codigo
             FROM gastos_compartidos g
             LEFT JOIN transacciones t    ON g.origen_tipo = 'transaccion'   AND t.id = g.origen_id
             LEFT JOIN compras_cuotas cc  ON g.origen_tipo = 'compra_cuotas' AND cc.id = g.origen_id
@@ -386,11 +386,11 @@ class PresupuestosService:
             LEFT JOIN compras_cuotas ccq ON ccq.id = q.compra_id
             WHERE g.fecha >= ? AND g.fecha < ?;
             """,
-            (sin_origen["id"] if sin_origen is not None else None, inicio, fin),
+            (sin_origen["codigo"] if sin_origen is not None else None, inicio, fin),
         )
         return sum(
             fila["monto_adeudado_minor"] for fila in filas
-            if fila["moneda_id"] == moneda_id and normalizar_persona(fila["pagador"]) != yo
+            if fila["moneda_codigo"] == moneda_codigo and normalizar_persona(fila["pagador"]) != yo
         )
 
     # ----------------------------------------------------------
@@ -411,7 +411,7 @@ class PresupuestosService:
         """
         Totales por moneda de un resultado de list_by_month() ya pedido (así
         quien ya tiene el listado no recalcula los reales): {currency_code:
-        {moneda_id, currency_symbol, decimales, fijos_estimado, fijos_real,
+        {moneda_codigo, currency_symbol, decimales, fijos_estimado, fijos_real,
         variables_estimado, variables_real}}. Un real None (COMPARTIDOS sin
         usuario_local) no suma.
         """
@@ -419,7 +419,7 @@ class PresupuestosService:
         for seccion, filas in (("fijos", listado["fijos"]), ("variables", listado["variables"])):
             for p in filas:
                 total = totales.setdefault(p["currency_code"], {
-                    "moneda_id": p["moneda_id"],
+                    "moneda_codigo": p["moneda_codigo"],
                     "currency_symbol": p["currency_symbol"] or "",
                     "decimales": p["decimales"],
                     "fijos_estimado": 0,
@@ -462,7 +462,7 @@ class PresupuestosService:
             "concepto": self._concepto,
             "monto_estimado_minor": self._monto,
             "monto_real_minor": self._monto,
-            "moneda_id": self._moneda,
+            "moneda_codigo": self._moneda,
             "es_recurrente": self._recurrente,
         }
         campos = {campo: validadores[campo](valor) for campo, valor in kwargs.items() if campo != "categoria_id"}

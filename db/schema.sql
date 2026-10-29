@@ -1,15 +1,41 @@
-
 -- =============================================================
--- DeltaBalance — schema_v2.sql
--- SQLite 3 — Financial-grade schema
+-- DeltaBalance — db/schema.sql
+-- SQLite 3 — foto del schema v3 (PRAGMA user_version = 3)
 -- =============================================================
+-- Este archivo es el schema REAL completo de la última versión:
+-- - v1: exactamente lo que dejaba en una base la cadena anterior (schema +
+--   MIGRACIONES_COLUMNA + aplicar_migraciones_tabla()), con las columnas en
+--   el mismo orden (docs/DATA_MODEL_DECISIONS.md sección 37);
+-- - v2: sin las tablas sin uso tipos_cambio, indices_inflacion,
+--   resumen_cargos_extra y activo_objetivos (sección 38);
+-- - v3: monedas con clave natural — `codigo` es la PK y toda FK a monedas
+--   es `moneda_codigo TEXT` (antes `moneda_id INTEGER` → monedas.id),
+--   en la misma posición (sección 39).
+--
+-- Solo se aplica a una base NUEVA (sin tablas): DatabaseManager.inicializar()
+-- lo corre, siembra los brokers, crea la sync (preparar_sync()), carga
+-- seed.sql y marca user_version = VERSION_SCHEMA. El propio archivo también
+-- la marca (al final): una base armada solo con este archivo — los scripts
+-- de verify/ — ya queda en su versión, y DatabaseManager no le corre la
+-- baseline encima. Una base existente ya NO lo reaplica:
+--   - user_version = 0 → migración baseline (db/schema_migrations.py,
+--     run_migrations(); usa db/schema_v0.sql, el schema anterior congelado);
+--   - user_version >= 1 → solo las migraciones numeradas que falten.
+-- Un cambio de schema nuevo va como migración numerada en
+-- db/schema_migrations.py (MIGRACIONES_VERSIONADAS) Y acá, subiendo
+-- VERSION_SCHEMA: este archivo tiene que seguir siendo la foto de la última
+-- versión.
+--
+-- Lo que NO está acá: los 63 triggers trg_sync_* de la sincronización con
+-- Supabase. Los genera preparar_sync() (db/schema_migrations.py) en cada
+-- arranque, fuera del versionado.
 
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 -- IDs: UUID v4 en texto ('8f14e45f-ceea-4a7b-9c3e-…') en TODAS las tablas,
--- salvo monedas (datos de referencia iguales en toda base: sigue con su id
--- entero, y moneda_id / moneda_*_id siguen siendo INTEGER). Así una fila
+-- salvo monedas (datos de referencia iguales en toda base: su clave es el
+-- código — 'ARS', 'USD'… — y las FK son moneda_codigo TEXT). Así una fila
 -- tiene la misma identidad en cualquier computadora (sincronización,
 -- docs/DATA_MODEL_DECISIONS.md sección 25). Los repositorios generan el
 -- UUID en Python (uuid.uuid4()) y lo devuelven; el DEFAULT de cada `id` es
@@ -21,9 +47,12 @@ PRAGMA journal_mode = WAL;
 -- =============================================================
 -- MONEDAS
 -- =============================================================
+-- Clave natural: el código. No se sincroniza (el seed la carga igual en
+-- toda base). En Supabase las filas siguen viajando con el moneda_id
+-- entero de antes de v3: sync/sync_engine.py traduce con
+-- IDS_MONEDA_REMOTOS (db/schema_migrations.py).
 CREATE TABLE IF NOT EXISTS monedas (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    codigo          TEXT NOT NULL UNIQUE,
+    codigo          TEXT PRIMARY KEY NOT NULL,
     simbolo         TEXT,
     decimales       INTEGER NOT NULL DEFAULT 2
 );
@@ -50,7 +79,10 @@ CREATE TABLE IF NOT EXISTS cuentas (
     notas               TEXT,
 
     creada_en           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_en          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_en          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    color_hex           TEXT DEFAULT '#5F5E5A',
+    sincronizado_en     TEXT DEFAULT NULL
 );
 
 -- =============================================================
@@ -58,16 +90,18 @@ CREATE TABLE IF NOT EXISTS cuentas (
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuentas_saldos (
     cuenta_id               TEXT NOT NULL,
-    moneda_id               INTEGER NOT NULL,
+    moneda_codigo           TEXT NOT NULL,
 
     saldo_inicial_minor     INTEGER NOT NULL DEFAULT 0,
 
     visible                 INTEGER NOT NULL DEFAULT 1,
 
-    PRIMARY KEY (cuenta_id, moneda_id),
+    sincronizado_en         TEXT DEFAULT NULL,
+
+    PRIMARY KEY (cuenta_id, moneda_codigo),
 
     FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
+    FOREIGN KEY (moneda_codigo) REFERENCES monedas(codigo)
 );
 
 -- =============================================================
@@ -86,6 +120,10 @@ CREATE TABLE IF NOT EXISTS categorias (
                                 'movimiento'
                             )),
 
+    -- Soft-delete (docs/DATA_MODEL_DECISIONS.md sección 11).
+    activa                  INTEGER NOT NULL DEFAULT 1,
+    sincronizado_en         TEXT DEFAULT NULL,
+
     UNIQUE(categoria_principal, subcategoria)
 );
 
@@ -98,7 +136,7 @@ CREATE TABLE IF NOT EXISTS empleos (
     nombre_empresa              TEXT NOT NULL,
     puesto                      TEXT,
 
-    moneda_id                   INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo               TEXT NOT NULL REFERENCES monedas(codigo),
 
     porcentaje_jubilacion       INTEGER DEFAULT 1100,
     porcentaje_obra_social      INTEGER DEFAULT 300,
@@ -125,7 +163,7 @@ CREATE TABLE IF NOT EXISTS transacciones (
 
     cuenta_id                   TEXT NOT NULL,
     categoria_id                TEXT NOT NULL,
-    moneda_id                   INTEGER NOT NULL,
+    moneda_codigo               TEXT NOT NULL,
 
     tipo_movimiento             TEXT NOT NULL
                                 CHECK(tipo_movimiento IN (
@@ -142,10 +180,11 @@ CREATE TABLE IF NOT EXISTS transacciones (
     creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_en                  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at                      TEXT,
+    sincronizado_en             TEXT DEFAULT NULL,
 
     FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
     FOREIGN KEY (categoria_id) REFERENCES categorias(id),
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
+    FOREIGN KEY (moneda_codigo) REFERENCES monedas(codigo)
 );
 
 -- =============================================================
@@ -175,8 +214,8 @@ CREATE TABLE IF NOT EXISTS autotransferencias (
 -- =============================================================
 -- Las fechas reales de cierre / vencimiento de un resumen, cuando no son
 -- las que dan los días de tarjetas_config, van en tarjetas_resumenes (las
--- dos tablas se crean en db/schema_migrations.py MIGRACIONES_TABLA —
--- docs/DATA_MODEL_DECISIONS.md secciones 23 y 29).
+-- dos tablas están más abajo — docs/DATA_MODEL_DECISIONS.md secciones 23 y
+-- 29).
 CREATE TABLE IF NOT EXISTS resumenes_tarjeta (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -209,9 +248,50 @@ CREATE TABLE IF NOT EXISTS resumenes_tarjeta (
 
     creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sincronizado_en                 TEXT DEFAULT NULL,
 
     FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
 
+    UNIQUE(cuenta_id, mes, anio)
+);
+
+-- =============================================================
+-- TARJETAS CONFIG
+-- =============================================================
+-- Días de cierre y vencimiento de cada tarjeta de crédito: con ellos
+-- FeesService calcula las fechas de los resúmenes y sugiere el mes de la 1ª
+-- cuota. Una fila por tarjeta (UNIQUE cuenta_id); updated_en lo escribe el
+-- repositorio en cada upsert (sin trigger). Ver
+-- docs/DATA_MODEL_DECISIONS.md sección 23.
+CREATE TABLE IF NOT EXISTS tarjetas_config (
+    id                  TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    cuenta_id           TEXT NOT NULL REFERENCES cuentas(id) UNIQUE,
+    dia_cierre          INTEGER NOT NULL CHECK(dia_cierre BETWEEN 1 AND 31),
+    dia_vencimiento     INTEGER NOT NULL CHECK(dia_vencimiento BETWEEN 1 AND 31),
+    creada_en           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sincronizado_en     TEXT DEFAULT NULL
+);
+
+-- =============================================================
+-- TARJETAS RESUMENES
+-- =============================================================
+-- Fecha real de cierre / vencimiento de UN resumen, cuando no es la que dan
+-- los días de tarjetas_config (feriados, cambios del banco). Una fila por
+-- (tarjeta, mes, anio) — el mes del cierre calculado con el día default, el
+-- mismo que identifica cada resumen en FeesService.card_cycle_dates(). Cada
+-- fecha es opcional: NULL = la calculada. Ver docs/DATA_MODEL_DECISIONS.md
+-- sección 29.
+CREATE TABLE IF NOT EXISTS tarjetas_resumenes (
+    id                  TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    cuenta_id           TEXT NOT NULL REFERENCES cuentas(id),
+    mes                 INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio                INTEGER NOT NULL,
+    fecha_cierre        TEXT CHECK(fecha_cierre IS NULL OR fecha_cierre GLOB '????-??-??'),
+    fecha_vence         TEXT CHECK(fecha_vence IS NULL OR fecha_vence GLOB '????-??-??'),
+    creada_en           TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_en          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sincronizado_en     TEXT DEFAULT NULL,
     UNIQUE(cuenta_id, mes, anio)
 );
 
@@ -228,7 +308,7 @@ CREATE TABLE IF NOT EXISTS compras_cuotas (
 
     cuenta_id                      TEXT NOT NULL REFERENCES cuentas(id),
     categoria_id                   TEXT NOT NULL REFERENCES categorias(id),
-    moneda_id                      INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo                      TEXT NOT NULL REFERENCES monedas(codigo),
 
     monto_total_minor              INTEGER NOT NULL,
     total_cuotas                   INTEGER NOT NULL DEFAULT 1,
@@ -244,27 +324,23 @@ CREATE TABLE IF NOT EXISTS compras_cuotas (
     notas                          TEXT,
 
     creada_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_en                     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+    updated_en                     TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
--- Columnas agregadas a compras_cuotas para GASTOS COMPARTIDOS
--- (monto_reintegro_minor, modo_deuda — ver docs/DATA_MODEL_DECISIONS.md
--- sección 2). NO se agregan acá como ALTER TABLE: SQLite no soporta
--- "ALTER TABLE ... ADD COLUMN IF NOT EXISTS" (a diferencia de CREATE TABLE/
--- INDEX/TRIGGER/VIEW, que sí soportan IF NOT EXISTS), así que un ALTER TABLE
--- suelto acá rompería schema.sql como DDL idempotente — fallaría con
--- "duplicate column name" la segunda vez que se aplicara sobre una base que
--- ya tiene la columna. Estas dos columnas se agregan vía
--- db/schema_migrations.py, que primero chequea PRAGMA table_info antes de
--- alterar. Cualquier columna nueva sobre una tabla existente va ahí, nunca
--- como ALTER TABLE suelto en este archivo; las tablas nuevas sí siguen
--- yendo acá con CREATE TABLE IF NOT EXISTS como siempre.
---
--- compras_cuotas.es_cargo_extra (mismo mecanismo): 1 = cargo/reintegro del
--- resumen de la tarjeta (impuesto, recargo, ajuste) cargado con una
--- categoría especial de TARJETA DE CRÉDITO — una "compra" de 1 cuota cuya
--- cuota ya está en el resumen de su mes. Ver docs/DATA_MODEL_DECISIONS.md
--- sección 28.
+    -- Gastos compartidos (docs/DATA_MODEL_DECISIONS.md sección 2).
+    monto_reintegro_minor          INTEGER DEFAULT 0,
+    modo_deuda                     TEXT DEFAULT 'prorrateado' CHECK(modo_deuda IN ('total_unico', 'prorrateado')),
+
+    -- Etiqueta libre, igual que transacciones.tag (sección 26).
+    tag                            TEXT,
+
+    -- 1 = cargo/reintegro del resumen de la tarjeta (impuesto, recargo,
+    -- ajuste) cargado con una categoría especial de TARJETA DE CRÉDITO — una
+    -- "compra" de 1 cuota cuya cuota ya está en el resumen de su mes
+    -- (sección 28).
+    es_cargo_extra                 INTEGER NOT NULL DEFAULT 0,
+
+    sincronizado_en                TEXT DEFAULT NULL
+);
 
 -- =============================================================
 -- CUOTAS CREDITO
@@ -301,40 +377,9 @@ CREATE TABLE IF NOT EXISTS cuotas_credito (
 
     notas                           TEXT,
 
+    sincronizado_en                 TEXT DEFAULT NULL,
+
     UNIQUE(compra_id, numero_cuota)
-);
-
--- =============================================================
--- RESUMEN CARGOS EXTRA
--- =============================================================
--- Cargos que componen monto_impuestos_minor de un resumen al cerrarlo
--- (impuestos, recargos, ajustes). Ver docs/DATA_MODEL_DECISIONS.md sobre el
--- rediseño de cómo se calculan los totales de resumenes_tarjeta.
---
--- DEPRECADA (docs/DATA_MODEL_DECISIONS.md sección 28): los cargos extra se
--- guardan en compras_cuotas con es_cargo_extra = 1 (esta tabla no se
--- sincroniza). db/schema_migrations.py migrar_cargos_extra_a_compras() mueve
--- las filas existentes; solo quedan acá las que no se pudieron mover (tipo
--- 'otro', sin categoría especial). Se sigue creando para no romper bases ni
--- scripts que todavía la leen.
-CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    resumen_id                      TEXT NOT NULL REFERENCES resumenes_tarjeta(id),
-
-    concepto                        TEXT NOT NULL,
-
-    tipo                            TEXT NOT NULL
-                                    CHECK(tipo IN (
-                                        'impuesto',
-                                        'recargo',
-                                        'ajuste',
-                                        'otro'
-                                    )),
-
-    monto_minor                     INTEGER NOT NULL,
-
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================
@@ -348,77 +393,67 @@ CREATE TABLE IF NOT EXISTS resumen_cargos_extra (
 -- estado, vencimiento ni tabla de pagos aparte (deuda_pagos ya no existe).
 --
 -- Las bases con alguna estructura anterior de `deudas` se convierten a esta
--- en db/schema_migrations.py (reestructurar_deudas()), que corre DESPUÉS de
--- este archivo. Por eso acá no hay índices, triggers ni vistas sobre las
--- columnas nuevas: en una base todavía sin convertir, un CREATE INDEX
--- sobre `tab` fallaría antes de llegar a la migración.
+-- en la migración baseline v0 → v1 (db/schema_migrations.py,
+-- reestructurar_deudas()). En v1 la tabla no tiene índices: esta foto
+-- reproduce exactamente lo que dejaba esa migración.
 CREATE TABLE IF NOT EXISTS deudas (
     id              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
     entidad_persona TEXT NOT NULL,
     concepto        TEXT,
     tab             TEXT NOT NULL CHECK(tab IN ('me_deben', 'debo')),
     monto_minor     INTEGER NOT NULL,  -- positivo = entrada, negativo = salida
-    moneda_id       INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo       TEXT NOT NULL REFERENCES monedas(codigo),
     fecha           TEXT NOT NULL CHECK(fecha GLOB '????-??-??'),
     notas           TEXT,
     origen_tipo     TEXT DEFAULT 'manual',
     origen_id       TEXT,
     sincronizado_en TEXT DEFAULT NULL,
-    creada_en       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    creada_en       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    tag             TEXT  -- etiqueta libre, igual que transacciones.tag (sección 26)
 );
 
 -- =============================================================
 -- PRESUPUESTOS
 -- =============================================================
+-- Dos tipos (reestructurar_presupuestos_ingresos() en
+-- db/schema_migrations.py convirtió la estructura anterior): 'fijo'
+-- (concepto libre, con su real cargado a mano en monto_real_minor) y
+-- 'variable' (una categoría del Registro, con el real calculado de las
+-- transacciones, o el ítem especial COMPARTIDOS: categoria_id NULL y
+-- concepto 'COMPARTIDOS' — ver services/presupuestos_service.py). Un
+-- variable por categoría y mes lo controla el service, no un UNIQUE.
 CREATE TABLE IF NOT EXISTS presupuestos (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    categoria_id                    TEXT NOT NULL,
-    moneda_id                       INTEGER NOT NULL,
-
-    mes                             INTEGER NOT NULL
-                                    CHECK(mes BETWEEN 1 AND 12),
-
-    anio                            INTEGER NOT NULL,
-
-    monto_estimado_minor            INTEGER NOT NULL,
-    monto_ejecutado_minor           INTEGER NOT NULL DEFAULT 0,
-
-    es_recurrente                   INTEGER DEFAULT 0,
-
-    notas                           TEXT,
-
-    FOREIGN KEY (categoria_id) REFERENCES categorias(id),
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id),
-    UNIQUE(categoria_id, mes, anio)
+    id                   TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    tipo                 TEXT NOT NULL CHECK(tipo IN ('fijo', 'variable')),
+    concepto             TEXT,
+    categoria_id         TEXT REFERENCES categorias(id),
+    monto_estimado_minor INTEGER NOT NULL DEFAULT 0,
+    monto_real_minor     INTEGER NOT NULL DEFAULT 0,
+    moneda_codigo            TEXT NOT NULL REFERENCES monedas(codigo),
+    mes                  INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio                 INTEGER NOT NULL,
+    es_recurrente        INTEGER NOT NULL DEFAULT 0,
+    sincronizado_en      TEXT DEFAULT NULL,
+    creada_en            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================
 -- INGRESOS PROYECTADOS
 -- =============================================================
+-- Estructura final de reestructurar_presupuestos_ingresos(): "cobrado" es
+-- monto_real_minor > 0 (ya no hay `estado` ni monto_percibido_minor).
 CREATE TABLE IF NOT EXISTS ingresos_proyectados (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    concepto                        TEXT NOT NULL,
-
-    mes                             INTEGER NOT NULL
-                                    CHECK(mes BETWEEN 1 AND 12),
-
-    anio                            INTEGER NOT NULL,
-
-    monto_estimado_minor            INTEGER NOT NULL,
-    monto_percibido_minor           INTEGER NOT NULL DEFAULT 0,
-
-    moneda_id                       INTEGER NOT NULL,
-
-    estado                          TEXT NOT NULL DEFAULT 'pendiente'
-                                    CHECK(estado IN (
-                                        'pendiente',
-                                        'cobrado',
-                                        'parcial'
-                                    )),
-
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
+    id                   TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+    concepto             TEXT NOT NULL,
+    monto_estimado_minor INTEGER NOT NULL DEFAULT 0,
+    monto_real_minor     INTEGER NOT NULL DEFAULT 0,
+    moneda_codigo            TEXT NOT NULL REFERENCES monedas(codigo),
+    mes                  INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio                 INTEGER NOT NULL,
+    es_recurrente        INTEGER NOT NULL DEFAULT 0,
+    notas                TEXT,
+    sincronizado_en      TEXT DEFAULT NULL,
+    creada_en            TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- =============================================================
@@ -480,33 +515,12 @@ CREATE TABLE IF NOT EXISTS descuentos_programados (
 );
 
 -- =============================================================
--- TIPOS DE CAMBIO
--- =============================================================
-CREATE TABLE IF NOT EXISTS tipos_cambio (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    fecha                           TEXT NOT NULL
-                                    CHECK(fecha GLOB '????-??-??'),
-
-    moneda_origen_id               INTEGER NOT NULL,
-    moneda_destino_id              INTEGER NOT NULL,
-
-    tasa_minor                     INTEGER NOT NULL,
-
-    fuente                         TEXT,
-
-    FOREIGN KEY (moneda_origen_id) REFERENCES monedas(id),
-    FOREIGN KEY (moneda_destino_id) REFERENCES monedas(id),
-
-    UNIQUE(fecha, moneda_origen_id, moneda_destino_id)
-);
-
--- =============================================================
 -- BROKERS
 -- =============================================================
 -- Dónde se opera un activo financiero (COCOS, BULL MARKET, IOL…). Los
--- iniciales los siembra db/schema_migrations.py (BROKERS_INICIALES) en toda
--- base, nueva o existente — no db/seed.sql, que solo corre en bases nuevas.
+-- iniciales los siembra db/schema_migrations.py (sembrar_brokers(),
+-- BROKERS_INICIALES) al crear una base nueva y en la migración baseline
+-- v0 → v1 — no db/seed.sql.
 CREATE TABLE IF NOT EXISTS brokers (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -515,16 +529,15 @@ CREATE TABLE IF NOT EXISTS brokers (
 
     activo                          INTEGER NOT NULL DEFAULT 1,
 
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sincronizado_en                 TEXT DEFAULT NULL
 );
 
 -- =============================================================
 -- ACTIVOS FINANCIEROS
 -- =============================================================
--- broker_id, comision_compra_minor, comision_venta_minor y cuenta_id se
--- agregan vía db/schema_migrations.py. Una base que ya tenía la tabla con
--- el CHECK de `tipo` anterior (sin cedear/plazo_flex) la reconstruye
--- ampliar_tipos_ahorro() de ese mismo módulo.
+-- El CHECK de `tipo` es el ampliado (cedear / plazo_flex): una base con el
+-- anterior la reconstruyó ampliar_tipos_ahorro() en la migración baseline.
 CREATE TABLE IF NOT EXISTS activos_financieros (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -541,20 +554,27 @@ CREATE TABLE IF NOT EXISTS activos_financieros (
                                         'plazo_flex'
                                     )),
 
-    moneda_id                       INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo                       TEXT NOT NULL REFERENCES monedas(codigo),
 
     activa                          INTEGER NOT NULL DEFAULT 1,
 
     creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    cuenta_id                       TEXT REFERENCES cuentas(id),
+    broker_id                       TEXT REFERENCES brokers(id),
+    comision_compra_minor           INTEGER DEFAULT 0,
+    comision_venta_minor            INTEGER DEFAULT 0,
+
+    sincronizado_en                 TEXT DEFAULT NULL
 );
 
 -- =============================================================
 -- MOVIMIENTOS DE ACTIVO
 -- =============================================================
--- transaccion_id y comision_minor se agregan vía db/schema_migrations.py.
 -- 'aporte' (plata que entra a un FCI / plazo, sin cantidad de unidades):
--- una base con el CHECK anterior la reconstruye ampliar_tipos_ahorro().
+-- una base con el CHECK anterior la reconstruyó ampliar_tipos_ahorro() en la
+-- migración baseline.
 CREATE TABLE IF NOT EXISTS movimientos_activo (
     id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -580,7 +600,16 @@ CREATE TABLE IF NOT EXISTS movimientos_activo (
 
     notas                           TEXT,
 
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    transaccion_id                  TEXT REFERENCES transacciones(id),
+    comision_minor                  INTEGER DEFAULT 0,
+
+    -- Moneda de cada movimiento (sección 33). Nullable como la dejó el
+    -- ALTER TABLE de la migración; SavingsService la escribe siempre.
+    moneda_codigo                       TEXT REFERENCES monedas(codigo),
+
+    sincronizado_en                 TEXT DEFAULT NULL
 );
 
 -- =============================================================
@@ -604,7 +633,8 @@ CREATE TABLE IF NOT EXISTS objetivos_ahorro (
                                     )),
 
     creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sincronizado_en                 TEXT DEFAULT NULL
 );
 
 -- =============================================================
@@ -627,32 +657,9 @@ CREATE TABLE IF NOT EXISTS asignaciones (
 
     monto_asignado_minor            INTEGER NOT NULL,
 
+    sincronizado_en                 TEXT DEFAULT NULL,
+
     UNIQUE(movimiento_id, objetivo_id)
-);
-
--- =============================================================
--- ACTIVO OBJETIVOS (reparto vigente de un activo entre objetivos)
--- =============================================================
--- DEPRECATED (docs/DATA_MODEL_DECISIONS.md sección 31): los objetivos son
--- de cada movimiento (`asignaciones`), ya no hay un reparto fijo por
--- activo. Nada la lee ni la escribe (salvo borrar las filas de un objetivo
--- que se elimina, por la FK); queda por las bases que ya tienen filas.
--- Qué porcentaje de un activo es de cada objetivo de ahorro. Cada
--- movimiento nuevo del activo generaba sus `asignaciones` con estos
--- porcentajes (SavingsService). Misma limitación que asignaciones: la suma
--- por activo_id (<= 100) no entra en un CHECK — la validaba el service.
-CREATE TABLE IF NOT EXISTS activo_objetivos (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    activo_id                       TEXT NOT NULL REFERENCES activos_financieros(id),
-    objetivo_id                     TEXT NOT NULL REFERENCES objetivos_ahorro(id),
-
-    porcentaje                      REAL NOT NULL
-                                    CHECK(porcentaje > 0 AND porcentaje <= 100),
-
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE(activo_id, objetivo_id)
 );
 
 -- =============================================================
@@ -664,7 +671,8 @@ CREATE TABLE IF NOT EXISTS hogares (
     codigo_invitacion               TEXT NOT NULL UNIQUE,
     nombre                          TEXT,
 
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sincronizado_en                 TEXT DEFAULT NULL
 );
 
 -- =============================================================
@@ -679,6 +687,8 @@ CREATE TABLE IF NOT EXISTS hogar_miembros (
     usuario_local                   TEXT NOT NULL,
 
     porcentaje_default              REAL,
+
+    sincronizado_en                 TEXT DEFAULT NULL,
 
     PRIMARY KEY (hogar_id, usuario_local),
 
@@ -741,7 +751,11 @@ CREATE TABLE IF NOT EXISTS gastos_compartidos (
     sincronizado_en                 TEXT,
 
     creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_en                      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    -- Lo que todavía falta pagar (sección 20): arranca igual a
+    -- monto_adeudado_minor y lo reducen los gasto_compartido_pagos.
+    monto_pendiente_minor           INTEGER NOT NULL DEFAULT 0
 );
 
 -- =============================================================
@@ -749,10 +763,8 @@ CREATE TABLE IF NOT EXISTS gastos_compartidos (
 -- =============================================================
 -- Nació como espejo de la vieja tabla deuda_pagos (eliminada en la
 -- reestructuración de deudas, docs/DATA_MODEL_DECISIONS.md sección 22),
--- pero para pago parcial de gastos_compartidos (Tarea 9, Parte A — docs/PROXIMOS_PASOS.md). La
--- columna gastos_compartidos.monto_pendiente_minor que este pago reduce se
--- agrega vía db/schema_migrations.py, no acá (mismo motivo que el resto de
--- las columnas de esa lista: gastos_compartidos ya es una tabla existente).
+-- pero para pago parcial de gastos_compartidos (Tarea 9, Parte A — docs/PROXIMOS_PASOS.md):
+-- cada pago reduce gastos_compartidos.monto_pendiente_minor.
 CREATE TABLE IF NOT EXISTS gasto_compartido_pagos (
     id                               TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
 
@@ -773,7 +785,8 @@ CREATE TABLE IF NOT EXISTS gasto_compartido_pagos (
     fecha                            TEXT NOT NULL
                                      CHECK(fecha GLOB '????-??-??'),
 
-    creada_en                        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    creada_en                        TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    sincronizado_en                  TEXT DEFAULT NULL
 );
 
 -- =============================================================
@@ -804,7 +817,7 @@ CREATE TABLE IF NOT EXISTS prestamos (
                                         'aleman'
                                     )),
 
-    moneda_id                       INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo                       TEXT NOT NULL REFERENCES monedas(codigo),
 
     fecha_inicio                    TEXT NOT NULL
                                     CHECK(fecha_inicio GLOB '????-??-??'),
@@ -861,27 +874,69 @@ CREATE TABLE IF NOT EXISTS cuotas_prestamo (
 );
 
 -- =============================================================
--- INDICES DE INFLACION
+-- SNAPSHOTS DE CIERRE DE MES (docs/DATA_MODEL_DECISIONS.md sección 21)
 -- =============================================================
-CREATE TABLE IF NOT EXISTS indices_inflacion (
-    id                              TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
+-- Tablas derivadas: caché recalculable de datos que ya están en otras
+-- tablas (services/snapshots_service.py). Una fila por (clave, mes, anio);
+-- el mes en curso nunca se guarda (siempre se calcula en vivo). Los
+-- repositorios hacen el upsert con INSERT OR REPLACE sobre el UNIQUE. Id
+-- entero (no UUID): no se sincronizan.
+CREATE TABLE IF NOT EXISTS saldos_mensuales (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    cuenta_id    TEXT NOT NULL REFERENCES cuentas(id),
+    moneda_codigo    TEXT NOT NULL REFERENCES monedas(codigo),
+    mes          INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio         INTEGER NOT NULL,
+    saldo_minor  INTEGER NOT NULL DEFAULT 0,
+    calculado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(cuenta_id, moneda_codigo, mes, anio)
+);
 
-    mes                             INTEGER NOT NULL
-                                    CHECK(mes BETWEEN 1 AND 12),
-    anio                            INTEGER NOT NULL,
+-- Uno por (persona, tab, moneda): el saldo de 'me_deben' y el de 'debo' con
+-- la misma persona van por separado (sección 22).
+CREATE TABLE IF NOT EXISTS deudas_mensuales (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    entidad_persona TEXT NOT NULL,
+    tab             TEXT NOT NULL CHECK(tab IN ('me_deben', 'debo')),
+    moneda_codigo       TEXT NOT NULL REFERENCES monedas(codigo),
+    mes             INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio            INTEGER NOT NULL,
+    monto_minor     INTEGER NOT NULL DEFAULT 0,
+    calculado_en    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(entidad_persona, tab, moneda_codigo, mes, anio)
+);
 
-    -- Número índice, no porcentaje. Convención: base 100 en un mes de
-    -- referencia arbitrario, o el valor directo del índice de precios que se
-    -- cargue (ej. IPC de INDEC). El ajuste de series históricas a moneda
-    -- constante (dividir/multiplicar por el índice correspondiente) es
-    -- lógica de servicio o de lab/, no del schema.
-    valor_indice                    REAL NOT NULL,
+CREATE TABLE IF NOT EXISTS compartidos_mensuales (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    hogar_id     TEXT NOT NULL REFERENCES hogares(id),
+    pagador      TEXT NOT NULL,
+    moneda_codigo    TEXT NOT NULL REFERENCES monedas(codigo),
+    mes          INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
+    anio         INTEGER NOT NULL,
+    monto_minor  INTEGER NOT NULL DEFAULT 0,
+    calculado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(hogar_id, pagador, moneda_codigo, mes, anio)
+);
 
-    fuente                          TEXT,
+-- =============================================================
+-- SINCRONIZACIÓN CON SUPABASE (docs/DATA_MODEL_DECISIONS.md sección 24)
+-- =============================================================
+-- sync_cambios: qué filas cambiaron desde la última sincronización. La
+-- llenan los triggers trg_sync_* que crea preparar_sync()
+-- (db/schema_migrations.py) en cada arranque — no están en este archivo.
+-- sync_estado: marcas de la propia sincronización (MARCA_ESCRITURA_SYNC,
+-- tablas ya bajadas, etc.).
+CREATE TABLE IF NOT EXISTS sync_cambios (
+    tabla         TEXT NOT NULL,
+    clave         TEXT NOT NULL,
+    operacion     TEXT NOT NULL CHECK(operacion IN ('guardado', 'borrado')),
+    modificado_en TEXT NOT NULL,
+    PRIMARY KEY (tabla, clave)
+);
 
-    creada_en                       TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE(mes, anio)
+CREATE TABLE IF NOT EXISTS sync_estado (
+    clave TEXT PRIMARY KEY,
+    valor TEXT
 );
 
 -- =============================================================
@@ -898,7 +953,7 @@ CREATE INDEX IF NOT EXISTS idx_transacciones_categoria
 ON transacciones(categoria_id);
 
 CREATE INDEX IF NOT EXISTS idx_transacciones_moneda
-ON transacciones(moneda_id);
+ON transacciones(moneda_codigo);
 
 CREATE INDEX IF NOT EXISTS idx_transacciones_tipo
 ON transacciones(tipo_movimiento);
@@ -921,9 +976,6 @@ ON cuotas_credito(estado);
 CREATE INDEX IF NOT EXISTS idx_resumenes_periodo
 ON resumenes_tarjeta(anio, mes);
 
-CREATE INDEX IF NOT EXISTS idx_resumen_cargos_extra_resumen
-ON resumen_cargos_extra(resumen_id);
-
 CREATE INDEX IF NOT EXISTS idx_recibos_periodo
 ON recibos_sueldo(anio, mes);
 
@@ -938,9 +990,6 @@ ON asignaciones(movimiento_id);
 
 CREATE INDEX IF NOT EXISTS idx_asignaciones_objetivo
 ON asignaciones(objetivo_id);
-
-CREATE INDEX IF NOT EXISTS idx_activo_objetivos_objetivo
-ON activo_objetivos(objetivo_id);
 
 CREATE INDEX IF NOT EXISTS idx_gastos_compartidos_hogar
 ON gastos_compartidos(hogar_id);
@@ -968,9 +1017,6 @@ ON cuotas_prestamo(estado);
 
 CREATE INDEX IF NOT EXISTS idx_prestamos_estado
 ON prestamos(estado);
-
-CREATE INDEX IF NOT EXISTS idx_indices_inflacion_periodo
-ON indices_inflacion(anio, mes);
 
 -- =============================================================
 -- TRIGGERS UPDATED_EN
@@ -1064,14 +1110,14 @@ JOIN cuentas_saldos cs
     ON cs.cuenta_id = c.id
 
 JOIN monedas m
-    ON m.id = cs.moneda_id
+    ON m.codigo = cs.moneda_codigo
 
 LEFT JOIN transacciones t
     ON t.cuenta_id = c.id
-    AND t.moneda_id = m.id
+    AND t.moneda_codigo = m.codigo
     AND t.deleted_at IS NULL
 
-GROUP BY c.id, m.id;
+GROUP BY c.id, m.codigo;
 
 CREATE VIEW IF NOT EXISTS vw_cuotas_pendientes AS
 SELECT
@@ -1103,20 +1149,10 @@ WHERE qc.estado != 'pagado';
 -- GastosCompartidosRepository.crear()), así que este cambio no altera el
 -- resultado en ningún escenario que no use aplicar_pago() todavía.
 --
--- DROP VIEW IF EXISTS + CREATE VIEW IF NOT EXISTS (en vez de solo el
--- segundo, como el resto de las vistas de este archivo): CREATE VIEW IF
--- NOT EXISTS NO reemplaza una vista que ya existe con una definición
--- vieja (a diferencia de CREATE TABLE, donde el problema es al revés —
--- una tabla existente nunca pierde columnas por reaplicar el CREATE, por
--- eso las columnas nuevas van por db/schema_migrations.py). Como
--- db/schema.sql se reaplica completo en cada DatabaseManager.inicializar()
--- (no solo la primera vez), una base ya inicializada con la definición
--- vieja (SUM(monto_adeudado_minor)) se hubiera quedado con esa definición
--- para siempre sin el DROP. Las demás vistas de este archivo no lo
--- necesitan HOY porque ninguna cambió de definición todavía — si en el
--- futuro alguna otra vista necesita una definición nueva, va a necesitar
--- el mismo patrón DROP+CREATE, no alcanza con editar el SELECT acá.
-DROP VIEW IF EXISTS vw_saldo_neto_hogar;
+-- Una base que tenía la definición vieja (SUM(monto_adeudado_minor)) la
+-- recibió corregida en la migración baseline (db/schema_v0.sql hace DROP +
+-- CREATE). Si una vista cambia de definición en el futuro, va en una
+-- migración numerada: este archivo solo corre en bases nuevas.
 CREATE VIEW IF NOT EXISTS vw_saldo_neto_hogar AS
 SELECT
     gc.hogar_id,
@@ -1124,3 +1160,10 @@ SELECT
 FROM gastos_compartidos gc
 WHERE gc.estado = 'pendiente'
 GROUP BY gc.hogar_id;
+
+-- =============================================================
+-- VERSIÓN
+-- =============================================================
+-- La misma que VERSION_SCHEMA (db/schema_migrations.py): subirlas juntas.
+-- verify/schema/verify_user_version.py chequea que coincidan.
+PRAGMA user_version = 3;

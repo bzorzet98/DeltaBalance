@@ -138,7 +138,7 @@ from typing import Any, Callable, Iterable, Iterator, Optional
 from postgrest.exceptions import APIError
 
 from db.database import DatabaseManager
-from db.schema_migrations import CLAVES_SYNC, TABLAS_SINCRONIZADAS, claves_primarias
+from db.schema_migrations import CLAVES_SYNC, IDS_MONEDA_REMOTOS, SEPARADOR_CLAVE, TABLAS_SINCRONIZADAS, claves_primarias
 from repositories.sync_repository import COLUMNAS_LOCALES, SyncRepository
 from sync.auth import AuthService
 from sync.referencias import MARCA_REFERENCIAS, ReferenciasCompartidas
@@ -149,12 +149,14 @@ logger = logging.getLogger(__name__)
 
 # Las del pedido + las que dependen de ellas (sin sus cuotas / saldos, una
 # compra o una cuenta llegaría incompleta a Supabase). Y Ahorros (pedido del
-# usuario: verlos en la app empaquetada, que usa otra base).
+# usuario: verlos en la app empaquetada, que usa otra base). activo_objetivos
+# salió con la migración v2 (tabla eliminada): sus filas en Supabase, si las
+# hay, se ignoran — se baja tabla por tabla, solo las de TABLAS_SINCRONIZADAS.
 TABLAS_PRIVADAS = [
     "transacciones", "cuentas", "categorias", "deudas",
     "compras_cuotas", "presupuestos", "ingresos_proyectados",
     "cuentas_saldos", "cuotas_credito", "resumenes_tarjeta", "tarjetas_config", "tarjetas_resumenes",
-    "brokers", "activos_financieros", "objetivos_ahorro", "movimientos_activo", "asignaciones", "activo_objetivos",
+    "brokers", "activos_financieros", "objetivos_ahorro", "movimientos_activo", "asignaciones",
 ]
 TABLAS_COMPARTIDAS = [
      "hogares", "hogar_miembros", "gastos_compartidos", "gasto_compartido_pagos",
@@ -271,13 +273,60 @@ def _valor_json(valor: Any) -> Any:
 
 
 def uuid_compuesto(tabla: str, clave: str) -> str:
-    """UUID v5 de una fila con clave primaria compuesta (clave local: '<uuid>|1'). Mismo cálculo que migration/subir_a_supabase.py."""
+    """UUID v5 de una fila con clave primaria compuesta (clave remota: '<uuid>|1'). Mismo cálculo que migration/subir_a_supabase.py."""
     return str(uuid.uuid5(NAMESPACE_CLAVE_COMPUESTA, f"deltabalance://{tabla}/{clave}"))
 
 
 def uuid_remoto(tabla: str, clave: str) -> str:
-    """El `uuid` de una fila en Supabase: su id (ya es un UUID), o uuid_compuesto() si su clave primaria es compuesta."""
-    return uuid_compuesto(tabla, clave) if tabla in CLAVES_SYNC else clave.lower()
+    """El `uuid` de una fila en Supabase: su id (ya es un UUID), o uuid_compuesto() de su clave remota si su clave primaria es compuesta."""
+    return uuid_compuesto(tabla, _clave_remota(tabla, clave)) if tabla in CLAVES_SYNC else clave.lower()
+
+
+# --- Monedas: moneda_codigo local ↔ moneda_id en Supabase ---
+# Desde la migración v3 (docs/DATA_MODEL_DECISIONS.md sección 39) la base
+# local guarda moneda_codigo ('ARS'); Supabase sigue con el moneda_id entero
+# de antes (IDS_MONEDA_REMOTOS, el mismo en toda base). Se traduce acá, en
+# el borde: así las filas ya subidas, la clave remota de cuentas_saldos
+# ('<cuenta>|1' → su uuid_compuesto()) y una instalación que siga en v2 no
+# cambian. Un código sin id conocido (una moneda agregada después de v3)
+# viaja como moneda_codigo, sin traducir.
+_CODIGO_POR_ID_REMOTO: dict[int, str] = {moneda_id: codigo for codigo, moneda_id in IDS_MONEDA_REMOTOS.items()}
+
+
+def _clave_remota(tabla: str, clave: str) -> str:
+    """La clave local con el código de la moneda pasado a su id remoto ('<cuenta>|ARS' → '<cuenta>|1')."""
+    columnas = claves_primarias(tabla)
+    if "moneda_codigo" not in columnas:
+        return clave
+    valores = list(SyncRepository.valores_de_clave(tabla, clave))
+    posicion = columnas.index("moneda_codigo")
+    if valores[posicion] in IDS_MONEDA_REMOTOS:
+        valores[posicion] = str(IDS_MONEDA_REMOTOS[valores[posicion]])
+    return SEPARADOR_CLAVE.join(valores)
+
+
+def _monedas_a_remoto(datos: dict) -> dict:
+    """`datos` de una fila local, con moneda_codigo → moneda_id (en el lugar; lo devuelve)."""
+    if "moneda_codigo" in datos:
+        codigo = datos["moneda_codigo"]
+        if codigo is None or codigo in IDS_MONEDA_REMOTOS:
+            del datos["moneda_codigo"]
+            datos["moneda_id"] = None if codigo is None else IDS_MONEDA_REMOTOS[codigo]
+    return datos
+
+
+def _monedas_a_local(datos: dict) -> dict:
+    """`datos` de una fila bajada, con moneda_id → moneda_codigo (en el lugar; lo devuelve). Un id desconocido queda tal cual: guardar_fila() la rechaza y se cuenta como error."""
+    if "moneda_id" in datos and "moneda_codigo" not in datos:
+        valor = datos["moneda_id"]
+        try:
+            moneda_id = None if valor is None else int(valor)
+        except (TypeError, ValueError):
+            return datos
+        if moneda_id is None or moneda_id in _CODIGO_POR_ID_REMOTO:
+            del datos["moneda_id"]
+            datos["moneda_codigo"] = None if moneda_id is None else _CODIGO_POR_ID_REMOTO[moneda_id]
+    return datos
 
 
 def _tabla_remota(tabla: str) -> str:
@@ -287,7 +336,8 @@ def _tabla_remota(tabla: str) -> str:
 def _normalizar_remota(tabla: str, remota: dict) -> dict:
     """
     Deja `datos` como dict — la app lo sube como texto JSON (json.dumps);
-    migration/subir_a_supabase.py, como objeto — y agrega "clave_local"
+    migration/subir_a_supabase.py, como objeto — y en forma LOCAL
+    (moneda_id → moneda_codigo, _monedas_a_local()), y agrega "clave_local"
     (la clave primaria local como texto, sacada de `datos`; None si `datos`
     no la trae).
     """
@@ -297,7 +347,7 @@ def _normalizar_remota(tabla: str, remota: dict) -> dict:
             datos = json.loads(datos) if datos else {}
         except ValueError:
             datos = {}
-    remota["datos"] = datos if isinstance(datos, dict) else {}
+    remota["datos"] = _monedas_a_local(datos) if isinstance(datos, dict) else {}
     try:
         remota["clave_local"] = SyncRepository.clave_de(tabla, remota["datos"])
     except KeyError:
@@ -771,6 +821,7 @@ class SyncEngine:
         marca = self._marca_local(entrada)
         if marca:
             datos[MARCA_MODIFICADO] = marca
+        _monedas_a_remoto(datos)  # Supabase sigue con moneda_id (ver "Monedas" arriba)
         remota: dict[str, Any] = {"uuid": uuid_remoto(tabla, clave), "tabla": tabla, "datos": json.dumps(datos)}
         if tabla not in TABLAS_COMPARTIDAS:
             remota["usuario_id"] = usuario_id
@@ -959,7 +1010,7 @@ class SyncEngine:
                         continue
                     parches.append({
                         "uuid": remota["uuid"], "tabla": tabla, "hogar_uuid": remota.get("hogar_uuid"),
-                        "datos": json.dumps(datos),
+                        "datos": json.dumps(_monedas_a_remoto(datos)),  # vuelve en forma remota
                     })
                 for lote in _lotes(parches, LOTE):
                     self._cliente().table(TABLA_COMPARTIDA_REMOTA).upsert(lote, on_conflict=CONFLICTO_REMOTO).execute()

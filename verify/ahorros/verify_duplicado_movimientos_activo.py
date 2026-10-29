@@ -61,8 +61,8 @@ def main() -> None:
     activos_repo = ActivosFinancierosRepository(manager)
     repo = MovimientosActivoRepository(manager)
 
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
-    activo_1 = activos_repo.crear(nombre="SPY Dup", tipo="accion", moneda_id=moneda_usd)
+    moneda_usd = "USD"
+    activo_1 = activos_repo.crear(nombre="SPY Dup", tipo="accion", moneda_codigo=moneda_usd)
 
     campos_comunes = dict(
         activo_id=activo_1,

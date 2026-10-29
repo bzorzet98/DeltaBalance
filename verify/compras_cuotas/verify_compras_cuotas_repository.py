@@ -55,8 +55,8 @@ def main() -> None:
 
     cuenta_a = cuentas_repo.crear(nombre="Tarjeta A", tipo="credito", moneda_codigo="ARS")
     cuenta_b = cuentas_repo.crear(nombre="Tarjeta B", tipo="credito", moneda_codigo="ARS")
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    moneda_ars = "ARS"
+    moneda_usd = "USD"
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
 
     print("--- crear() ---")
@@ -65,7 +65,7 @@ def main() -> None:
         concepto="Lavarropas",
         cuenta_id=cuenta_a,
         categoria_id=cat_egreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         monto_total_minor=1200000,
         total_cuotas=12,
         monto_por_cuota_minor=100000,
@@ -75,7 +75,7 @@ def main() -> None:
         concepto="Notebook",
         cuenta_id=cuenta_b,
         categoria_id=cat_egreso,
-        moneda_id=moneda_usd,
+        moneda_codigo=moneda_usd,
         monto_total_minor=200000,
         total_cuotas=6,
         monto_por_cuota_minor=33334,
@@ -105,11 +105,11 @@ def main() -> None:
     caso("filtro de cuenta_id incluye A", True, compra_a in ids_cuenta_a)
     caso("filtro de cuenta_id excluye B", False, compra_b in ids_cuenta_a)
 
-    print("\n--- listar() — filtro por moneda_id ---")
-    solo_usd = repo.listar(moneda_id=moneda_usd)
+    print("\n--- listar() — filtro por moneda_codigo ---")
+    solo_usd = repo.listar(moneda_codigo=moneda_usd)
     ids_usd = [r["id"] for r in solo_usd]
-    caso("filtro de moneda_id incluye B (USD)", True, compra_b in ids_usd)
-    caso("filtro de moneda_id excluye A (ARS)", False, compra_a in ids_usd)
+    caso("filtro de moneda_codigo incluye B (USD)", True, compra_b in ids_usd)
+    caso("filtro de moneda_codigo excluye A (ARS)", False, compra_a in ids_usd)
 
     print("\n--- listar() — filtro por estado ---")
     solo_activas = repo.listar(estado="activa")
@@ -160,7 +160,7 @@ def main() -> None:
             concepto="Heladera",
             cuenta_id=cuenta_a,
             categoria_id=cat_egreso,
-            moneda_id=moneda_ars,
+            moneda_codigo=moneda_ars,
             monto_total_minor=300000,
             total_cuotas=3,
             monto_por_cuota_minor=100000,
@@ -189,7 +189,7 @@ def main() -> None:
                 concepto="Compra que va a fallar",
                 cuenta_id=cuenta_a,
                 categoria_id=cat_egreso,
-                moneda_id=moneda_ars,
+                moneda_codigo=moneda_ars,
                 monto_total_minor=500000,
                 total_cuotas=5,
                 monto_por_cuota_minor=100000,
