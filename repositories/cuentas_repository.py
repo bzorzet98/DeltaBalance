@@ -228,7 +228,7 @@ class CuentasRepository:
     # ya validó que la cuenta no tiene transacciones, saldo inicial != 0 en
     # ninguna moneda, ni otras cuentas que dependan de ella como
     # cuenta_pago_id — acá no se valida nada, es DELETE físico literal, mismo
-    # criterio que AsignacionesRepository.eliminar()/ResumenCargosExtraRepository.eliminar()
+    # criterio que AsignacionesRepository.eliminar()
     # (repositorios no conocen reglas de negocio, ver CLAUDE.md §1).
 
     def eliminar(self, cuenta_id: str, conn: Optional[sqlite3.Connection] = None) -> None:

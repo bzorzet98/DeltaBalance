@@ -3,28 +3,34 @@ verify/schema/verify_user_version.py
 
 Verifica el versionado del schema con PRAGMA user_version
 (DatabaseManager.inicializar() + db/schema_migrations.py run_migrations(),
-docs/DATA_MODEL_DECISIONS.md sección 37), contra DBs temporales — nunca
-contra data/:
+docs/DATA_MODEL_DECISIONS.md secciones 37 y 38), contra DBs temporales —
+nunca contra data/:
 
 A. Base nueva (el archivo no existe): db/schema.sql + brokers + sync +
-   seed, user_version = 1, las 37 tablas, el seed anotado en sync_cambios
-   (los brokers no), los 66 triggers de sync y ningún backup.
+   seed, user_version = VERSION_SCHEMA (2), las 33 tablas, el seed anotado
+   en sync_cambios (los brokers no), los triggers de sync (3 por tabla
+   sincronizada) y ningún backup.
 B. Base existente en v0 (db/schema_v0.sql + seed + datos con la estructura
-   vieja de presupuestos / ingresos_proyectados): backup ANTES de migrar,
-   la cadena anterior convierte las tablas sin perder filas y queda
-   user_version = 1.
-C. La foto y la baseline dejan el MISMO schema: por cada tabla, mismas
-   columnas en el mismo orden (nombre, tipo, NOT NULL, DEFAULT, PK) y
-   mismas FKs; mismos índices, vistas y triggers. (Los CHECK no se
-   comparan: PRAGMA no los expone.)
-D. inicializar() otra vez sobre una base en v1: ningún backup nuevo, sigue
-   en v1, run_migrations(conn, 1) no hace nada.
+   vieja de presupuestos / ingresos_proyectados): UN backup ANTES de migrar,
+   la cadena anterior convierte las tablas sin perder filas, la v2 borra
+   las tablas sin uso y queda user_version = 2.
+C. La foto y las migraciones (v0 → v1 → v2) dejan el MISMO schema: por cada
+   tabla, mismas columnas en el mismo orden (nombre, tipo, NOT NULL,
+   DEFAULT, PK) y mismas FKs; mismos índices, vistas y triggers. (Los CHECK
+   no se comparan: PRAGMA no los expone.)
+D. inicializar() otra vez sobre una base al día: ningún backup nuevo, sigue
+   en la misma versión, run_migrations(conn, VERSION_SCHEMA) no hace nada.
 E. Archivo creado vacío (como legacy_migration/migrar_a_uuid_pk.py
-   crear_destino()): schema completo SIN seed, user_version = 1.
+   crear_destino()): schema completo SIN seed, user_version = VERSION_SCHEMA.
 F. Base con user_version mayor que VERSION_SCHEMA: inicializar() frena con
    RuntimeError y no toca la versión.
 G. La marca va al final: una base v0 con ids enteros hace el backup, frena
    en la baseline (RuntimeError) y queda en user_version = 0.
+H. v1 → v2: una base en v1 con una fila en cada tabla que se elimina (y un
+   cambio de activo_objetivos pendiente en sync_cambios): backup ANTES de
+   migrar (con las cuatro tablas y sus filas adentro), las cuatro tablas
+   desaparecen, sync_cambios queda sin activo_objetivos, el resto de los
+   datos sigue ahí, mismas tablas que una base nueva, user_version = 2.
 
 Correlo con:
     python verify/schema/verify_user_version.py
@@ -34,6 +40,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
@@ -41,14 +48,17 @@ from verify._dummy_db import SEED_PATH
 from db.database import DatabaseManager
 from db.schema_migrations import (
     BROKERS_INICIALES,
+    MIGRACIONES_VERSIONADAS,
     SCHEMA_V0_PATH,
+    TABLAS_ELIMINADAS_V2,
     TABLAS_SINCRONIZADAS,
     VERSION_SCHEMA,
     leer_version,
+    marcar_version,
     run_migrations,
 )
 
-TABLAS_ESPERADAS = 37
+TABLAS_ESPERADAS = 33
 
 
 def main() -> None:
@@ -104,6 +114,8 @@ def main() -> None:
          sum(1 for nombre in objetos(nueva, "trigger") if nombre.startswith("trg_sync_")))
     caso("una base nueva no hace backup", 0, len(backups(path_nueva)))
     caso("foreign_key_check vacío", [], [tuple(f) for f in nueva.execute("PRAGMA foreign_key_check;")])
+    caso("ninguna de las tablas eliminadas en v2", [], [t for t in TABLAS_ELIMINADAS_V2 if t in tablas(nueva)])
+    tablas_foto = tablas(nueva)
 
     # ============================================================
     print("\n=== B. Base existente en v0 (baseline) ===\n")
@@ -149,7 +161,7 @@ def main() -> None:
     caso("foreign_key_check vacío", [], [tuple(f) for f in vieja.execute("PRAGMA foreign_key_check;")])
 
     # ============================================================
-    print("\n=== C. La foto (schema.sql) y la baseline dejan el mismo schema ===\n")
+    print("\n=== C. La foto (schema.sql) y las migraciones desde v0 dejan el mismo schema ===\n")
     # ============================================================
     caso("mismas tablas", tablas(nueva), tablas(vieja))
     distintas = []
@@ -167,7 +179,7 @@ def main() -> None:
     caso("mismos triggers", objetos(nueva, "trigger"), objetos(vieja, "trigger"))
 
     # ============================================================
-    print("\n=== D. inicializar() otra vez (ya en v1) ===\n")
+    print("\n=== D. inicializar() otra vez (ya al día) ===\n")
     # ============================================================
     backups_antes = backups(path_vieja)
     manager_vieja.inicializar()
@@ -224,6 +236,80 @@ def main() -> None:
     caso("el backup se hizo ANTES de intentar migrar", 1, len(backups(path_enteros)))
     caso("queda en user_version = 0 (sin marca)", 0, leer_version(manager_enteros.conn))
     manager_enteros.desconectar()
+
+    # ============================================================
+    print("\n=== H. v1 → v2: se eliminan las tablas sin uso ===\n")
+    # ============================================================
+    # Una base en v1: schema_v0.sql + seed + la baseline (la migración 1 de
+    # verdad), marcada a mano en 1 — sin pasar por inicializar(), que la
+    # llevaría directo a v2.
+    path_v1 = carpeta / "v1.db"
+    crudo = sqlite3.connect(path_v1)
+    crudo.executescript(SCHEMA_V0_PATH.read_text(encoding="utf-8"))
+    crudo.executescript(SEED_PATH.read_text(encoding="utf-8"))
+    MIGRACIONES_VERSIONADAS[1](crudo)
+    marcar_version(crudo, 1)
+    caso("la base de prueba arranca en user_version = 1", 1, leer_version(crudo))
+    caso("… con las cuatro tablas que elimina la v2", list(TABLAS_ELIMINADAS_V2),
+         [t for t in TABLAS_ELIMINADAS_V2 if t in tablas(crudo)])
+
+    ars = crudo.execute("SELECT id FROM monedas WHERE codigo = 'ARS';").fetchone()[0]
+    usd = crudo.execute("SELECT id FROM monedas WHERE codigo = 'USD';").fetchone()[0]
+    caja = crudo.execute("SELECT id FROM cuentas WHERE nombre = 'Caja Efectivo';").fetchone()[0]
+    resumen, activo, objetivo = (str(uuid.uuid4()) for _ in range(3))
+    crudo.execute(
+        "INSERT INTO tipos_cambio (fecha, moneda_origen_id, moneda_destino_id, tasa_minor) VALUES ('2026-09-01', ?, ?, 14000000);",
+        (usd, ars),
+    )
+    crudo.execute("INSERT INTO indices_inflacion (mes, anio, valor_indice) VALUES (9, 2026, 100.0);")
+    crudo.execute(
+        "INSERT INTO resumenes_tarjeta (id, cuenta_id, mes, anio, monto_total_pagado_minor) VALUES (?, ?, 9, 2026, 0);",
+        (resumen, caja),
+    )
+    crudo.execute(
+        "INSERT INTO resumen_cargos_extra (resumen_id, concepto, tipo, monto_minor) VALUES (?, 'CARGO OTRO', 'otro', 100);",
+        (resumen,),
+    )
+    crudo.execute("INSERT INTO activos_financieros (id, nombre, tipo, moneda_id) VALUES (?, 'FCI', 'fci', ?);", (activo, ars))
+    crudo.execute("INSERT INTO objetivos_ahorro (id, nombre) VALUES (?, 'MOTO');", (objetivo,))
+    crudo.execute(
+        "INSERT INTO activo_objetivos (activo_id, objetivo_id, porcentaje) VALUES (?, ?, 50.0);", (activo, objetivo),
+    )
+    # Un cambio pendiente de subir, como lo dejaba el trigger de sync de v1.
+    crudo.execute(
+        "INSERT OR REPLACE INTO sync_cambios (tabla, clave, operacion, modificado_en) "
+        "VALUES ('activo_objetivos', 'pendiente', 'guardado', '2026-09-01 10:00:00.000');",
+    )
+    crudo.commit()
+    crudo.close()
+
+    manager_v1 = DatabaseManager(db_path=path_v1)
+    manager_v1.inicializar()
+    v2 = manager_v1.conn
+    caso("hizo UN backup antes de migrar", 1, len(backups(path_v1)))
+    caso("… con el nombre de la versión de origen (v1)", True,
+         all("_backup_antes_migracion_v1_" in p.name for p in backups(path_v1)))
+    respaldo = next(iter(backups(path_v1)), None)
+    if respaldo is not None:
+        copia = sqlite3.connect(respaldo)
+        caso("el backup tiene las cuatro tablas con su fila (v1, sin migrar)", ([1, 1, 1, 1], 1), (
+            [contar(copia, f"SELECT COUNT(*) FROM {t};") for t in TABLAS_ELIMINADAS_V2], leer_version(copia),
+        ))
+        copia.close()
+    caso("quedó en user_version = 2", 2, leer_version(v2))
+    caso("las cuatro tablas ya no existen", [], [t for t in TABLAS_ELIMINADAS_V2 if t in tablas(v2)])
+    caso("… ni sus índices", [], [i for i in objetos(v2, "index") if any(t in i for t in TABLAS_ELIMINADAS_V2)])
+    caso("… ni triggers de sync de activo_objetivos", [], [t for t in objetos(v2, "trigger") if "activo_objetivos" in t])
+    caso("sync_cambios sin anotaciones de activo_objetivos", 0,
+         contar(v2, "SELECT COUNT(*) FROM sync_cambios WHERE tabla = 'activo_objetivos';"))
+    caso("el resto de los datos sigue ahí (resumen, activo, objetivo)", (1, 1, 1), (
+        contar(v2, "SELECT COUNT(*) FROM resumenes_tarjeta WHERE id = ?;", (resumen,)),
+        contar(v2, "SELECT COUNT(*) FROM activos_financieros WHERE id = ?;", (activo,)),
+        contar(v2, "SELECT COUNT(*) FROM objetivos_ahorro WHERE id = ?;", (objetivo,)),
+    ))
+    caso("mismas tablas que una base nueva", tablas_foto, tablas(v2))
+    caso("foreign_key_check vacío", [], [tuple(f) for f in v2.execute("PRAGMA foreign_key_check;")])
+    manager_v1.desconectar()
 
     print(f"\n{casos_ok}/{casos_total} casos OK")
     print(f"(Las bases de prueba y sus backups quedan en {carpeta} — no es data/.)")

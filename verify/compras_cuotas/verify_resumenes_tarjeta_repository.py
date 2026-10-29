@@ -11,8 +11,10 @@ También confirma el comportamiento nuevo de marcar_cerrado()/marcar_pagado()
 del bloque CARGOS EXTRA DE RESUMEN (ver docs/DATA_MODEL_DECISIONS.md sección
 12 y el docstring de ResumenesTarjetaRepository):
 - marcar_cerrado() ahora calcula monto_consumos_minor sumando cuotas_credito
-  reales del resumen, monto_impuestos_minor sumando resumen_cargos_extra
-  reales (incluyendo un ajuste negativo) y porcentaje_impuesto_bp derivado
+  reales del resumen, monto_impuestos_minor sumando las cuotas de los
+  cargos extra (compras_cuotas.es_cargo_extra = 1, sección 28 — desde v2 ya
+  no existe resumen_cargos_extra, sección 38), incluyendo un ajuste
+  negativo, y porcentaje_impuesto_bp derivado
   de ambos — se confirma que los tres valores calculados coinciden con la
   aritmética esperada, tanto en el UPDATE persistido como en el dict que
   devuelve el método.
@@ -20,8 +22,8 @@ del bloque CARGOS EXTRA DE RESUMEN (ver docs/DATA_MODEL_DECISIONS.md sección
   monto_pagado_minor pasado (antes no lo tocaba).
 
 También confirma la corrección de un bug de diseño en marcar_cerrado():
-las lecturas internas (suma de cuotas_credito, suma de resumen_cargos_extra)
-ahora respetan de verdad el `conn` recibido, en vez de asumir que siempre
+la lectura interna (suma de cuotas_credito, consumos y cargos extra) ahora
+respeta de verdad el `conn` recibido, en vez de asumir que siempre
 coincide con self._db.conn. El caso "conn GENUINAMENTE distinto a
 self._db.conn" abre una SEGUNDA conexión sqlite3 real al mismo archivo,
 inserta datos sin comitear en esa segunda conexión, y confirma que
@@ -52,7 +54,6 @@ from verify._dummy_db import crear_dummy_db
 from db.database import DatabaseManager
 from repositories.cuentas_repository import CuentasRepository
 from repositories.resumenes_tarjeta_repository import ResumenesTarjetaRepository
-from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 from repositories.compras_cuotas_repository import ComprasCuotasRepository
 from repositories.cuotas_credito_repository import CuotasCreditoRepository
 
@@ -77,7 +78,6 @@ def main() -> None:
     manager.inicializar()
     cuentas_repo = CuentasRepository(manager)
     repo = ResumenesTarjetaRepository(manager)
-    cargos_repo = ResumenCargosExtraRepository(manager)
     compras_repo = ComprasCuotasRepository(manager)
     cuotas_repo = CuotasCreditoRepository(manager)
 
@@ -85,6 +85,22 @@ def main() -> None:
     cuenta_b = cuentas_repo.crear(nombre="Tarjeta Resumen B", tipo="credito", moneda_codigo="ARS")
     moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
+
+    def cargo_extra(resumen_id, cuenta_id, mes: int, anio: int, concepto: str, monto_minor: int, conn=None) -> None:
+        """Un cargo extra como lo guarda FeesService (sección 28): compra de 1 cuota con es_cargo_extra = 1, su cuota en el resumen."""
+        compra_id = compras_repo.crear(
+            fecha_compra=f"{anio:04d}-{mes:02d}-01", concepto=concepto, cuenta_id=cuenta_id, categoria_id=cat_egreso,
+            moneda_id=moneda_ars, monto_total_minor=monto_minor, total_cuotas=1, monto_por_cuota_minor=monto_minor,
+            es_cargo_extra=True, conn=conn,
+        )
+        (conn or manager.conn).execute(
+            "INSERT INTO cuotas_credito "
+            "(compra_id, resumen_id, numero_cuota, mes_proyectado, anio_proyectado, monto_cuota_minor, estado) "
+            "VALUES (?, ?, 1, ?, ?, ?, 'en_resumen');",
+            (compra_id, resumen_id, mes, anio, monto_minor),
+        )
+        if conn is None:
+            manager.conn.commit()
 
     print("--- crear() ---")
     resumen_1 = repo.crear(cuenta_id=cuenta_a, mes=1, anio=2026, porcentaje_impuesto_bp=500)
@@ -192,9 +208,9 @@ def main() -> None:
     for cuota_id in cuotas_ids:
         cuotas_repo.marcar_estado(cuota_id, "en_resumen", resumen_id=resumen_1)
 
-    cargos_repo.agregar(resumen_1, concepto="IVA", tipo="impuesto", monto_minor=25000)
-    cargos_repo.agregar(resumen_1, concepto="Impuesto sellos", tipo="impuesto", monto_minor=10000)
-    cargos_repo.agregar(resumen_1, concepto="Ajuste a favor", tipo="ajuste", monto_minor=-5000)
+    cargo_extra(resumen_1, cuenta_a, 1, 2026, "IVA", 25000)
+    cargo_extra(resumen_1, cuenta_a, 1, 2026, "Impuesto sellos", 10000)
+    cargo_extra(resumen_1, cuenta_a, 1, 2026, "Ajuste a favor", -5000)
     # monto_consumos_minor esperado: 100000*3 = 300000
     # monto_impuestos_minor esperado: 25000 + 10000 - 5000 = 30000
     # porcentaje_impuesto_bp esperado: 30000*10000 // 300000 = 1000 (10%)
@@ -226,8 +242,8 @@ def main() -> None:
     # Prueba real de que marcar_cerrado() respeta el conn recibido para
     # TODAS sus operaciones, no solo para el UPDATE final: abrimos una
     # SEGUNDA conexión sqlite3 real al mismo archivo de la dummy DB (no la
-    # misma que self._db.conn), insertamos cuotas_credito y
-    # resumen_cargos_extra en ESA segunda conexión SIN comitear, y llamamos
+    # misma que self._db.conn), insertamos cuotas_credito y un cargo extra
+    # en ESA segunda conexión SIN comitear, y llamamos
     # marcar_cerrado(conn=esa_segunda_conexion). Si el método leyera contra
     # self._db.conn (el bug corregido en esta tarea), no vería estos
     # INSERTs no comiteados — self._db.conn es una conexión distinta y en
@@ -260,24 +276,15 @@ def main() -> None:
         "VALUES (?, ?, 2, 5, 2026, 50000, 'en_resumen');",
         (compra_2, resumen_4),
     )
-    conn_2.execute(
-        "INSERT INTO resumen_cargos_extra (resumen_id, concepto, tipo, monto_minor) "
-        "VALUES (?, 'IVA prueba conn', 'impuesto', 12000);",
-        (resumen_4,),
-    )
+    cargo_extra(resumen_4, cuenta_a, 5, 2026, "IVA prueba conn", 12000, conn=conn_2)
     # Deliberadamente NO comiteamos conn_2 todavía — la transacción queda
     # abierta (Python sqlite3 con isolation_level por default abre la
     # transacción implícitamente en el primer INSERT).
 
     caso(
-        "self._db.conn NO ve las cuotas_credito no comiteadas de conn_2 (aislamiento real entre conexiones)",
+        "self._db.conn NO ve las cuotas_credito (compra y cargo extra) no comiteadas de conn_2 (aislamiento real entre conexiones)",
         0,
         manager.fetchone("SELECT COUNT(*) AS n FROM cuotas_credito WHERE resumen_id = ?;", (resumen_4,))["n"],
-    )
-    caso(
-        "self._db.conn NO ve los resumen_cargos_extra no comiteados de conn_2",
-        0,
-        manager.fetchone("SELECT COUNT(*) AS n FROM resumen_cargos_extra WHERE resumen_id = ?;", (resumen_4,))["n"],
     )
 
     resultado_cierre_4 = repo.marcar_cerrado(resumen_4, conn=conn_2)

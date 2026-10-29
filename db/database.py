@@ -322,32 +322,9 @@ class DatabaseManager:
             raise ValueError(f"Moneda no encontrada: {codigo}")
         return row["id"]
 
-    # ===========================================================
-    # TIPOS DE CAMBIO
-    # ===========================================================
-    # No hay TiposCambioRepository. obtener_tipo_cambio() no tiene caller
-    # real confirmado hoy tampoco, pero por el mismo motivo que MONEDAS
-    # arriba — no está cubierto por ningún repositorio — queda fuera de
-    # esta limpieza. registrar_tipo_cambio() SÍ se elimina acá: es uno de
-    # los 3 métodos sin caller identificados en la auditoría de rowcount
-    # (docs/AUDITORIA_EXECUTE_ROWCOUNT.md) que ya estaba decidido que se
-    # iban en esta limpieza.
-
-    def obtener_tipo_cambio(
-        self, fecha: str, moneda_origen: str, moneda_destino: str = "ARS"
-    ) -> Optional[float]:
-        """Devuelve la tasa de cambio para una fecha dada, o None si no existe."""
-        origen_id  = self.obtener_moneda_id(moneda_origen)
-        destino_id = self.obtener_moneda_id(moneda_destino)
-        row = self.fetchone(
-            """
-            SELECT tasa_minor FROM tipos_cambio
-            WHERE fecha <= ? AND moneda_origen_id = ? AND moneda_destino_id = ?
-            ORDER BY fecha DESC LIMIT 1;
-            """,
-            (fecha, origen_id, destino_id),
-        )
-        return row["tasa_minor"] / 10000 if row else None
+    # (TIPOS DE CAMBIO: obtener_tipo_cambio() se eliminó junto con la tabla
+    # tipos_cambio en la migración v2 — docs/DATA_MODEL_DECISIONS.md sección
+    # 38. No tenía caller.)
 
     # ===========================================================
     # VISTAS / PROYECCIONES
@@ -356,8 +333,7 @@ class DatabaseManager:
     # confirmado hoy (TransactionService.monthly_summary() ya es el
     # reemplazo moderno de resumen_mensual, pero database.py no lo sabe ni
     # lo necesita saber) — no están cubiertos por ningún repositorio, así
-    # que quedan fuera de esta limpieza igual que MONEDAS/TIPOS DE CAMBIO
-    # arriba. proyeccion_tarjeta_proximos_meses() SÍ se eliminó: dependía
+    # que quedan fuera de esta limpieza igual que MONEDAS arriba. proyeccion_tarjeta_proximos_meses() SÍ se eliminó: dependía
     # de obtener_cuotas_por_mes() (bloque COMPRAS_CUOTAS, ya migrado a
     # CuotasCreditoRepository.listar_por_mes() y borrado en esta misma
     # limpieza) y tampoco tenía caller real — dejarla habría dejado un

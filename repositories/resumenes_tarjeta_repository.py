@@ -41,7 +41,9 @@ portar al service real:
   cuotas_credito.monto_cuota_minor de ese resumen — consulta directa, no
   existe hoy un método en CuotasCreditoRepository que agregue por
   resumen_id, y agregar uno queda fuera de alcance de esta tarea),
-  monto_impuestos_minor (vía ResumenCargosExtraRepository.suma_por_resumen())
+  monto_impuestos_minor (las cuotas de los cargos extra —
+  compras_cuotas.es_cargo_extra = 1, sección 28; hasta v2 también sumaba
+  lo que quedaba en resumen_cargos_extra, tabla eliminada en la sección 38)
   y porcentaje_impuesto_bp (derivado: monto_impuestos_minor*10000 //
   monto_consumos_minor, 0 si no hay consumos). Devuelve los tres valores en
   un dict para que quien orqueste el cierre arme su resultado sin releer.
@@ -52,9 +54,9 @@ portar al service real:
 - El service real (`FeesService.close_statement()`/`pay_statement()`)
   TODAVÍA no llama a esta versión nueva — eso es explícitamente el paso 2,
   no esta tarea.
-- marcar_cerrado() respeta `conn` de punta a punta: si se pasa, las dos
-  lecturas internas (suma de cuotas_credito, suma de resumen_cargos_extra)
-  y el UPDATE final se ejecutan TODOS sobre esa conexión, nunca sobre
+- marcar_cerrado() respeta `conn` de punta a punta: si se pasa, la lectura
+  interna (suma de cuotas_credito) y el UPDATE final se ejecutan TODOS
+  sobre esa conexión, nunca sobre
   self._db.conn. La primera versión de este método leía siempre contra
   self._db.conn asumiendo que coincidía con el `conn` externo recibido —
   cierto en este codebase hoy, pero un supuesto frágil, no una garantía del
@@ -74,13 +76,11 @@ from typing import Optional
 from db.database import DatabaseManager
 from repositories._ids import nuevo_id
 from db.query_builder import QueryBuilder
-from repositories.resumen_cargos_extra_repository import ResumenCargosExtraRepository
 
 
 class ResumenesTarjetaRepository:
     def __init__(self, db: DatabaseManager):
         self._db = db
-        self._cargos_repo = ResumenCargosExtraRepository(db)
 
     # ----------------------------------------------------------
     # CREATE
@@ -260,8 +260,8 @@ class ResumenesTarjetaRepository:
         estado='cerrado', en un único UPDATE (ver docs/DATA_MODEL_DECISIONS.md
         sección 12 y el docstring del módulo).
 
-        Si se pasa `conn`, TODAS las operaciones (las dos lecturas y el
-        UPDATE final) se ejecutan sobre esa conexión — no solo la
+        Si se pasa `conn`, TODAS las operaciones (la lectura y el UPDATE
+        final) se ejecutan sobre esa conexión — no solo la
         escritura. Es lo correcto para que el método vea el estado real de
         una transacción externa, incluyendo INSERTs/UPDATEs no comiteados
         todavía sobre esa misma conexión; asumir que `conn` externo
@@ -278,7 +278,7 @@ class ResumenesTarjetaRepository:
         conexion = conn if conn is not None else self._db.conn
         # Las cuotas de un cargo extra (compras_cuotas.es_cargo_extra = 1,
         # docs/DATA_MODEL_DECISIONS.md sección 28) son impuestos, no
-        # consumos; más los cargos que quedaron en resumen_cargos_extra.
+        # consumos.
         fila = conexion.execute(
             """
             SELECT COALESCE(SUM(CASE WHEN pc.es_cargo_extra = 1 THEN 0 ELSE qc.monto_cuota_minor END), 0) AS consumos,
@@ -290,7 +290,7 @@ class ResumenesTarjetaRepository:
             (resumen_id,),
         ).fetchone()
         monto_consumos_minor = fila["consumos"]
-        monto_impuestos_minor = fila["cargos"] + self._cargos_repo.suma_por_resumen(resumen_id, conn=conn)
+        monto_impuestos_minor = fila["cargos"]
         if monto_consumos_minor > 0:
             porcentaje_impuesto_bp = (monto_impuestos_minor * 10000) // monto_consumos_minor
         else:

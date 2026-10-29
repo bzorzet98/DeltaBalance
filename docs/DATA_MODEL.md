@@ -25,11 +25,14 @@ de ese archivo.
 `DatabaseManager.inicializar()` (`db/database.py`) lee `PRAGMA user_version`:
 
 - **Base nueva** (sin tablas): `schema.sql` → `sembrar_brokers()` →
-  `preparar_sync()` → `seed.sql` (solo si el archivo no existía) → `user_version = 1`.
-- **`user_version = 0`** (base anterior al versionado): backup del archivo y la
-  **baseline v0 → v1**, que es la cadena de abajo, una sola vez. Al terminar,
-  `user_version = 1`.
-- **`user_version = 1`**: ninguna migración.
+  `preparar_sync()` → `seed.sql` (solo si el archivo no existía) → `user_version = 2`.
+- **`user_version` menor que 2**: backup del archivo y las migraciones que falten, en
+  orden, marcando la versión al terminar cada una:
+  - **v0 → v1 (baseline)**: la cadena de abajo, una sola vez (§37 de
+    `DATA_MODEL_DECISIONS.md`);
+  - **v1 → v2**: borra `tipos_cambio`, `indices_inflacion`, `resumen_cargos_extra` y
+    `activo_objetivos` (§38).
+- **`user_version = 2`**: ninguna migración.
 - **Siempre**, al final: `preparar_sync()`.
 
 La baseline (`_migrar_a_v1()` en `db/schema_migrations.py`) corre, en este orden:
@@ -62,9 +65,11 @@ La baseline (`_migrar_a_v1()` en `db/schema_migrations.py`) corre, en este orden
 El `seed.sql` (monedas, categorías y la cuenta "Caja Efectivo") ya no forma parte de
 esta cadena: solo corre al crear una base nueva.
 
-**Inventario:** 37 tablas, todas en `schema.sql` (en `schema_v0.sql` había 30; las otras
-7 las crea la baseline). Además hay 3 vistas, 28 índices explícitos, 7 triggers
-`updated_en` y 66 triggers de sync (estos últimos, solo de `preparar_sync()`).
+**Inventario (v2):** 33 tablas, todas en `schema.sql`. Además hay 3 vistas, 25 índices
+explícitos, 7 triggers `updated_en` y 63 triggers de sync (3 por cada una de las 21
+tablas sincronizadas; estos últimos, solo de `preparar_sync()`). En v1 eran 37 tablas,
+28 índices y 66 triggers de sync. En `schema_v0.sql` había 30 tablas; las otras 7 las
+crea la baseline.
 
 ---
 
@@ -734,10 +739,10 @@ cada mes.
 
 UNIQUE (`hogar_id`, `pagador`, `moneda_id`, `mes`, `anio`).
 
-### 3.8 Sin uso (o deprecadas)
+### 3.8 Sin uso (o deprecadas) — eliminadas en v2
 
-Las cuatro siguen creándose en cada arranque. Ninguna está del todo "muerta": §6.2
-detalla qué código las toca todavía.
+> **Ya no existen** desde la migración v2 (`DATA_MODEL_DECISIONS.md` §38). Quedan
+> documentadas porque una base en v0 o v1, o un backup, todavía las tiene.
 
 #### `tipos_cambio`
 
@@ -1051,6 +1056,10 @@ La causa de fondo es §6.3. Mientras no cambie el mecanismo de migraciones, este
 documento es la referencia del schema real.
 
 ### 6.2 Tablas sin uso
+
+> **✅ Resuelto** en la migración v2 (`DATA_MODEL_DECISIONS.md` §38): las cuatro se
+> borraron, junto con el código de la tabla de abajo. Lo que sigue es el estado
+> anterior a ese cambio.
 
 Ninguna de las cuatro está del todo muerta. Por eso borrarlas no es solo un
 `DROP TABLE`.

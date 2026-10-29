@@ -1212,8 +1212,9 @@ def aplicar_migraciones_columna(conn: sqlite3.Connection, exigir_uuid: bool = Tr
 #    resumenes_tarjeta, tarjetas_config, tarjetas_resumenes,
 #    gasto_compartido_pagos: sin ellas, en Supabase una compra quedaría sin
 #    sus cuotas y una cuenta sin sus saldos), y las de Ahorros (brokers,
-#    activos_financieros, objetivos_ahorro, movimientos_activo, asignaciones,
-#    activo_objetivos). Va en MIGRACIONES_COLUMNA_SYNC
+#    activos_financieros, objetivos_ahorro, movimientos_activo,
+#    asignaciones; activo_objetivos salió en v2, al eliminarse la tabla —
+#    _migrar_a_v2()). Va en MIGRACIONES_COLUMNA_SYNC
 #    y no en MIGRACIONES_COLUMNA porque tarjetas_config / tarjetas_resumenes
 #    las crea MIGRACIONES_TABLA y deudas la rearma reestructurar_deudas(): la
 #    columna se agrega después.
@@ -1256,15 +1257,15 @@ TABLAS_SINCRONIZADAS: list[str] = [
     # Ahorros (pedido del usuario: verlos en la app empaquetada, que usa otra
     # base). brokers antes que activos_financieros (broker_id); los activos
     # después de cuentas (cuenta_id); los movimientos después de transacciones
-    # (transaccion_id); asignaciones y activo_objetivos, después de sus dos
-    # padres. Una base que ya sincronizaba las baja enteras antes de subirlas
-    # (sync/sync_engine.py, TABLAS NUEVAS).
+    # (transaccion_id); asignaciones, después de sus dos padres. Una base que
+    # ya sincronizaba las baja enteras antes de subirlas (sync/sync_engine.py,
+    # TABLAS NUEVAS). activo_objetivos ya no está: la tabla se eliminó en v2
+    # (_migrar_a_v2()).
     "brokers",
     "activos_financieros",
     "objetivos_ahorro",
     "movimientos_activo",
     "asignaciones",
-    "activo_objetivos",
     "hogares",
     "hogar_miembros",
     "gastos_compartidos",
@@ -1401,7 +1402,7 @@ def preparar_sync(conn: sqlite3.Connection) -> None:
 # cuando terminó bien.
 
 # Versión que deja db/schema.sql en una base nueva.
-VERSION_SCHEMA = 1
+VERSION_SCHEMA = 2
 
 # db/schema.sql tal como estaba antes del versionado (congelado). Solo lo usa
 # la baseline.
@@ -1455,9 +1456,49 @@ def _migrar_a_v1(conn: sqlite3.Connection) -> None:
     aplicar_migraciones_tabla(conn)
 
 
+# Tablas sin uso que se eliminan en v2 (docs/DATA_MODEL_DECISIONS.md
+# sección 38). Ninguna tabla tiene una FK hacia ellas.
+TABLAS_ELIMINADAS_V2 = ("tipos_cambio", "indices_inflacion", "resumen_cargos_extra", "activo_objetivos")
+
+
+def _migrar_a_v2(conn: sqlite3.Connection) -> None:
+    """
+    v1 → v2: elimina TABLAS_ELIMINADAS_V2 (con sus índices; los triggers de
+    sync de activo_objetivos se van con su tabla, antes del DELETE implícito
+    de DROP TABLE, así que no anotan ningún 'borrado') y las anotaciones
+    pendientes de activo_objetivos en sync_cambios — la tabla ya no está en
+    TABLAS_SINCRONIZADAS y nadie las subiría. Todo en UNA transacción.
+
+    Las filas que tuvieran se pierden de la base (quedan en el backup que
+    DatabaseManager.inicializar() hace antes de migrar): se avisa por el log
+    cuántas había en cada tabla. En resumen_cargos_extra son los cargos que
+    la baseline no pudo pasar a compras_cuotas (tipo 'otro' o sin categoría
+    especial); desde v2 ResumenesTarjetaRepository.marcar_cerrado() ya no
+    los suma a monto_impuestos_minor.
+    """
+    conn.commit()
+    for tabla in TABLAS_ELIMINADAS_V2:
+        if not _existe_tabla(conn, tabla):
+            continue
+        filas = conn.execute(f"SELECT COUNT(*) FROM {tabla};").fetchone()[0]
+        if filas:
+            logger.warning("Migración v2: se elimina %s con %d fila(s) (quedan en el backup previo).", tabla, filas)
+    conn.execute("BEGIN;")
+    try:
+        for tabla in TABLAS_ELIMINADAS_V2:
+            conn.execute(f"DROP TABLE IF EXISTS {tabla};")
+        if _existe_tabla(conn, "sync_cambios"):
+            conn.execute("DELETE FROM sync_cambios WHERE tabla = 'activo_objetivos';")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 # versión destino → función que lleva la base desde la versión anterior.
 MIGRACIONES_VERSIONADAS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrar_a_v1,
+    2: _migrar_a_v2,
 }
 
 

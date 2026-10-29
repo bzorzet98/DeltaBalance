@@ -40,7 +40,8 @@ cosas en silencio:
    Ajuste-Reintegro tarjeta (agregadas Tarea 3 de
    docs/PROXIMOS_PASOS.md) — ui/screens/compras_cuotas.py resuelve sus
    ids contra este mismo par de nombres al construir la fila de alta, y
-   rutea la carga a un cargo extra de resumen (resumen_cargos_extra) en
+   rutea la carga a un cargo extra de resumen (compras_cuotas con
+   es_cargo_extra = 1) en
    vez de una compra en cuotas si la categoría elegida es una de las
    tres. Ver services/compras_cuotas_service.py CATEGORIAS_CARGO_EXTRA para el
    mapeo nombre → charge_type.
@@ -111,7 +112,7 @@ CATEGORIAS_PROTEGIDAS: dict[tuple[str, str], str] = {
     # ui/screens/compras_cuotas.py resuelve, al confirmar la fila de alta,
     # si la categoría elegida es una de estas tres (por id, ya resuelto
     # una vez contra este mismo par de nombres) para decidir si crea una
-    # compra en cuotas normal o un cargo extra (resumen_cargos_extra) del
+    # compra en cuotas normal o un cargo extra (es_cargo_extra = 1) del
     # tipo correspondiente — ver services/compras_cuotas_service.py
     # CATEGORIAS_CARGO_EXTRA para el mapeo nombre → charge_type. Renombrar
     # o desactivar cualquiera de las tres rompería ese routing en
