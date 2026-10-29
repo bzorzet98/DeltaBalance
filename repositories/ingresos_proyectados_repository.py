@@ -9,7 +9,7 @@ hay `estado` ni monto_percibido_minor.
 
 Sin lógica de negocio: no valida montos ni normaliza el concepto, no
 decide qué se puede editar — eso vive en services/ingresos_service.py.
-Recibe moneda_id y montos ya resueltos en minor units.
+Recibe moneda_codigo y montos ya resueltos en minor units.
 
 Las lecturas traen la fila enriquecida con la moneda (currency_code,
 currency_symbol, decimales — JOIN a monedas), igual que
@@ -30,14 +30,14 @@ from repositories._ids import nuevo_id
 # actualizar(): columnas que se pueden escribir (las claves de **kwargs van
 # al SQL, así que nunca se acepta una que no esté acá).
 COLUMNAS_EDITABLES = (
-    "concepto", "monto_estimado_minor", "monto_real_minor", "moneda_id", "mes", "anio", "es_recurrente", "notas",
+    "concepto", "monto_estimado_minor", "monto_real_minor", "moneda_codigo", "mes", "anio", "es_recurrente", "notas",
 )
 
 # Lectura enriquecida: columnas propias + la moneda.
 _SELECT = """
     SELECT i.*, m.codigo AS currency_code, m.simbolo AS currency_symbol, m.decimales
     FROM ingresos_proyectados i
-    JOIN monedas m ON m.id = i.moneda_id
+    JOIN monedas m ON m.codigo = i.moneda_codigo
 """
 # Orden de alta (rowid): con ids UUID, ordenar por id sería al azar.
 _ORDEN = " ORDER BY i.rowid;"
@@ -56,7 +56,7 @@ class IngresosProyectadosRepository:
         concepto: str,
         monto_estimado_minor: int,
         monto_real_minor: int,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         es_recurrente: int = 0,
@@ -67,10 +67,10 @@ class IngresosProyectadosRepository:
         self._db.conn.execute(
             """
             INSERT INTO ingresos_proyectados
-                (id, concepto, monto_estimado_minor, monto_real_minor, moneda_id, mes, anio, es_recurrente, notas)
+                (id, concepto, monto_estimado_minor, monto_real_minor, moneda_codigo, mes, anio, es_recurrente, notas)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
             """,
-            (ingreso_id, concepto, monto_estimado_minor, monto_real_minor, moneda_id, mes, anio, es_recurrente, notas),
+            (ingreso_id, concepto, monto_estimado_minor, monto_real_minor, moneda_codigo, mes, anio, es_recurrente, notas),
         )
         self._db.conn.commit()
         return ingreso_id
@@ -150,11 +150,11 @@ class IngresosProyectadosRepository:
                 conn.execute(
                     """
                     INSERT INTO ingresos_proyectados
-                        (id, concepto, monto_estimado_minor, monto_real_minor, moneda_id, mes, anio, es_recurrente, notas)
+                        (id, concepto, monto_estimado_minor, monto_real_minor, moneda_codigo, mes, anio, es_recurrente, notas)
                     VALUES (?, ?, ?, 0, ?, ?, ?, 1, ?);
                     """,
                     (
-                        nuevo_id(), fila["concepto"], fila["monto_estimado_minor"], fila["moneda_id"],
+                        nuevo_id(), fila["concepto"], fila["monto_estimado_minor"], fila["moneda_codigo"],
                         mes_destino, anio_destino, fila["notas"],
                     ),
                 )

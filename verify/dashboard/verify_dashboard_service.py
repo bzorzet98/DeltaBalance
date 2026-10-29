@@ -54,8 +54,8 @@ def main() -> None:
     presupuestos_svc = PresupuestosService(manager)
     dash_svc = DashboardService(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
-    moneda_usd = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'USD';")["id"]
+    moneda_ars = "ARS"
+    moneda_usd = "USD"
 
     cat_super = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS' AND subcategoria = 'SUPERMERCADO';"
@@ -70,13 +70,13 @@ def main() -> None:
         "SELECT id FROM categorias WHERE tipo = 'ingreso' LIMIT 1;"
     )["id"]
 
-    def insertar_transaccion(fecha, cuenta_id, categoria_id, moneda_id, tipo, monto_minor):
+    def insertar_transaccion(fecha, cuenta_id, categoria_id, moneda_codigo, tipo, monto_minor):
         manager.execute(
             """
-            INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_id, tipo_movimiento, monto_minor)
+            INSERT INTO transacciones (fecha, concepto, cuenta_id, categoria_id, moneda_codigo, tipo_movimiento, monto_minor)
             VALUES (?, ?, ?, ?, ?, ?, ?);
             """,
-            (fecha, "Transacción de prueba", cuenta_id, categoria_id, moneda_id, tipo, monto_minor),
+            (fecha, "Transacción de prueba", cuenta_id, categoria_id, moneda_codigo, tipo, monto_minor),
         )
 
     # ------------------------------------------------------------
@@ -111,7 +111,7 @@ def main() -> None:
     insertar_transaccion("2026-05-20", cuenta_ars, cat_ingreso, moneda_ars, "ingreso", 500000)
 
     gasto_mayo = dash_svc.get_gasto_por_categoria(5, 2026)
-    por_categoria = {(g["categoria_id"], g["moneda_id"]): g["monto_total_minor"] for g in gasto_mayo}
+    por_categoria = {(g["categoria_id"], g["moneda_codigo"]): g["monto_total_minor"] for g in gasto_mayo}
 
     caso("get_gasto_por_categoria() suma las dos transacciones de Supermercado", 50000, por_categoria.get((cat_super, moneda_ars)))
     caso("get_gasto_por_categoria() trae Salud con su monto", 15000, por_categoria.get((cat_salud, moneda_ars)))
@@ -127,7 +127,7 @@ def main() -> None:
     print("\n--- get_gasto_por_categoria() — dos monedas en la misma categoría/mes, sin mezclar ---")
     insertar_transaccion("2026-05-18", cuenta_usd, cat_super, moneda_usd, "egreso", 4000)
     gasto_mayo_v2 = dash_svc.get_gasto_por_categoria(5, 2026)
-    por_categoria_v2 = {(g["categoria_id"], g["moneda_id"]): g["monto_total_minor"] for g in gasto_mayo_v2}
+    por_categoria_v2 = {(g["categoria_id"], g["moneda_codigo"]): g["monto_total_minor"] for g in gasto_mayo_v2}
     caso("Supermercado en ARS mantiene su monto propio (no se mezcla con USD)", 50000, por_categoria_v2.get((cat_super, moneda_ars)))
     caso("Supermercado en USD aparece como entrada separada", 4000, por_categoria_v2.get((cat_super, moneda_usd)))
     caso("hay dos entradas distintas para Supermercado (una por moneda)",
@@ -154,7 +154,7 @@ def main() -> None:
     # cuenta_usd en mayo 2026: ingreso 5000, egreso 4000 → neto 1000, sin
     # mezclarse con el neto en ARS de arriba.
     movimientos_mayo = dash_svc.get_movimientos_por_cuenta(5, 2026)
-    por_cuenta_moneda = {(m["cuenta_id"], m["moneda_id"]): m for m in movimientos_mayo}
+    por_cuenta_moneda = {(m["cuenta_id"], m["moneda_codigo"]): m for m in movimientos_mayo}
 
     caso(
         "get_movimientos_por_cuenta() incluye cuenta_ars con su neto correcto",
@@ -196,7 +196,7 @@ def main() -> None:
     # Presupuestos variables con create_variable() (set_budget() no existe desde la
     # reestructuración de presupuestos, db/schema_migrations.py).
     presupuestos_svc.create_variable(
-        categoria_id=cat_super, monto_estimado_minor=60000, moneda_id=moneda_ars, mes=5, anio=2026,
+        categoria_id=cat_super, monto_estimado_minor=60000, moneda_codigo=moneda_ars, mes=5, anio=2026,
     )
 
     # Caso 2: presupuesto sin gasto real (Alquiler ya tiene gasto — usemos una categoría sin ninguna
@@ -205,7 +205,7 @@ def main() -> None:
         "SELECT id FROM categorias WHERE categoria_principal = 'EGRESOS' AND subcategoria = 'EDUCACIÓN';"
     )["id"]
     presupuestos_svc.create_variable(
-        categoria_id=cat_educacion, monto_estimado_minor=25000, moneda_id=moneda_ars, mes=5, anio=2026,
+        categoria_id=cat_educacion, monto_estimado_minor=25000, moneda_codigo=moneda_ars, mes=5, anio=2026,
     )
 
     # Caso 3: gasto real sin presupuesto — Alquiler tiene gasto (80000) pero nunca se le cargó presupuesto.

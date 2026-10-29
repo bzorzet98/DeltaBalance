@@ -126,7 +126,7 @@ Purpose:
     (docs/DATA_MODEL_DECISIONS.md sección 38).
 
     Moneda por movimiento (docs/DATA_MODEL_DECISIONS.md sección 33):
-    movimientos_activo.moneda_id. En acciones / CEDEARs un movimiento puede
+    movimientos_activo.moneda_codigo. En acciones / CEDEARs un movimiento puede
     ir en otra moneda que el activo (comprar en ARS, vender en USD); en FCI,
     plazos y el resto, siempre la del activo (decisión del usuario: un FCI
     en dólares es otro activo) — _moneda_movimiento(). Como las acciones /
@@ -182,7 +182,7 @@ OBJETIVO_SIN_ASIGNAR = "SIN ASIGNAR"
 MAX_TRANSACCIONES_VINCULABLES = 500
 # update_movement(): lo que se puede corregir de un movimiento ya cargado
 # (el precio unitario no: es calculado, monto / cantidad — sección 33).
-CAMPOS_EDITABLES_MOVIMIENTO = ("fecha", "cantidad", "comision_minor", "monto_minor", "moneda_id", "notas")
+CAMPOS_EDITABLES_MOVIMIENTO = ("fecha", "cantidad", "comision_minor", "monto_minor", "moneda_codigo", "notas")
 # Suma de porcentajes que se considera 100 / <= 100 (REAL: 33.33 + 33.33 + 33.34).
 TOLERANCIA_PORCENTAJE = 1e-6
 # Una parte de un objetivo por debajo de esto es cero (unidades × porcentaje dan floats).
@@ -304,12 +304,12 @@ class SavingsService:
             raise ObjetivoNotFoundError(f"Objetivo de ahorro id={objetivo_id} not found.")
         return row
 
-    def _get_currency(self, currency_id: int) -> sqlite3.Row:
+    def _get_currency(self, currency_code: str) -> sqlite3.Row:
         """No MonedasRepository exists yet in this codebase — mismo patrón
         que en los demás services de esta fase (consulta directa a `monedas`)."""
-        row = self._db.fetchone("SELECT * FROM monedas WHERE id = ?;", (currency_id,))
+        row = self._db.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (currency_code,))
         if row is None:
-            raise SavingsError(f"Currency id={currency_id} not found.")
+            raise SavingsError(f"Currency code={currency_code} not found.")
         return row
 
     def _get_account(self, account_id: str) -> sqlite3.Row:
@@ -361,7 +361,7 @@ class SavingsService:
             raise BrokerNotFoundError(f"EL BROKER {broker_id} NO EXISTE.")
         return row
 
-    def _moneda_movimiento(self, activo: sqlite3.Row, moneda_id: Optional[int]) -> int:
+    def _moneda_movimiento(self, activo: sqlite3.Row, moneda_codigo: Optional[str]) -> str:
         """
         La moneda de un movimiento (sección 33): None = la del activo. Otra
         distinta solo en acciones / CEDEARs (TIPOS_POR_UNIDADES: se compra
@@ -372,15 +372,15 @@ class SavingsService:
         Raises:
             SavingsError si la moneda no existe o el activo no admite otra.
         """
-        if moneda_id is None or moneda_id == activo["moneda_id"]:
-            return activo["moneda_id"]
-        self._get_currency(moneda_id)  # validate existence
+        if moneda_codigo is None or moneda_codigo == activo["moneda_codigo"]:
+            return activo["moneda_codigo"]
+        self._get_currency(moneda_codigo)  # validate existence
         if activo["tipo"] not in TIPOS_POR_UNIDADES:
             raise SavingsError(
                 "SOLO LAS ACCIONES Y LOS CEDEARS ADMITEN MOVIMIENTOS EN OTRA MONEDA: "
                 "EN FCI Y PLAZOS LA MONEDA ES SIEMPRE LA DEL ACTIVO."
             )
-        return moneda_id
+        return moneda_codigo
 
     @staticmethod
     def _monto_bruto(movimiento) -> int:
@@ -398,7 +398,7 @@ class SavingsService:
 
     def _crear_transaccion_vinculada(
         self, activo: sqlite3.Row, fecha: str, monto_minor: int, tipo_movimiento: str,
-        concepto: str, notas: Optional[str], conn: sqlite3.Connection, moneda_id: int,
+        concepto: str, notas: Optional[str], conn: sqlite3.Connection, moneda_codigo: str,
     ) -> Optional[str]:
         """
         Transacción real del movimiento (Tareas 6b/6g): en la cuenta del
@@ -414,7 +414,7 @@ class SavingsService:
             concepto=concepto,
             cuenta_id=activo["cuenta_id"],
             categoria_id=self._get_categoria_ahorro_inversion_id(),
-            moneda_id=moneda_id,
+            moneda_codigo=moneda_codigo,
             tipo_movimiento=tipo_movimiento,
             monto_minor=monto_minor,
             notas=notas,
@@ -450,7 +450,7 @@ class SavingsService:
         self,
         nombre: str,
         tipo: str,
-        moneda_id: int,
+        moneda_codigo: str,
         cuenta_id: Optional[str] = None,
         broker_id: Optional[str] = None,
         comision_compra_minor: int = 0,
@@ -467,12 +467,12 @@ class SavingsService:
         broker_id / comisiones (rediseño de Ahorros e Inversiones): dónde
         se opera el activo (opcional) y sus comisiones de compra/venta por
         defecto (el diálogo de movimiento las precarga). Van al final de la
-        firma — el pedido ponía broker_id antes de moneda_id — para no
-        romper a los callers que ya pasan moneda_id por posición.
+        firma — el pedido ponía broker_id antes de moneda_codigo — para no
+        romper a los callers que ya pasan moneda_codigo por posición.
 
         Raises:
             SavingsError si el nombre está vacío, el tipo no es uno de
-                TIPOS_ACTIVO, una comisión es negativa o moneda_id no existe.
+                TIPOS_ACTIVO, una comisión es negativa o moneda_codigo no existe.
             AccountNotFoundError si cuenta_id se pasa y no existe.
             BrokerNotFoundError si broker_id se pasa y no existe.
         """
@@ -482,20 +482,20 @@ class SavingsService:
             raise SavingsError(f"TIPO DE ACTIVO INVÁLIDO: '{tipo}'.")
         if comision_compra_minor < 0 or comision_venta_minor < 0:
             raise SavingsError("LAS COMISIONES NO PUEDEN SER NEGATIVAS.")
-        self._get_currency(moneda_id)  # validate existence
+        self._get_currency(moneda_codigo)  # validate existence
         if cuenta_id is not None:
             self._get_account(cuenta_id)  # validate existence
         if broker_id is not None:
             self._get_broker(broker_id)  # validate existence
         activo_id = self._activos_repo.crear(
-            nombre=nombre.strip(), tipo=tipo, moneda_id=moneda_id, cuenta_id=cuenta_id, broker_id=broker_id,
+            nombre=nombre.strip(), tipo=tipo, moneda_codigo=moneda_codigo, cuenta_id=cuenta_id, broker_id=broker_id,
             comision_compra_minor=comision_compra_minor, comision_venta_minor=comision_venta_minor,
         )
         return SavingsResult(
             success=True,
             entity_id=activo_id,
             data={
-                "nombre": nombre.strip(), "tipo": tipo, "moneda_id": moneda_id, "cuenta_id": cuenta_id,
+                "nombre": nombre.strip(), "tipo": tipo, "moneda_codigo": moneda_codigo, "cuenta_id": cuenta_id,
                 "broker_id": broker_id,
             },
             message=f"ACTIVO '{nombre.strip().upper()}' CREADO.",
@@ -524,7 +524,7 @@ class SavingsService:
         activo_id: str,
         nombre: object = NO_CAMBIAR,
         broker_id: object = NO_CAMBIAR,
-        moneda_id: object = NO_CAMBIAR,
+        moneda_codigo: object = NO_CAMBIAR,
         cuenta_id: object = NO_CAMBIAR,
         comision_compra_minor: object = NO_CAMBIAR,
         comision_venta_minor: object = NO_CAMBIAR,
@@ -565,11 +565,11 @@ class SavingsService:
             if cuenta_id is not None:
                 self._get_account(cuenta_id)  # validate existence
             valores["cuenta_id"] = cuenta_id
-        if moneda_id is not NO_CAMBIAR and moneda_id != activo["moneda_id"]:
-            self._get_currency(moneda_id)  # validate existence
+        if moneda_codigo is not NO_CAMBIAR and moneda_codigo != activo["moneda_codigo"]:
+            self._get_currency(moneda_codigo)  # validate existence
             if self._movimientos_repo.listar_por_activo(activo_id):
                 raise SavingsError("ESTE INSTRUMENTO YA TIENE MOVIMIENTOS: SU MONEDA NO SE PUEDE CAMBIAR.")
-            valores["moneda_id"] = moneda_id
+            valores["moneda_codigo"] = moneda_codigo
         for clave, valor in (("comision_compra_minor", comision_compra_minor), ("comision_venta_minor", comision_venta_minor)):
             if valor is not NO_CAMBIAR:
                 valores[clave] = self._comision(valor)
@@ -639,13 +639,13 @@ class SavingsService:
     def list_activos(self, tipo: Optional[str] = None) -> list[sqlite3.Row]:
         return self._activos_repo.listar(tipo=tipo)
 
-    def get_or_create_reserved_cash_asset(self, cuenta_id: str, moneda_id: int) -> SavingsResult:
+    def get_or_create_reserved_cash_asset(self, cuenta_id: str, moneda_codigo: str) -> SavingsResult:
         """
         Busca el activo_financiero tipo='otro' vinculado a cuenta_id. Si
         ya existe, lo reusa tal cual (result.data["creado"] = False) — sin
         importar su estado activa (busca contra listar(solo_activos=False),
         no reactiva nada si estuviera desactivado, eso queda fuera de
-        alcance). Si no existe, lo crea con moneda_id y cuenta_id
+        alcance). Si no existe, lo crea con moneda_codigo y cuenta_id
         (result.data["creado"] = True).
 
         Identidad = (cuenta_id, tipo='otro') desde la Tarea 6g
@@ -661,15 +661,15 @@ class SavingsService:
             cuenta_id: cuenta real para la que se reserva efectivo — el
                        nombre del activo (si hay que crearlo) es
                        f"Efectivo reservado en {cuenta.nombre}".
-            moneda_id: Moneda del activo SI hay que crearlo (se ignora si
-                       ya existía uno para esta cuenta — moneda_id no se
+            moneda_codigo: Moneda del activo SI hay que crearlo (se ignora si
+                       ya existía uno para esta cuenta — moneda_codigo no se
                        reescribe en el camino de reuso, mismo criterio que
                        PresupuestosRepository.upsert() no reescribe
-                       moneda_id en su UPDATE).
+                       moneda_codigo en su UPDATE).
 
         Raises:
             AccountNotFoundError si cuenta_id no existe.
-            SavingsError si moneda_id no existe Y hace falta crear el activo.
+            SavingsError si moneda_codigo no existe Y hace falta crear el activo.
         """
         cuenta = self._get_account(cuenta_id)  # validate existence
         existente = next(
@@ -684,9 +684,9 @@ class SavingsService:
                 message=f"Activo '{existente['nombre']}' ya existía (id={existente['id']}) — reusado.",
             )
 
-        self._get_currency(moneda_id)  # validate existence
+        self._get_currency(moneda_codigo)  # validate existence
         nombre = f"Efectivo reservado en {cuenta['nombre']}"
-        activo_id = self._activos_repo.crear(nombre=nombre, tipo="otro", moneda_id=moneda_id, cuenta_id=cuenta_id)
+        activo_id = self._activos_repo.crear(nombre=nombre, tipo="otro", moneda_codigo=moneda_codigo, cuenta_id=cuenta_id)
         return SavingsResult(
             success=True,
             entity_id=activo_id,
@@ -791,10 +791,10 @@ class SavingsService:
         entradas = [e for grupo in self.get_resumen_por_tipo().values() for e in grupo]
         # Un activo dado de baja no está en el resumen: igual hay que repartir lo suyo.
         vistos = {e["activo_id"] for e in entradas}
-        monedas = {m["id"]: m for m in self._db.obtener_monedas()}
+        monedas_por_codigo = {m["codigo"]: m for m in self._db.obtener_monedas()}
         for activo_id in partes.keys() - vistos:
             activo = self._get_activo(activo_id)
-            moneda = monedas.get(activo["moneda_id"])
+            moneda = monedas_por_codigo.get(activo["moneda_codigo"])
             entradas.append({
                 "activo_id": activo_id, "activo": activo["nombre"], "tipo": activo["tipo"], "broker": None,
                 "moneda": moneda["codigo"] if moneda else "", "simbolo": (moneda["simbolo"] or "") if moneda else "",
@@ -914,7 +914,7 @@ class SavingsService:
         asignaciones) se crea dentro de la MISMA transacción atómica una
         transacción real tipo='egreso' (vía TransaccionesRepository) que
         descuenta esa cuenta por monto_total_minor, en la moneda del
-        activo (activos_financieros.moneda_id — el monto de un movimiento
+        activo (activos_financieros.moneda_codigo — el monto de un movimiento
         de ahorro está denominado en la moneda del activo, no hay otra
         moneda disponible en este método), y vincula su id en
         movimientos_activo.transaccion_id. categoria_id siempre es el id
@@ -948,14 +948,14 @@ class SavingsService:
         with self._db.transaction():
             transaccion_id = self._crear_transaccion_vinculada(
                 activo, fecha, monto_total_minor, "egreso", f"Aporte a ahorro — {activo['nombre']}", notas, conn,
-                moneda_id=activo["moneda_id"],
+                moneda_codigo=activo["moneda_codigo"],
             )
             movimiento_id = self._movimientos_repo.crear(
                 activo_id=activo_id, tipo="compra", fecha=fecha,
                 monto_total_minor=monto_total_minor, cantidad=cantidad,
                 precio_unitario_minor=precio_unitario_minor,
                 dolar_oficial_momento_minor=dolar_oficial_momento_minor,
-                notas=notas, transaccion_id=transaccion_id, conn=conn, moneda_id=activo["moneda_id"],
+                notas=notas, transaccion_id=transaccion_id, conn=conn, moneda_codigo=activo["moneda_codigo"],
             )
             asignaciones_creadas = self._crear_asignaciones(
                 movimiento_id,
@@ -1042,7 +1042,7 @@ class SavingsService:
             with self._db.transaction():
                 movimiento_id = self._movimientos_repo.crear(
                     activo_id=activo_id, tipo="rendimiento", fecha=fecha,
-                    monto_total_minor=monto_total_minor, notas=notas, conn=conn, moneda_id=activo["moneda_id"],
+                    monto_total_minor=monto_total_minor, notas=notas, conn=conn, moneda_codigo=activo["moneda_codigo"],
                 )
             return SavingsResult(
                 success=True,
@@ -1066,7 +1066,7 @@ class SavingsService:
         with self._db.transaction():
             movimiento_id = self._movimientos_repo.crear(
                 activo_id=activo_id, tipo="rendimiento", fecha=fecha,
-                monto_total_minor=monto_total_minor, notas=notas, conn=conn, moneda_id=activo["moneda_id"],
+                monto_total_minor=monto_total_minor, notas=notas, conn=conn, moneda_codigo=activo["moneda_codigo"],
             )
             asignaciones_creadas = []
             for objetivo_id, monto_asignado_minor in montos.items():
@@ -1171,14 +1171,14 @@ class SavingsService:
         with self._db.transaction():
             transaccion_id = self._crear_transaccion_vinculada(
                 activo, fecha, monto_total_minor, "ingreso", f"Retiro de ahorro — {activo['nombre']}", notas, conn,
-                moneda_id=activo["moneda_id"],
+                moneda_codigo=activo["moneda_codigo"],
             )
             movimiento_id = self._movimientos_repo.crear(
                 activo_id=activo_id, tipo="venta", fecha=fecha,
                 monto_total_minor=monto_total_minor, cantidad=cantidad,
                 precio_unitario_minor=precio_unitario_minor,
                 dolar_oficial_momento_minor=dolar_oficial_momento_minor,
-                notas=notas, transaccion_id=transaccion_id, conn=conn, moneda_id=activo["moneda_id"],
+                notas=notas, transaccion_id=transaccion_id, conn=conn, moneda_codigo=activo["moneda_codigo"],
             )
             asignaciones_creadas = self._crear_asignaciones(
                 movimiento_id,
@@ -1277,14 +1277,14 @@ class SavingsService:
         módulo) — un movimiento tipo='rendimiento' nunca tiene
         transaccion_id, así que el INNER JOIN lo excluye solo.
 
-        Agrupa por (cuenta_id, moneda_id) — nunca mezcla monedas distintas
+        Agrupa por (cuenta_id, moneda_codigo) — nunca mezcla monedas distintas
         en una misma suma, mismo criterio que el resto del dashboard (ver
         DashboardService.get_gasto_por_categoria()): si la misma cuenta
         aportó a este objetivo en más de una moneda, aparece como una
         entrada por cada moneda.
 
         Returns:
-            Lista de dicts {cuenta_id, cuenta_nombre, moneda_id,
+            Lista de dicts {cuenta_id, cuenta_nombre, moneda_codigo,
             aportado_minor, retirado_minor, saldo_minor}, uno por cuenta
             (y moneda) involucrada. Lista vacía si el objetivo no tiene
             ningún movimiento vinculado a una cuenta real todavía.
@@ -1299,7 +1299,7 @@ class SavingsService:
             SELECT
                 t.cuenta_id                                                    AS cuenta_id,
                 c.nombre                                                       AS cuenta_nombre,
-                t.moneda_id                                                    AS moneda_id,
+                t.moneda_codigo                                                    AS moneda_codigo,
                 SUM(CASE WHEN ma.tipo IN ('compra', 'aporte')
                          THEN a.monto_asignado_minor ELSE 0 END)               AS aportado_minor,
                 SUM(CASE WHEN ma.tipo = 'venta'
@@ -1309,8 +1309,8 @@ class SavingsService:
             JOIN transacciones t       ON t.id = ma.transaccion_id
             JOIN cuentas c              ON c.id = t.cuenta_id
             WHERE a.objetivo_id = ?
-            GROUP BY t.cuenta_id, t.moneda_id
-            ORDER BY t.cuenta_id, t.moneda_id;
+            GROUP BY t.cuenta_id, t.moneda_codigo
+            ORDER BY t.cuenta_id, t.moneda_codigo;
             """,
             (objetivo_id,),
         )
@@ -1319,7 +1319,7 @@ class SavingsService:
             {
                 "cuenta_id": fila["cuenta_id"],
                 "cuenta_nombre": fila["cuenta_nombre"],
-                "moneda_id": fila["moneda_id"],
+                "moneda_codigo": fila["moneda_codigo"],
                 "aportado_minor": fila["aportado_minor"],
                 "retirado_minor": fila["retirado_minor"],
                 "saldo_minor": fila["aportado_minor"] - fila["retirado_minor"],
@@ -1338,7 +1338,7 @@ class SavingsService:
         activos_financieros.tipo Y la moneda de cada MOVIMIENTO (sección 33:
         una venta de CEDEAR en USD va al grupo USD aunque el activo sea en
         ARS) — nunca mezcla monedas distintas en una misma suma, mismo criterio que
-        get_balance_por_cuenta() (agrupa por cuenta_id, moneda_id). A
+        get_balance_por_cuenta() (agrupa por cuenta_id, moneda_codigo). A
         diferencia de get_objetivo_balance(), esto NO pasa por
         asignaciones/objetivos_ahorro en absoluto: es el total real de
         movimientos_activo agrupado por tipo de activo, sin importar a
@@ -1350,7 +1350,7 @@ class SavingsService:
         reporte, no acceso a datos crudo de una sola tabla).
 
         Returns:
-            Lista de dicts {tipo, moneda_id, saldo_neto_minor}, una fila
+            Lista de dicts {tipo, moneda_codigo, saldo_neto_minor}, una fila
             por combinación (tipo, moneda) con al menos un movimiento —
             sin entradas para tipos sin actividad todavía.
         """
@@ -1358,7 +1358,7 @@ class SavingsService:
             """
             SELECT
                 af.tipo                                                       AS tipo,
-                COALESCE(ma.moneda_id, af.moneda_id)                          AS moneda_id,
+                COALESCE(ma.moneda_codigo, af.moneda_codigo)                          AS moneda_codigo,
                 SUM(CASE
                         WHEN ma.tipo IN ('compra', 'aporte', 'rendimiento') THEN ma.monto_total_minor
                         WHEN ma.tipo = 'venta' THEN -ma.monto_total_minor
@@ -1366,14 +1366,14 @@ class SavingsService:
                     END)                                                      AS saldo_neto_minor
             FROM movimientos_activo ma
             JOIN activos_financieros af ON af.id = ma.activo_id
-            GROUP BY af.tipo, COALESCE(ma.moneda_id, af.moneda_id)
-            ORDER BY af.tipo, COALESCE(ma.moneda_id, af.moneda_id);
+            GROUP BY af.tipo, COALESCE(ma.moneda_codigo, af.moneda_codigo)
+            ORDER BY af.tipo, COALESCE(ma.moneda_codigo, af.moneda_codigo);
             """
         )
         return [
             {
                 "tipo": fila["tipo"],
-                "moneda_id": fila["moneda_id"],
+                "moneda_codigo": fila["moneda_codigo"],
                 "saldo_neto_minor": fila["saldo_neto_minor"],
             }
             for fila in filas
@@ -1466,8 +1466,8 @@ class SavingsService:
         nombre del objetivo, no solo su id) — la UI necesita mostrar
         varias etiquetas de objetivo en una sola fila cuando un movimiento
         está repartido entre más de uno, nunca fragmentado en filas
-        separadas. moneda_id: la del movimiento (sección 33; la del activo
-        si es un movimiento viejo sin moneda_id).
+        separadas. moneda_codigo: la del movimiento (sección 33; la del activo
+        si es un movimiento viejo sin moneda_codigo).
 
         objetivo_id filtra a los movimientos que tengan AL MENOS UNA
         asignación a ese objetivo (no excluye las demás asignaciones del
@@ -1482,7 +1482,7 @@ class SavingsService:
         Returns:
             Lista de dicts {id, activo_id, activo_nombre, activo_tipo,
             activo_activa (0 si el instrumento está oculto, sección 35),
-            moneda_id, tipo, fecha, cantidad, precio_unitario_minor,
+            moneda_codigo, tipo, fecha, cantidad, precio_unitario_minor,
             comision_minor, monto_total_minor, notas,
             transaccion_id (None si el movimiento es puramente informal,
             ver Tarea 6b),
@@ -1520,7 +1520,7 @@ class SavingsService:
                 af.nombre                                                     AS activo_nombre,
                 af.tipo                                                       AS activo_tipo,
                 af.activa                                                     AS activo_activa,
-                COALESCE(ma.moneda_id, af.moneda_id)                          AS moneda_id,
+                COALESCE(ma.moneda_codigo, af.moneda_codigo)                          AS moneda_codigo,
                 ma.tipo                                                       AS tipo,
                 ma.fecha                                                      AS fecha,
                 ma.cantidad                                                   AS cantidad,
@@ -1810,7 +1810,7 @@ class SavingsService:
         monto_total_minor: int,
         *,
         porcentajes: list[tuple[str, float]],
-        moneda_id: int,
+        moneda_codigo: str,
         cantidad: Optional[float] = None,
         precio_unitario_minor: Optional[int] = None,
         comision_minor: int = 0,
@@ -1826,7 +1826,7 @@ class SavingsService:
         transacción del Registro, todo atómico. La transacción: la vinculada
         si se pasa transaccion_id (ya validada por el caller); si no, y hay
         tipo_transaccion, la que crea _crear_transaccion_vinculada() (None
-        si el activo no tiene cuenta), en `moneda_id` — la del movimiento,
+        si el activo no tiene cuenta), en `moneda_codigo` — la del movimiento,
         ya resuelta por el caller con _moneda_movimiento().
         """
         if monto_total_minor <= 0:
@@ -1838,13 +1838,13 @@ class SavingsService:
                 if transaccion_id is None and tipo_transaccion is not None:
                     transaccion_id = self._crear_transaccion_vinculada(
                         activo, fecha, monto_total_minor, tipo_transaccion, concepto_transaccion, notas, conn,
-                        moneda_id=moneda_id,
+                        moneda_codigo=moneda_codigo,
                     )
                 movimiento_id = self._movimientos_repo.crear(
                     activo_id=activo["id"], tipo=tipo, fecha=fecha, monto_total_minor=monto_total_minor,
                     cantidad=cantidad, precio_unitario_minor=precio_unitario_minor,
                     dolar_oficial_momento_minor=dolar_oficial_momento_minor, notas=notas,
-                    transaccion_id=transaccion_id, conn=conn, comision_minor=comision_minor, moneda_id=moneda_id,
+                    transaccion_id=transaccion_id, conn=conn, comision_minor=comision_minor, moneda_codigo=moneda_codigo,
                 )
                 asignaciones = self._crear_asignaciones(movimiento_id, reparto, conn)
         except MovimientoDuplicadoError as err:
@@ -1868,7 +1868,7 @@ class SavingsService:
         notas: Optional[str] = None,
         crear_transaccion: bool = True,
         asignaciones: Optional[list[dict]] = None,
-        moneda_id: Optional[int] = None,
+        moneda_codigo: Optional[str] = None,
     ) -> SavingsResult:
         """
         Compra de unidades (acciones, CEDEARs). monto_minor: el BRUTO,
@@ -1880,7 +1880,7 @@ class SavingsService:
         ser entera. dolar_momento_minor va a dolar_oficial_momento_minor (la
         columna ya existía con ese nombre).
 
-        moneda_id (acá, en registrar_venta() y en registrar_rendimiento()):
+        moneda_codigo (acá, en registrar_venta() y en registrar_rendimiento()):
         la del movimiento; None = la del activo. Otra distinta solo en
         acciones / CEDEARs (_moneda_movimiento()). Va al último de la firma
         (el pedido la ponía tercera) para no correr los posicionales.
@@ -1910,13 +1910,13 @@ class SavingsService:
         self._positivo(monto_minor, "EL MONTO")
         comision_minor = self._comision(comision_minor)
         self._fecha(fecha)
-        moneda_id = self._moneda_movimiento(activo, moneda_id)
+        moneda_codigo = self._moneda_movimiento(activo, moneda_codigo)
         porcentajes = self._porcentajes(asignaciones)
         if transaccion_id is not None:
             self._validar_transaccion_para_vincular(transaccion_id)
         return self._registrar_movimiento(
             activo, "compra", "COMPRA", fecha, int(monto_minor) + comision_minor,
-            porcentajes=porcentajes, moneda_id=moneda_id, cantidad=cantidad,
+            porcentajes=porcentajes, moneda_codigo=moneda_codigo, cantidad=cantidad,
             precio_unitario_minor=round(monto_minor / cantidad), comision_minor=comision_minor,
             dolar_oficial_momento_minor=dolar_momento_minor, notas=notas, transaccion_id=transaccion_id,
             tipo_transaccion="egreso" if crear_transaccion else None,
@@ -1934,12 +1934,12 @@ class SavingsService:
         notas: Optional[str] = None,
         crear_transaccion: bool = True,
         asignaciones: Optional[list[dict]] = None,
-        moneda_id: Optional[int] = None,
+        moneda_codigo: Optional[str] = None,
     ) -> SavingsResult:
         """
         Venta de unidades. monto_minor: el BRUTO (ver registrar_compra());
         monto_total = monto − comisión (lo que entra a la cuenta). Puede ir
-        en otra moneda que la compra (moneda_id, ver registrar_compra()).
+        en otra moneda que la compra (moneda_codigo, ver registrar_compra()).
         `asignaciones`: de qué objetivos salen (ver registrar_compra()).
         Solo se valida contra las unidades del activo entero, no las de cada
         objetivo (decisión del usuario: un objetivo puede quedar en
@@ -1960,7 +1960,7 @@ class SavingsService:
         self._positivo(monto_minor, "EL MONTO")
         comision_minor = self._comision(comision_minor)
         self._fecha(fecha)
-        moneda_id = self._moneda_movimiento(activo, moneda_id)
+        moneda_codigo = self._moneda_movimiento(activo, moneda_codigo)
         porcentajes = self._porcentajes(asignaciones)
         disponibles = self._estadisticas_por_activo(activo_id).get(activo_id, {}).get("unidades") or 0
         if cantidad > disponibles:
@@ -1969,7 +1969,7 @@ class SavingsService:
             self._validar_transaccion_para_vincular(transaccion_id)
         return self._registrar_movimiento(
             activo, "venta", "VENTA", fecha, int(monto_minor) - comision_minor,
-            porcentajes=porcentajes, moneda_id=moneda_id, cantidad=cantidad,
+            porcentajes=porcentajes, moneda_codigo=moneda_codigo, cantidad=cantidad,
             precio_unitario_minor=round(monto_minor / cantidad), comision_minor=comision_minor,
             notas=notas, transaccion_id=transaccion_id, tipo_transaccion="ingreso" if crear_transaccion else None,
             concepto_transaccion=f"Venta — {activo['nombre']}",
@@ -2010,7 +2010,7 @@ class SavingsService:
             self._validar_transaccion_para_vincular(transaccion_id)
         return self._registrar_movimiento(
             activo, "aporte", "APORTE", fecha, int(monto_minor), porcentajes=porcentajes,
-            moneda_id=activo["moneda_id"], comision_minor=comision_minor,
+            moneda_codigo=activo["moneda_codigo"], comision_minor=comision_minor,
             dolar_oficial_momento_minor=dolar_momento_minor, notas=notas, transaccion_id=transaccion_id,
             tipo_transaccion="egreso" if crear_transaccion else None,
             concepto_transaccion=f"Aporte a ahorro — {activo['nombre']}",
@@ -2053,21 +2053,21 @@ class SavingsService:
             self._validar_transaccion_para_vincular(transaccion_id)
         return self._registrar_movimiento(
             activo, "venta", "RETIRO", fecha, int(monto_minor), porcentajes=porcentajes,
-            moneda_id=activo["moneda_id"], comision_minor=comision_minor, notas=notas,
+            moneda_codigo=activo["moneda_codigo"], comision_minor=comision_minor, notas=notas,
             transaccion_id=transaccion_id, tipo_transaccion="ingreso" if crear_transaccion else None,
             concepto_transaccion=f"Retiro de ahorro — {activo['nombre']}",
         )
 
     def registrar_rendimiento(
         self, activo_id: str, monto_minor: int, fecha: str, notas: Optional[str] = None,
-        asignaciones: Optional[list[dict]] = None, moneda_id: Optional[int] = None,
+        asignaciones: Optional[list[dict]] = None, moneda_codigo: Optional[str] = None,
     ) -> SavingsResult:
         """
         Rendimiento (intereses, dividendos). Sin `asignaciones` (None) se
         reparte según get_reparto_proporcional(): lo que cada objetivo tenía
         en el activo antes de esa fecha (decisión del usuario: proporcional
         por defecto, editable). Con una lista (también []), esa: ver
-        registrar_compra(). moneda_id: un dividendo de una acción / CEDEAR
+        registrar_compra(). moneda_codigo: un dividendo de una acción / CEDEAR
         puede venir en otra moneda (ver registrar_compra()). Sin transacción
         del Registro (mismo criterio que register_return(),
         docs/DATA_MODEL_DECISIONS.md sección 16).
@@ -2081,13 +2081,13 @@ class SavingsService:
         activo = self._get_activo(activo_id)
         self._positivo(monto_minor, "EL MONTO")
         self._fecha(fecha)
-        moneda_id = self._moneda_movimiento(activo, moneda_id)
+        moneda_codigo = self._moneda_movimiento(activo, moneda_codigo)
         if asignaciones is None:
             asignaciones = self.get_reparto_proporcional(activo_id, fecha)
         porcentajes = self._porcentajes(asignaciones)
         return self._registrar_movimiento(
             activo, "rendimiento", "RENDIMIENTO", fecha, int(monto_minor), porcentajes=porcentajes,
-            moneda_id=moneda_id, notas=notas,
+            moneda_codigo=moneda_codigo, notas=notas,
         )
 
     def update_movement(self, movimiento_id: str, **cambios: object) -> SavingsResult:
@@ -2095,7 +2095,7 @@ class SavingsService:
         Corrige un movimiento ya cargado (edición inline de la tabla de
         ui/screens/ahorros.py; ventana de corrección temprana, CLAUDE.md §4).
         `cambios`: solo las claves de CAMPOS_EDITABLES_MOVIMIENTO — fecha,
-        cantidad, comision_minor, monto_minor, moneda_id, notas (vacías =
+        cantidad, comision_minor, monto_minor, moneda_codigo, notas (vacías =
         sin notas). Ni el activo ni el tipo se editan: eso es borrar y
         volver a cargar.
 
@@ -2110,7 +2110,7 @@ class SavingsService:
         - El resto (aporte, retiro, rendimiento): monto y comisión directo
           (un rendimiento no tiene comisión; la de un aporte / retiro es
           informativa).
-        - moneda_id: solo en acciones / CEDEARs (_moneda_movimiento()).
+        - moneda_codigo: solo en acciones / CEDEARs (_moneda_movimiento()).
         - Si el monto cambia, las asignaciones se rehacen con los MISMOS
           porcentajes que ya tenía el movimiento, mismo redondeo que el
           alta (los objetivos se cambian con update_asignaciones()).
@@ -2157,10 +2157,10 @@ class SavingsService:
             if activo["tipo"] in TIPOS_POR_UNIDADES and not float(cantidad).is_integer():
                 raise SavingsError("LA CANTIDAD DE ACCIONES / CEDEARS TIENE QUE SER ENTERA.")
             valores["cantidad"] = cantidad
-        if "moneda_id" in cambios:
-            moneda_id = self._moneda_movimiento(activo, cambios["moneda_id"])
-            if moneda_id != movimiento["moneda_id"]:
-                valores["moneda_id"] = moneda_id
+        if "moneda_codigo" in cambios:
+            moneda_codigo = self._moneda_movimiento(activo, cambios["moneda_codigo"])
+            if moneda_codigo != movimiento["moneda_codigo"]:
+                valores["moneda_codigo"] = moneda_codigo
 
         bruto = (
             int(self._positivo(cambios["monto_minor"], "EL MONTO")) if "monto_minor" in cambios
@@ -2293,29 +2293,29 @@ class SavingsService:
 
     def _precios_promedio(self) -> dict[str, list[dict]]:
         """
-        activo_id → [{moneda_id, precio_promedio_minor}]: de las compras con
+        activo_id → [{moneda_codigo, precio_promedio_minor}]: de las compras con
         cantidad, POR MONEDA (sección 33: una compra en ARS y otra en USD no
         se promedian juntas), sin comisiones — monto bruto / unidades
         (_monto_bruto(): total − comisión). La moneda de un movimiento viejo
-        sin moneda_id es la del activo.
+        sin moneda_codigo es la del activo.
         """
         filas = self._db.fetchall(
             """
             SELECT
                 ma.activo_id                                                          AS activo_id,
-                COALESCE(ma.moneda_id, af.moneda_id)                                  AS moneda_id,
+                COALESCE(ma.moneda_codigo, af.moneda_codigo)                                  AS moneda_codigo,
                 SUM(ma.monto_total_minor - COALESCE(ma.comision_minor, 0))            AS costo_minor,
                 SUM(ma.cantidad)                                                      AS unidades
             FROM movimientos_activo ma
             JOIN activos_financieros af ON af.id = ma.activo_id
             WHERE ma.tipo = 'compra' AND ma.cantidad > 0
-            GROUP BY ma.activo_id, COALESCE(ma.moneda_id, af.moneda_id);
+            GROUP BY ma.activo_id, COALESCE(ma.moneda_codigo, af.moneda_codigo);
             """
         )
         precios: dict[str, list[dict]] = {}
         for fila in filas:
             precios.setdefault(fila["activo_id"], []).append(
-                {"moneda_id": fila["moneda_id"], "precio_promedio_minor": round(fila["costo_minor"] / fila["unidades"])}
+                {"moneda_codigo": fila["moneda_codigo"], "precio_promedio_minor": round(fila["costo_minor"] / fila["unidades"])}
             )
         return precios
 
@@ -2362,9 +2362,9 @@ class SavingsService:
         sección 35) agrupados por tipo (en el orden de TIPOS_ACTIVO; solo
         los tipos que tienen alguno), cada grupo por broker y nombre:
         {tipo: [{activo_id, activo, tipo, broker_id, broker (nombre o None),
-        cuenta_id, moneda_id, moneda (código), simbolo, decimales,
+        cuenta_id, moneda_codigo, moneda (código), simbolo, decimales,
         por_unidades, cantidad, unidades, saldo_minor,
-        precios_promedio: [{moneda_id, moneda, simbolo, decimales,
+        precios_promedio: [{moneda_codigo, moneda, simbolo, decimales,
         precio_promedio_minor}], comision_compra_minor, comision_venta_minor,
         objetivos: [{objetivo_id, nombre, porcentaje, saldo_minor, unidades}],
         sin_asignar: {porcentaje, saldo_minor, unidades},
@@ -2394,10 +2394,10 @@ class SavingsService:
         partes = self._partes_por_objetivo()
         precios = self._precios_promedio()
         brokers = {b["id"]: b for b in self._brokers_repo.listar(solo_activos=False)}
-        monedas = {m["id"]: m for m in self._db.obtener_monedas()}
+        monedas_por_codigo = {m["codigo"]: m for m in self._db.obtener_monedas()}
 
         def _precio_con_moneda(precio: dict) -> dict:
-            moneda_precio = monedas.get(precio["moneda_id"])
+            moneda_precio = monedas_por_codigo.get(precio["moneda_codigo"])
             return {
                 **precio,
                 "moneda": moneda_precio["codigo"] if moneda_precio else "",
@@ -2408,14 +2408,14 @@ class SavingsService:
         grupos: dict[str, list[dict]] = {}
         for activo in self._activos_repo.listar(solo_activos=not incluir_ocultos):
             stats = estadisticas.get(activo["id"], {})
-            moneda = monedas.get(activo["moneda_id"])
+            moneda = monedas_por_codigo.get(activo["moneda_codigo"])
             decimales = moneda["decimales"] if moneda else 2
             broker = brokers.get(activo["broker_id"]) if activo["broker_id"] else None
             saldo = stats.get("saldo_minor") or 0
             unidades = stats.get("unidades")
             precios_activo = sorted(
                 (_precio_con_moneda(p) for p in precios.get(activo["id"], [])),
-                key=lambda p: (p["moneda_id"] != activo["moneda_id"], p["moneda"]),
+                key=lambda p: (p["moneda_codigo"] != activo["moneda_codigo"], p["moneda"]),
             )
             por_unidades = activo["tipo"] in TIPOS_POR_UNIDADES
             objetivos, sin_asignar = self._objetivos_de_activo(
@@ -2428,7 +2428,7 @@ class SavingsService:
                 "broker_id": activo["broker_id"],
                 "broker": broker["nombre"] if broker else None,
                 "cuenta_id": activo["cuenta_id"],
-                "moneda_id": activo["moneda_id"],
+                "moneda_codigo": activo["moneda_codigo"],
                 "moneda": moneda["codigo"] if moneda else "",
                 "simbolo": (moneda["simbolo"] or "") if moneda else "",
                 "decimales": decimales,

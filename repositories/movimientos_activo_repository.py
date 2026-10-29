@@ -26,7 +26,7 @@ casi siempre se registra junto con su(s) asignacion(es) inicial(es) a un
 objetivo de ahorro en la misma operación atómica (ver
 AsignacionesRepository.crear(conn=...) y el verify de este módulo).
 
-`moneda_id` (columna agregada vía db/schema_migrations.py,
+`moneda_codigo` (columna agregada vía db/schema_migrations.py,
 docs/DATA_MODEL_DECISIONS.md sección 33): la moneda del movimiento. Este
 repositorio la guarda tal cual le llega; qué moneda corresponde (la del
 activo por defecto, otra solo en acciones / CEDEARs) lo decide
@@ -57,7 +57,7 @@ VENTANA_DUPLICADO_SEGUNDOS = 5
 # al SQL, así que nunca se acepta una que no esté acá).
 COLUMNAS_EDITABLES = (
     "tipo", "fecha", "cantidad", "precio_unitario_minor", "monto_total_minor",
-    "dolar_oficial_momento_minor", "comision_minor", "notas", "transaccion_id", "moneda_id",
+    "dolar_oficial_momento_minor", "comision_minor", "notas", "transaccion_id", "moneda_codigo",
 )
 
 
@@ -109,12 +109,12 @@ class MovimientosActivoRepository:
         transaccion_id: Optional[str] = None,
         conn: Optional[sqlite3.Connection] = None,
         comision_minor: int = 0,
-        moneda_id: Optional[int] = None,
+        moneda_codigo: Optional[str] = None,
     ) -> str:
         """
         Inserta un movimiento de activo (compra/venta/rendimiento/aporte) y
         devuelve su id (UUID, repositories/_ids.py). comision_minor: la
-        comisión de este movimiento (0 si no hubo). moneda_id: la del
+        comisión de este movimiento (0 si no hubo). moneda_codigo: la del
         movimiento (ver docstring del módulo).
 
         Antes del INSERT, rechaza la operación con MovimientoDuplicadoError
@@ -145,13 +145,13 @@ class MovimientosActivoRepository:
             INSERT INTO movimientos_activo
                 (id, activo_id, tipo, fecha, cantidad, precio_unitario_minor,
                  monto_total_minor, dolar_oficial_momento_minor, notas,
-                 transaccion_id, comision_minor, moneda_id)
+                 transaccion_id, comision_minor, moneda_codigo)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
         """
         params = (
             movimiento_id, activo_id, tipo, fecha, cantidad, precio_unitario_minor,
             monto_total_minor, dolar_oficial_momento_minor, notas,
-            transaccion_id, comision_minor, moneda_id,
+            transaccion_id, comision_minor, moneda_codigo,
         )
         if conn is not None:
             conn.execute(sql, params)

@@ -115,7 +115,7 @@ class SnapshotsService:
     Usage:
         svc = SnapshotsService(db)
         svc.recalcular_todo()
-        svc.get_saldo_anterior_cuenta(cuenta_id=1, moneda_id=1, mes=10, anio=2026)
+        svc.get_saldo_anterior_cuenta(cuenta_id=1, moneda_codigo="ARS", mes=10, anio=2026)
     """
 
     def __init__(self, db: DatabaseManager):
@@ -202,17 +202,17 @@ class SnapshotsService:
             pagina += 1
 
     def _transacciones(
-        self, fecha_hasta: str, cuenta_id: Optional[str] = None, moneda_id: Optional[int] = None,
+        self, fecha_hasta: str, cuenta_id: Optional[str] = None, moneda_codigo: Optional[str] = None,
     ) -> list[dict]:
         """Transacciones no eliminadas hasta fecha_hasta (inclusive)."""
         return self._paginado(lambda pagina: self._transacciones_repo.listar(
-            cuenta_id=cuenta_id, moneda_id=moneda_id, fecha_hasta=fecha_hasta,
+            cuenta_id=cuenta_id, moneda_codigo=moneda_codigo, fecha_hasta=fecha_hasta,
             pagina=pagina, por_pagina=LOTE_LECTURA,
         ))
 
-    def _saldos_iniciales(self, cuenta_id: Optional[str] = None) -> dict[tuple[int, int], int]:
+    def _saldos_iniciales(self, cuenta_id: Optional[str] = None) -> dict[tuple[str, str], int]:
         """
-        (cuenta_id, moneda_id) → saldo_inicial_minor, una entrada por fila de
+        (cuenta_id, moneda_codigo) → saldo_inicial_minor, una entrada por fila de
         cuentas_saldos (igual que vw_balance_cuentas: sin esa fila no hay
         saldo). Todas las cuentas, también las archivadas.
         """
@@ -221,7 +221,7 @@ class SnapshotsService:
         else:
             ids = [c["id"] for c in self._cuentas_repo.listar(solo_activas=False)]
         return {
-            (fila["cuenta_id"], fila["moneda_id"]): fila["saldo_inicial_minor"]
+            (fila["cuenta_id"], fila["moneda_codigo"]): fila["saldo_inicial_minor"]
             for id_ in ids
             for fila in self._cuentas_repo.listar_saldos(id_)
         }
@@ -235,8 +235,8 @@ class SnapshotsService:
             if d["fecha"] <= fecha_hasta
         ]
 
-    def _moneda_de_origen(self, origen_tipo: str, origen_id: str, cache: dict) -> Optional[int]:
-        """moneda_id del origen de un gasto compartido (gastos_compartidos no tiene moneda propia), o None."""
+    def _moneda_de_origen(self, origen_tipo: str, origen_id: str, cache: dict) -> Optional[str]:
+        """moneda_codigo del origen de un gasto compartido (gastos_compartidos no tiene moneda propia), o None."""
         clave = (origen_tipo, origen_id)
         if clave not in cache:
             fila = None
@@ -247,14 +247,14 @@ class SnapshotsService:
             elif origen_tipo == "cuota_credito":
                 cuota = self._cuotas_repo.obtener_por_id(origen_id)
                 fila = self._compras_repo.obtener_por_id(cuota["compra_id"]) if cuota is not None else None
-            cache[clave] = fila["moneda_id"] if fila is not None else None
+            cache[clave] = fila["moneda_codigo"] if fila is not None else None
         return cache[clave]
 
     def _gastos_pendientes(self, fecha_hasta: str, hogar_id: Optional[str] = None) -> tuple[list[dict], int]:
         """
         Gastos 'pendiente' con fecha <= fecha_hasta, de un hogar o de todos
         (hogar_id=None: QueryBuilder.where() saltea un filtro None), cada
-        uno con su moneda_id de origen. Devuelve también cuántos se
+        uno con su moneda_codigo de origen. Devuelve también cuántos se
         saltearon por no encontrar el origen.
         """
         gastos = self._paginado(lambda pagina: self._gastos_repo.listar(
@@ -266,11 +266,11 @@ class SnapshotsService:
         for gasto in gastos:
             if gasto["fecha"] > fecha_hasta:
                 continue
-            moneda_id = self._moneda_de_origen(gasto["origen_tipo"], gasto["origen_id"], cache)
-            if moneda_id is None:
+            moneda_codigo = self._moneda_de_origen(gasto["origen_tipo"], gasto["origen_id"], cache)
+            if moneda_codigo is None:
                 sin_moneda += 1
                 continue
-            gasto["moneda_id"] = moneda_id
+            gasto["moneda_codigo"] = moneda_codigo
             con_moneda.append(gasto)
         return con_moneda, sin_moneda
 
@@ -284,20 +284,20 @@ class SnapshotsService:
         return -1 if tipo_movimiento == "egreso" else 1
 
     def _saldos_al_cierre(
-        self, meses: list[Periodo], transacciones: list[dict], iniciales: dict[tuple[int, int], int],
-    ) -> dict[Periodo, dict[tuple[int, int], int]]:
+        self, meses: list[Periodo], transacciones: list[dict], iniciales: dict[tuple[str, str], int],
+    ) -> dict[Periodo, dict[tuple[str, str], int]]:
         """
-        mes → (cuenta_id, moneda_id) → saldo al cierre. `meses` contiguos y
+        mes → (cuenta_id, moneda_codigo) → saldo al cierre. `meses` contiguos y
         ordenados; las transacciones anteriores al primero entran en el
         saldo de arranque.
         """
-        deltas: dict[tuple[int, int], dict[Periodo, int]] = defaultdict(lambda: defaultdict(int))
+        deltas: dict[tuple[str, str], dict[Periodo, int]] = defaultdict(lambda: defaultdict(int))
         for t in transacciones:
-            par = (t["cuenta_id"], t["moneda_id"])
+            par = (t["cuenta_id"], t["moneda_codigo"])
             if par in iniciales:
                 deltas[par][self._periodo_de_fecha(t["fecha"])] += self._signo_movimiento(t["tipo_movimiento"]) * t["monto_minor"]
 
-        resultado: dict[Periodo, dict[tuple[int, int], int]] = {m: {} for m in meses}
+        resultado: dict[Periodo, dict[tuple[str, str], int]] = {m: {} for m in meses}
         if not meses:
             return resultado
         for par, inicial in iniciales.items():
@@ -329,8 +329,8 @@ class SnapshotsService:
             resultado[mes] = dict(acumulado)
         return resultado
 
-    def _clave_deuda(self, deuda: dict) -> tuple[str, str, int]:
-        return (self._persona(deuda["entidad_persona"]), deuda["tab"], deuda["moneda_id"])
+    def _clave_deuda(self, deuda: dict) -> tuple[str, str, str]:
+        return (self._persona(deuda["entidad_persona"]), deuda["tab"], deuda["moneda_codigo"])
 
     def _netos_deudas(self, meses: list[Periodo], deudas: list[dict]) -> dict[Periodo, dict[tuple, int]]:
         # monto_minor ya tiene signo (positivo = entrada, negativo = pago): se suma tal cual.
@@ -391,7 +391,7 @@ class SnapshotsService:
         saldos = self._saldos_al_cierre(meses, transacciones, iniciales)
         netos = self._netos_deudas(meses, deudas)
         compartidos = self._pendientes_compartidos(
-            meses, gastos, clave=lambda g: (g["hogar_id"], g["pagador"], g["moneda_id"]),
+            meses, gastos, clave=lambda g: (g["hogar_id"], g["pagador"], g["moneda_codigo"]),
         )
 
         anio_borrar, mes_borrar = desde or PRIMER_PERIODO_POSIBLE
@@ -401,12 +401,12 @@ class SnapshotsService:
             self._compartidos_repo.eliminar_desde(None, mes_borrar, anio_borrar, conn=conn)
             for periodo in meses:
                 anio, mes = periodo
-                for (cuenta_id, moneda_id), saldo in saldos[periodo].items():
-                    self._saldos_repo.upsert(cuenta_id, moneda_id, mes, anio, saldo, conn=conn)
-                for (persona, tab, moneda_id), monto in netos[periodo].items():
-                    self._deudas_repo.upsert(persona, tab, moneda_id, mes, anio, monto, conn=conn)
-                for (hogar_id, pagador, moneda_id), monto in compartidos[periodo].items():
-                    self._compartidos_repo.upsert(hogar_id, pagador, moneda_id, mes, anio, monto, conn=conn)
+                for (cuenta_id, moneda_codigo), saldo in saldos[periodo].items():
+                    self._saldos_repo.upsert(cuenta_id, moneda_codigo, mes, anio, saldo, conn=conn)
+                for (persona, tab, moneda_codigo), monto in netos[periodo].items():
+                    self._deudas_repo.upsert(persona, tab, moneda_codigo, mes, anio, monto, conn=conn)
+                for (hogar_id, pagador, moneda_codigo), monto in compartidos[periodo].items():
+                    self._compartidos_repo.upsert(hogar_id, pagador, moneda_codigo, mes, anio, monto, conn=conn)
 
         tiempo = time.perf_counter() - inicio
         if meses:
@@ -425,7 +425,7 @@ class SnapshotsService:
     # SALDO ANTERIOR — POR CLAVE
     # ----------------------------------------------------------
 
-    def get_saldo_anterior_cuenta(self, cuenta_id: str, moneda_id: int, mes: int, anio: int) -> int:
+    def get_saldo_anterior_cuenta(self, cuenta_id: str, moneda_codigo: str, mes: int, anio: int) -> int:
         """
         Saldo de (cuenta, moneda) al cierre del mes anterior a mes/anio (con
         mes=1, diciembre del año anterior). Del snapshot si existe; si no,
@@ -437,16 +437,16 @@ class SnapshotsService:
             SnapshotsError si mes/anio no son válidos.
         """
         anterior = self._anterior(self._periodo(mes, anio))
-        fila = self._saldos_repo.obtener(cuenta_id, moneda_id, anterior[1], anterior[0])
+        fila = self._saldos_repo.obtener(cuenta_id, moneda_codigo, anterior[1], anterior[0])
         if fila is not None:
             return fila["saldo_minor"]
         iniciales = {
-            par: saldo for par, saldo in self._saldos_iniciales(cuenta_id).items() if par == (cuenta_id, moneda_id)
+            par: saldo for par, saldo in self._saldos_iniciales(cuenta_id).items() if par == (cuenta_id, moneda_codigo)
         }
-        transacciones = self._transacciones(self._fin_de_mes(anterior), cuenta_id=cuenta_id, moneda_id=moneda_id)
-        return self._saldos_al_cierre([anterior], transacciones, iniciales)[anterior].get((cuenta_id, moneda_id), 0)
+        transacciones = self._transacciones(self._fin_de_mes(anterior), cuenta_id=cuenta_id, moneda_codigo=moneda_codigo)
+        return self._saldos_al_cierre([anterior], transacciones, iniciales)[anterior].get((cuenta_id, moneda_codigo), 0)
 
-    def get_saldo_anterior_deuda(self, entidad_persona: str, moneda_id: int, tab: str, mes: int, anio: int) -> int:
+    def get_saldo_anterior_deuda(self, entidad_persona: str, moneda_codigo: str, tab: str, mes: int, anio: int) -> int:
         """
         Saldo con esa persona en ese tab y esa moneda al cierre del mes
         anterior a mes/anio: SUM(monto_minor) — en 'me_deben', positivo = te
@@ -459,13 +459,13 @@ class SnapshotsService:
         anterior = self._anterior(self._periodo(mes, anio))
         tab = self._tab(tab)
         persona = self._persona(entidad_persona)
-        fila = self._deudas_repo.obtener(persona, tab, moneda_id, anterior[1], anterior[0])
+        fila = self._deudas_repo.obtener(persona, tab, moneda_codigo, anterior[1], anterior[0])
         if fila is not None:
             return fila["monto_minor"]
-        return self._netos_deudas_en_vivo(anterior, tab).get((persona, moneda_id), 0)
+        return self._netos_deudas_en_vivo(anterior, tab).get((persona, moneda_codigo), 0)
 
     def get_saldo_anterior_compartidos(
-        self, hogar_id: str, pagador: str, moneda_id: int, mes: int, anio: int,
+        self, hogar_id: str, pagador: str, moneda_codigo: str, mes: int, anio: int,
     ) -> int:
         """
         Pendiente acumulado de los gastos compartidos de ese hogar pagados por
@@ -476,10 +476,10 @@ class SnapshotsService:
             SnapshotsError si mes/anio no son válidos.
         """
         anterior = self._anterior(self._periodo(mes, anio))
-        fila = self._compartidos_repo.obtener(hogar_id, pagador, moneda_id, anterior[1], anterior[0])
+        fila = self._compartidos_repo.obtener(hogar_id, pagador, moneda_codigo, anterior[1], anterior[0])
         if fila is not None:
             return fila["monto_minor"]
-        return self._compartidos_en_vivo(hogar_id, anterior).get((pagador, moneda_id), 0)
+        return self._compartidos_en_vivo(hogar_id, anterior).get((pagador, moneda_codigo), 0)
 
     # ----------------------------------------------------------
     # SALDO ANTERIOR — DE A MUCHOS (fila "SALDO ANTERIOR" de las pantallas)
@@ -488,7 +488,7 @@ class SnapshotsService:
     def get_saldos_anteriores_cuentas(self, mes: int, anio: int) -> list[dict]:
         """
         Una entrada por (cuenta, moneda) de cuentas_saldos con su saldo al
-        cierre del mes anterior: {cuenta_id, moneda_id, saldo_minor,
+        cierre del mes anterior: {cuenta_id, saldo_minor,
         moneda_codigo, moneda_simbolo, decimales}. Del snapshot; los pares
         que falten (ej. una cuenta nueva, o un mes todavía sin recalcular)
         se calculan en vivo, todos en una sola pasada.
@@ -498,7 +498,7 @@ class SnapshotsService:
         """
         anterior = self._anterior(self._periodo(mes, anio))
         guardados = {
-            (fila["cuenta_id"], fila["moneda_id"]): fila["saldo_minor"]
+            (fila["cuenta_id"], fila["moneda_codigo"]): fila["saldo_minor"]
             for fila in self._saldos_repo.listar_por_periodo(anterior[1], anterior[0])
         }
         iniciales = self._saldos_iniciales()
@@ -507,19 +507,19 @@ class SnapshotsService:
                 [anterior], self._transacciones(self._fin_de_mes(anterior)), iniciales,
             )[anterior]
             guardados = {**en_vivo, **guardados}
-        monedas = self._monedas()
+        monedas_por_codigo = self._monedas()
         return [
             self._con_moneda(
-                {"cuenta_id": cuenta_id, "moneda_id": moneda_id, "saldo_minor": guardados.get((cuenta_id, moneda_id), 0)},
-                monedas,
+                {"cuenta_id": cuenta_id, "moneda_codigo": moneda_codigo, "saldo_minor": guardados.get((cuenta_id, moneda_codigo), 0)},
+                monedas_por_codigo,
             )
-            for cuenta_id, moneda_id in iniciales
+            for cuenta_id, moneda_codigo in iniciales
         ]
 
     def get_saldos_anteriores_deudas(self, mes: int, anio: int, tab: str) -> list[dict]:
         """
         Una entrada por (persona, moneda) de ese tab con su saldo al cierre
-        del mes anterior: {entidad_persona (normalizada), tab, moneda_id,
+        del mes anterior: {entidad_persona (normalizada), tab,
         monto_minor, moneda_codigo, moneda_simbolo, decimales}. Del snapshot
         de ese mes; si no hay ninguno para el tab, en vivo.
 
@@ -530,21 +530,21 @@ class SnapshotsService:
         tab = self._tab(tab)
         filas = self._deudas_repo.listar_por_periodo(anterior[1], anterior[0], tab)
         if filas:
-            netos = {(fila["entidad_persona"], fila["moneda_id"]): fila["monto_minor"] for fila in filas}
+            netos = {(fila["entidad_persona"], fila["moneda_codigo"]): fila["monto_minor"] for fila in filas}
         else:
             netos = self._netos_deudas_en_vivo(anterior, tab)
-        monedas = self._monedas()
+        monedas_por_codigo = self._monedas()
         return [
             self._con_moneda(
-                {"entidad_persona": persona, "tab": tab, "moneda_id": moneda_id, "monto_minor": monto}, monedas,
+                {"entidad_persona": persona, "tab": tab, "moneda_codigo": moneda_codigo, "monto_minor": monto}, monedas_por_codigo,
             )
-            for (persona, moneda_id), monto in sorted(netos.items())
+            for (persona, moneda_codigo), monto in sorted(netos.items())
         ]
 
     def get_saldos_anteriores_compartidos(self, hogar_id: str, mes: int, anio: int) -> list[dict]:
         """
         Una entrada por (pagador, moneda) de ese hogar con el pendiente al
-        cierre del mes anterior: {pagador, moneda_id, monto_minor,
+        cierre del mes anterior: {pagador, monto_minor,
         moneda_codigo, moneda_simbolo, decimales}. Del snapshot de ese mes;
         si no hay ninguno para el hogar, en vivo.
 
@@ -554,41 +554,40 @@ class SnapshotsService:
         anterior = self._anterior(self._periodo(mes, anio))
         filas = self._compartidos_repo.listar_por_hogar_periodo(hogar_id, anterior[1], anterior[0])
         if filas:
-            montos = {(fila["pagador"], fila["moneda_id"]): fila["monto_minor"] for fila in filas}
+            montos = {(fila["pagador"], fila["moneda_codigo"]): fila["monto_minor"] for fila in filas}
         else:
             montos = self._compartidos_en_vivo(hogar_id, anterior)
-        monedas = self._monedas()
+        monedas_por_codigo = self._monedas()
         return [
-            self._con_moneda({"pagador": pagador, "moneda_id": moneda_id, "monto_minor": monto}, monedas)
-            for (pagador, moneda_id), monto in sorted(montos.items())
+            self._con_moneda({"pagador": pagador, "moneda_codigo": moneda_codigo, "monto_minor": monto}, monedas_por_codigo)
+            for (pagador, moneda_codigo), monto in sorted(montos.items())
         ]
 
     # ----------------------------------------------------------
     # EN VIVO (cuando falta el snapshot) + formato
     # ----------------------------------------------------------
 
-    def _netos_deudas_en_vivo(self, periodo: Periodo, tab: str) -> dict[tuple[str, int], int]:
-        """(persona, moneda_id) → SUM(monto_minor) de ese tab al cierre de `periodo` (la suma la hace el repositorio)."""
-        netos: dict[tuple[str, int], int] = defaultdict(int)
+    def _netos_deudas_en_vivo(self, periodo: Periodo, tab: str) -> dict[tuple[str, str], int]:
+        """(persona, moneda_codigo) → SUM(monto_minor) de ese tab al cierre de `periodo` (la suma la hace el repositorio)."""
+        netos: dict[tuple[str, str], int] = defaultdict(int)
         for fila in self._deudas_fuente_repo.get_saldo_neto_por_persona(tab, self._fin_de_mes(periodo)):
             # Los nombres ya se guardan normalizados (DebtsService); se normaliza igual por si una fila vieja no.
-            netos[(self._persona(fila["entidad_persona"]), fila["moneda_id"])] += fila["saldo"]
+            netos[(self._persona(fila["entidad_persona"]), fila["moneda_codigo"])] += fila["saldo"]
         return dict(netos)
 
     def _compartidos_en_vivo(self, hogar_id: str, periodo: Periodo) -> dict[tuple, int]:
         gastos, _ = self._gastos_pendientes(fecha_hasta=self._fin_de_mes(periodo), hogar_id=hogar_id)
         return self._pendientes_compartidos(
-            [periodo], gastos, clave=lambda g: (g["pagador"], g["moneda_id"]),
+            [periodo], gastos, clave=lambda g: (g["pagador"], g["moneda_codigo"]),
         )[periodo]
 
     @staticmethod
-    def _con_moneda(entrada: dict[str, Any], monedas: dict[int, Any]) -> dict[str, Any]:
-        """Agrega codigo/simbolo/decimales de la moneda (para que la UI muestre el monto sin otra consulta)."""
-        moneda = monedas.get(entrada["moneda_id"])
-        entrada["moneda_codigo"] = moneda["codigo"] if moneda else ""
+    def _con_moneda(entrada: dict[str, Any], monedas_por_codigo: dict[str, Any]) -> dict[str, Any]:
+        """Agrega simbolo/decimales de la moneda (para que la UI muestre el monto sin otra consulta)."""
+        moneda = monedas_por_codigo.get(entrada["moneda_codigo"])
         entrada["moneda_simbolo"] = (moneda["simbolo"] or "") if moneda else ""
         entrada["decimales"] = moneda["decimales"] if moneda else 2
         return entrada
 
-    def _monedas(self) -> dict[int, Any]:
-        return {fila["id"]: fila for fila in self._db.obtener_monedas()}
+    def _monedas(self) -> dict[str, Any]:
+        return {fila["codigo"]: fila for fila in self._db.obtener_monedas()}

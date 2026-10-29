@@ -83,14 +83,14 @@ def main() -> None:
 
     cuenta_a = cuentas_repo.crear(nombre="Tarjeta Resumen A", tipo="credito", moneda_codigo="ARS")
     cuenta_b = cuentas_repo.crear(nombre="Tarjeta Resumen B", tipo="credito", moneda_codigo="ARS")
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
 
     def cargo_extra(resumen_id, cuenta_id, mes: int, anio: int, concepto: str, monto_minor: int, conn=None) -> None:
         """Un cargo extra como lo guarda FeesService (sección 28): compra de 1 cuota con es_cargo_extra = 1, su cuota en el resumen."""
         compra_id = compras_repo.crear(
             fecha_compra=f"{anio:04d}-{mes:02d}-01", concepto=concepto, cuenta_id=cuenta_id, categoria_id=cat_egreso,
-            moneda_id=moneda_ars, monto_total_minor=monto_minor, total_cuotas=1, monto_por_cuota_minor=monto_minor,
+            moneda_codigo=moneda_ars, monto_total_minor=monto_minor, total_cuotas=1, monto_por_cuota_minor=monto_minor,
             es_cargo_extra=True, conn=conn,
         )
         (conn or manager.conn).execute(
@@ -192,7 +192,7 @@ def main() -> None:
         concepto="Compra para resumen 1",
         cuenta_id=cuenta_a,
         categoria_id=cat_egreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         monto_total_minor=300000,
         total_cuotas=3,
         monto_por_cuota_minor=100000,
@@ -256,7 +256,7 @@ def main() -> None:
         concepto="Compra para prueba de conn genuino",
         cuenta_id=cuenta_a,
         categoria_id=cat_egreso,
-        moneda_id=moneda_ars,
+        moneda_codigo=moneda_ars,
         monto_total_minor=100000,
         total_cuotas=2,
         monto_por_cuota_minor=50000,

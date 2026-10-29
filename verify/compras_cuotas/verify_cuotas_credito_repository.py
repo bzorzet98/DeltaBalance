@@ -98,17 +98,17 @@ def main() -> None:
     resumenes_repo = ResumenesTarjetaRepository(manager)
 
     cuenta_a = cuentas_repo.crear(nombre="Tarjeta Cuotas", tipo="credito", moneda_codigo="ARS")
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' LIMIT 1;")["id"]
 
     compra_x = compras_repo.crear(
         fecha_compra="2026-01-05", concepto="Compra X", cuenta_id=cuenta_a,
-        categoria_id=cat_egreso, moneda_id=moneda_ars,
+        categoria_id=cat_egreso, moneda_codigo=moneda_ars,
         monto_total_minor=400000, total_cuotas=4, monto_por_cuota_minor=100000,
     )
     compra_y = compras_repo.crear(
         fecha_compra="2026-01-08", concepto="Compra Y", cuenta_id=cuenta_a,
-        categoria_id=cat_egreso, moneda_id=moneda_ars,
+        categoria_id=cat_egreso, moneda_codigo=moneda_ars,
         monto_total_minor=100000, total_cuotas=2, monto_por_cuota_minor=50000,
     )
 
@@ -162,7 +162,7 @@ def main() -> None:
     print("\n--- crear_lote(conn=...) — rollback simulado a mitad de camino ---")
     compra_z = compras_repo.crear(
         fecha_compra="2026-05-01", concepto="Compra Z (va a fallar)", cuenta_id=cuenta_a,
-        categoria_id=cat_egreso, moneda_id=moneda_ars,
+        categoria_id=cat_egreso, moneda_codigo=moneda_ars,
         monto_total_minor=200000, total_cuotas=2, monto_por_cuota_minor=100000,
     )
     conn_externo = manager.conn
@@ -295,7 +295,7 @@ def main() -> None:
     print("\n--- marcar_estado_por_compra(conn=...) + rollback junto a cancelar() (par atómico real de cancel_purchase) ---")
     compra_w = compras_repo.crear(
         fecha_compra="2026-06-01", concepto="Compra W (para cancelar)", cuenta_id=cuenta_a,
-        categoria_id=cat_egreso, moneda_id=moneda_ars,
+        categoria_id=cat_egreso, moneda_codigo=moneda_ars,
         monto_total_minor=200000, total_cuotas=2, monto_por_cuota_minor=100000,
     )
     ids_w = repo.crear_lote(

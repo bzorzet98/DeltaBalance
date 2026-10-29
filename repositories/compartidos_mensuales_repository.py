@@ -8,7 +8,7 @@ lógica de negocio: de dónde sale la moneda de cada gasto y para qué meses
 se guarda lo decide services/snapshots_service.py.
 
 upsert() usa INSERT OR REPLACE sobre el UNIQUE(hogar_id, pagador,
-moneda_id, mes, anio). Sin `deleted_at`: QueryBuilder con
+moneda_codigo, mes, anio). Sin `deleted_at`: QueryBuilder con
 include_deleted=True. Las escrituras aceptan `conn` para participar de la
 transacción del service.
 
@@ -35,17 +35,17 @@ class CompartidosMensualesRepository:
         self,
         hogar_id: str,
         pagador: str,
-        moneda_id: int,
+        moneda_codigo: str,
         mes: int,
         anio: int,
         monto_minor: int,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         sql = """
-            INSERT OR REPLACE INTO compartidos_mensuales (hogar_id, pagador, moneda_id, mes, anio, monto_minor)
+            INSERT OR REPLACE INTO compartidos_mensuales (hogar_id, pagador, moneda_codigo, mes, anio, monto_minor)
             VALUES (?, ?, ?, ?, ?, ?);
         """
-        params = (hogar_id, pagador, moneda_id, mes, anio, monto_minor)
+        params = (hogar_id, pagador, moneda_codigo, mes, anio, monto_minor)
         if conn is not None:
             conn.execute(sql, params)
             return
@@ -56,13 +56,13 @@ class CompartidosMensualesRepository:
     # ----------------------------------------------------------
 
     def obtener(
-        self, hogar_id: str, pagador: str, moneda_id: int, mes: int, anio: int,
+        self, hogar_id: str, pagador: str, moneda_codigo: str, mes: int, anio: int,
     ) -> Optional[sqlite3.Row]:
         return (
             QueryBuilder("compartidos_mensuales", include_deleted=True)
             .where("hogar_id", hogar_id)
             .where("pagador", pagador)
-            .where("moneda_id", moneda_id)
+            .where("moneda_codigo", moneda_codigo)
             .where("mes", mes)
             .where("anio", anio)
             .ejecutar_uno(self._db.conn)
@@ -76,7 +76,7 @@ class CompartidosMensualesRepository:
             .where("mes", mes)
             .where("anio", anio)
             .order("pagador")
-            .order("moneda_id")
+            .order("moneda_codigo")
             .ejecutar(self._db.conn)
         )
 

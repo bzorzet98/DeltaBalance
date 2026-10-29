@@ -109,7 +109,7 @@ class EmpleosService:
         db  = DatabaseManager()
         svc = EmpleosService(db)
 
-        svc.create_employment(nombre_empresa="Acme SA", puesto="Backend", moneda_id=1)
+        svc.create_employment(nombre_empresa="Acme SA", puesto="Backend", moneda_codigo="ARS")
     """
 
     def __init__(self, db: DatabaseManager):
@@ -129,12 +129,12 @@ class EmpleosService:
             raise EmpleoNotFoundError(f"Empleo id={empleo_id} not found.")
         return row
 
-    def _get_currency(self, currency_id: int) -> sqlite3.Row:
+    def _get_currency(self, currency_code: str) -> sqlite3.Row:
         """No MonedasRepository exists yet in this codebase — mismo patrón
         que en los demás services de esta fase (consulta directa a `monedas`)."""
-        row = self._db.fetchone("SELECT * FROM monedas WHERE id = ?;", (currency_id,))
+        row = self._db.fetchone("SELECT * FROM monedas WHERE codigo = ?;", (currency_code,))
         if row is None:
-            raise CurrencyNotFoundError(f"Currency id={currency_id} not found.")
+            raise CurrencyNotFoundError(f"Currency code={currency_code} not found.")
         return row
 
     def _get_account(self, account_id: str) -> sqlite3.Row:
@@ -156,7 +156,7 @@ class EmpleosService:
     def create_employment(
         self,
         nombre_empresa: str,
-        moneda_id: int,
+        moneda_codigo: str,
         puesto: Optional[str] = None,
         porcentaje_jubilacion: Optional[int] = None,
         porcentaje_obra_social: Optional[int] = None,
@@ -172,11 +172,11 @@ class EmpleosService:
         números acá.
 
         Raises:
-            CurrencyNotFoundError si moneda_id no existe.
+            CurrencyNotFoundError si moneda_codigo no existe.
         """
         if not nombre_empresa or not nombre_empresa.strip():
             raise ValueError("nombre_empresa cannot be empty.")
-        self._get_currency(moneda_id)  # validate existence
+        self._get_currency(moneda_codigo)  # validate existence
 
         kwargs = {}
         if porcentaje_jubilacion is not None:
@@ -191,14 +191,14 @@ class EmpleosService:
         empleo_id = self._empleos_repo.crear_empleo(
             nombre_empresa=nombre_empresa.strip(),
             puesto=puesto,
-            moneda_id=moneda_id,
+            moneda_codigo=moneda_codigo,
             **kwargs,
         )
 
         return EmpleoResult(
             success=True,
             entity_id=empleo_id,
-            data={"nombre_empresa": nombre_empresa.strip(), "puesto": puesto, "moneda_id": moneda_id},
+            data={"nombre_empresa": nombre_empresa.strip(), "puesto": puesto, "moneda_codigo": moneda_codigo},
             message=f"Employment '{nombre_empresa.strip()}' created.",
         )
 
@@ -316,7 +316,7 @@ class EmpleosService:
                 concepto=f"Sueldo {mes:02d}/{anio} - {empleo['nombre_empresa']}",
                 cuenta_id=cuenta_id,
                 categoria_id=categoria_id,
-                moneda_id=empleo["moneda_id"],
+                moneda_codigo=empleo["moneda_codigo"],
                 tipo_movimiento="ingreso",
                 monto_minor=monto_neto_final_minor,
                 conn=conn,

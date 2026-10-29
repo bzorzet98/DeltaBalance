@@ -1,18 +1,25 @@
 -- =============================================================
 -- DeltaBalance — db/schema.sql
--- SQLite 3 — foto del schema v2 (PRAGMA user_version = 2)
+-- SQLite 3 — foto del schema v4 (PRAGMA user_version = 4)
 -- =============================================================
 -- Este archivo es el schema REAL completo de la última versión:
 -- - v1: exactamente lo que dejaba en una base la cadena anterior (schema +
 --   MIGRACIONES_COLUMNA + aplicar_migraciones_tabla()), con las columnas en
 --   el mismo orden (docs/DATA_MODEL_DECISIONS.md sección 37);
 -- - v2: sin las tablas sin uso tipos_cambio, indices_inflacion,
---   resumen_cargos_extra y activo_objetivos (sección 38).
+--   resumen_cargos_extra y activo_objetivos (sección 38);
+-- - v3: monedas con clave natural — `codigo` es la PK y toda FK a monedas
+--   es `moneda_codigo TEXT` (antes `moneda_id INTEGER` → monedas.id),
+--   en la misma posición (sección 39);
+-- - v4: sin autotransferencias — las dos patas de una transferencia son
+--   transacciones independientes, sin tabla de vínculo (sección 40).
 --
 -- Solo se aplica a una base NUEVA (sin tablas): DatabaseManager.inicializar()
 -- lo corre, siembra los brokers, crea la sync (preparar_sync()), carga
--- seed.sql y marca user_version = VERSION_SCHEMA. Una base existente ya NO
--- lo reaplica:
+-- seed.sql y marca user_version = VERSION_SCHEMA. El propio archivo también
+-- la marca (al final): una base armada solo con este archivo — los scripts
+-- de verify/ — ya queda en su versión, y DatabaseManager no le corre la
+-- baseline encima. Una base existente ya NO lo reaplica:
 --   - user_version = 0 → migración baseline (db/schema_migrations.py,
 --     run_migrations(); usa db/schema_v0.sql, el schema anterior congelado);
 --   - user_version >= 1 → solo las migraciones numeradas que falten.
@@ -29,8 +36,8 @@ PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
 
 -- IDs: UUID v4 en texto ('8f14e45f-ceea-4a7b-9c3e-…') en TODAS las tablas,
--- salvo monedas (datos de referencia iguales en toda base: sigue con su id
--- entero, y moneda_id / moneda_*_id siguen siendo INTEGER). Así una fila
+-- salvo monedas (datos de referencia iguales en toda base: su clave es el
+-- código — 'ARS', 'USD'… — y las FK son moneda_codigo TEXT). Así una fila
 -- tiene la misma identidad en cualquier computadora (sincronización,
 -- docs/DATA_MODEL_DECISIONS.md sección 25). Los repositorios generan el
 -- UUID en Python (uuid.uuid4()) y lo devuelven; el DEFAULT de cada `id` es
@@ -42,9 +49,12 @@ PRAGMA journal_mode = WAL;
 -- =============================================================
 -- MONEDAS
 -- =============================================================
+-- Clave natural: el código. No se sincroniza (el seed la carga igual en
+-- toda base). En Supabase las filas siguen viajando con el moneda_id
+-- entero de antes de v3: sync/sync_engine.py traduce con
+-- IDS_MONEDA_REMOTOS (db/schema_migrations.py).
 CREATE TABLE IF NOT EXISTS monedas (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    codigo          TEXT NOT NULL UNIQUE,
+    codigo          TEXT PRIMARY KEY NOT NULL,
     simbolo         TEXT,
     decimales       INTEGER NOT NULL DEFAULT 2
 );
@@ -82,7 +92,7 @@ CREATE TABLE IF NOT EXISTS cuentas (
 -- =============================================================
 CREATE TABLE IF NOT EXISTS cuentas_saldos (
     cuenta_id               TEXT NOT NULL,
-    moneda_id               INTEGER NOT NULL,
+    moneda_codigo           TEXT NOT NULL,
 
     saldo_inicial_minor     INTEGER NOT NULL DEFAULT 0,
 
@@ -90,10 +100,10 @@ CREATE TABLE IF NOT EXISTS cuentas_saldos (
 
     sincronizado_en         TEXT DEFAULT NULL,
 
-    PRIMARY KEY (cuenta_id, moneda_id),
+    PRIMARY KEY (cuenta_id, moneda_codigo),
 
     FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
+    FOREIGN KEY (moneda_codigo) REFERENCES monedas(codigo)
 );
 
 -- =============================================================
@@ -128,7 +138,7 @@ CREATE TABLE IF NOT EXISTS empleos (
     nombre_empresa              TEXT NOT NULL,
     puesto                      TEXT,
 
-    moneda_id                   INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo               TEXT NOT NULL REFERENCES monedas(codigo),
 
     porcentaje_jubilacion       INTEGER DEFAULT 1100,
     porcentaje_obra_social      INTEGER DEFAULT 300,
@@ -155,7 +165,7 @@ CREATE TABLE IF NOT EXISTS transacciones (
 
     cuenta_id                   TEXT NOT NULL,
     categoria_id                TEXT NOT NULL,
-    moneda_id                   INTEGER NOT NULL,
+    moneda_codigo               TEXT NOT NULL,
 
     tipo_movimiento             TEXT NOT NULL
                                 CHECK(tipo_movimiento IN (
@@ -176,30 +186,9 @@ CREATE TABLE IF NOT EXISTS transacciones (
 
     FOREIGN KEY (cuenta_id) REFERENCES cuentas(id),
     FOREIGN KEY (categoria_id) REFERENCES categorias(id),
-    FOREIGN KEY (moneda_id) REFERENCES monedas(id)
+    FOREIGN KEY (moneda_codigo) REFERENCES monedas(codigo)
 );
 
--- =============================================================
--- AUTOTRANSFERENCIAS
--- =============================================================
--- Vínculo formal entre las dos filas de `transacciones` (egreso en origen,
--- ingreso en destino) que genera TransactionService.create_transfer().
--- Agregada recién ahora (ver docs/DATA_MODEL_DECISIONS.md) — el código
--- legacy de db/database.py ya asumía su existencia e insertaba contra
--- ella, pero nunca había sido creada en este schema.
-CREATE TABLE IF NOT EXISTS autotransferencias (
-    id                          TEXT PRIMARY KEY NOT NULL DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', 1 + (random() & 3), 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
-
-    transaccion_salida_id       TEXT NOT NULL REFERENCES transacciones(id),
-    transaccion_entrada_id      TEXT NOT NULL REFERENCES transacciones(id),
-
-    notas                       TEXT,
-
-    creada_en                   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    UNIQUE(transaccion_salida_id, transaccion_entrada_id),
-    CHECK(transaccion_salida_id != transaccion_entrada_id)
-);
 
 -- =============================================================
 -- RESUMENES TARJETA
@@ -300,7 +289,7 @@ CREATE TABLE IF NOT EXISTS compras_cuotas (
 
     cuenta_id                      TEXT NOT NULL REFERENCES cuentas(id),
     categoria_id                   TEXT NOT NULL REFERENCES categorias(id),
-    moneda_id                      INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo                      TEXT NOT NULL REFERENCES monedas(codigo),
 
     monto_total_minor              INTEGER NOT NULL,
     total_cuotas                   INTEGER NOT NULL DEFAULT 1,
@@ -394,7 +383,7 @@ CREATE TABLE IF NOT EXISTS deudas (
     concepto        TEXT,
     tab             TEXT NOT NULL CHECK(tab IN ('me_deben', 'debo')),
     monto_minor     INTEGER NOT NULL,  -- positivo = entrada, negativo = salida
-    moneda_id       INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo       TEXT NOT NULL REFERENCES monedas(codigo),
     fecha           TEXT NOT NULL CHECK(fecha GLOB '????-??-??'),
     notas           TEXT,
     origen_tipo     TEXT DEFAULT 'manual',
@@ -421,7 +410,7 @@ CREATE TABLE IF NOT EXISTS presupuestos (
     categoria_id         TEXT REFERENCES categorias(id),
     monto_estimado_minor INTEGER NOT NULL DEFAULT 0,
     monto_real_minor     INTEGER NOT NULL DEFAULT 0,
-    moneda_id            INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo            TEXT NOT NULL REFERENCES monedas(codigo),
     mes                  INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
     anio                 INTEGER NOT NULL,
     es_recurrente        INTEGER NOT NULL DEFAULT 0,
@@ -439,7 +428,7 @@ CREATE TABLE IF NOT EXISTS ingresos_proyectados (
     concepto             TEXT NOT NULL,
     monto_estimado_minor INTEGER NOT NULL DEFAULT 0,
     monto_real_minor     INTEGER NOT NULL DEFAULT 0,
-    moneda_id            INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo            TEXT NOT NULL REFERENCES monedas(codigo),
     mes                  INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
     anio                 INTEGER NOT NULL,
     es_recurrente        INTEGER NOT NULL DEFAULT 0,
@@ -546,7 +535,7 @@ CREATE TABLE IF NOT EXISTS activos_financieros (
                                         'plazo_flex'
                                     )),
 
-    moneda_id                       INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo                       TEXT NOT NULL REFERENCES monedas(codigo),
 
     activa                          INTEGER NOT NULL DEFAULT 1,
 
@@ -599,7 +588,7 @@ CREATE TABLE IF NOT EXISTS movimientos_activo (
 
     -- Moneda de cada movimiento (sección 33). Nullable como la dejó el
     -- ALTER TABLE de la migración; SavingsService la escribe siempre.
-    moneda_id                       INTEGER REFERENCES monedas(id),
+    moneda_codigo                       TEXT REFERENCES monedas(codigo),
 
     sincronizado_en                 TEXT DEFAULT NULL
 );
@@ -809,7 +798,7 @@ CREATE TABLE IF NOT EXISTS prestamos (
                                         'aleman'
                                     )),
 
-    moneda_id                       INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo                       TEXT NOT NULL REFERENCES monedas(codigo),
 
     fecha_inicio                    TEXT NOT NULL
                                     CHECK(fecha_inicio GLOB '????-??-??'),
@@ -876,12 +865,12 @@ CREATE TABLE IF NOT EXISTS cuotas_prestamo (
 CREATE TABLE IF NOT EXISTS saldos_mensuales (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     cuenta_id    TEXT NOT NULL REFERENCES cuentas(id),
-    moneda_id    INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo    TEXT NOT NULL REFERENCES monedas(codigo),
     mes          INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
     anio         INTEGER NOT NULL,
     saldo_minor  INTEGER NOT NULL DEFAULT 0,
     calculado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(cuenta_id, moneda_id, mes, anio)
+    UNIQUE(cuenta_id, moneda_codigo, mes, anio)
 );
 
 -- Uno por (persona, tab, moneda): el saldo de 'me_deben' y el de 'debo' con
@@ -890,24 +879,24 @@ CREATE TABLE IF NOT EXISTS deudas_mensuales (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     entidad_persona TEXT NOT NULL,
     tab             TEXT NOT NULL CHECK(tab IN ('me_deben', 'debo')),
-    moneda_id       INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo       TEXT NOT NULL REFERENCES monedas(codigo),
     mes             INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
     anio            INTEGER NOT NULL,
     monto_minor     INTEGER NOT NULL DEFAULT 0,
     calculado_en    TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(entidad_persona, tab, moneda_id, mes, anio)
+    UNIQUE(entidad_persona, tab, moneda_codigo, mes, anio)
 );
 
 CREATE TABLE IF NOT EXISTS compartidos_mensuales (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
     hogar_id     TEXT NOT NULL REFERENCES hogares(id),
     pagador      TEXT NOT NULL,
-    moneda_id    INTEGER NOT NULL REFERENCES monedas(id),
+    moneda_codigo    TEXT NOT NULL REFERENCES monedas(codigo),
     mes          INTEGER NOT NULL CHECK(mes BETWEEN 1 AND 12),
     anio         INTEGER NOT NULL,
     monto_minor  INTEGER NOT NULL DEFAULT 0,
     calculado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(hogar_id, pagador, moneda_id, mes, anio)
+    UNIQUE(hogar_id, pagador, moneda_codigo, mes, anio)
 );
 
 -- =============================================================
@@ -945,16 +934,10 @@ CREATE INDEX IF NOT EXISTS idx_transacciones_categoria
 ON transacciones(categoria_id);
 
 CREATE INDEX IF NOT EXISTS idx_transacciones_moneda
-ON transacciones(moneda_id);
+ON transacciones(moneda_codigo);
 
 CREATE INDEX IF NOT EXISTS idx_transacciones_tipo
 ON transacciones(tipo_movimiento);
-
-CREATE INDEX IF NOT EXISTS idx_autotransferencias_salida
-ON autotransferencias(transaccion_salida_id);
-
-CREATE INDEX IF NOT EXISTS idx_autotransferencias_entrada
-ON autotransferencias(transaccion_entrada_id);
 
 CREATE INDEX IF NOT EXISTS idx_cuotas_compra
 ON cuotas_credito(compra_id);
@@ -1102,14 +1085,14 @@ JOIN cuentas_saldos cs
     ON cs.cuenta_id = c.id
 
 JOIN monedas m
-    ON m.id = cs.moneda_id
+    ON m.codigo = cs.moneda_codigo
 
 LEFT JOIN transacciones t
     ON t.cuenta_id = c.id
-    AND t.moneda_id = m.id
+    AND t.moneda_codigo = m.codigo
     AND t.deleted_at IS NULL
 
-GROUP BY c.id, m.id;
+GROUP BY c.id, m.codigo;
 
 CREATE VIEW IF NOT EXISTS vw_cuotas_pendientes AS
 SELECT
@@ -1152,3 +1135,10 @@ SELECT
 FROM gastos_compartidos gc
 WHERE gc.estado = 'pendiente'
 GROUP BY gc.hogar_id;
+
+-- =============================================================
+-- VERSIÓN
+-- =============================================================
+-- La misma que VERSION_SCHEMA (db/schema_migrations.py): subirlas juntas.
+-- verify/schema/verify_user_version.py chequea que coincidan.
+PRAGMA user_version = 4;

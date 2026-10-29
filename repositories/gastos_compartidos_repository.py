@@ -185,7 +185,7 @@ class GastosCompartidosRepository:
         columnas propias más category_name/categoria_principal vía JOIN a
         categorias — mismo criterio que TransaccionesRepository/
         ComprasCuotasRepository. Sin JOIN a monedas/cuentas: esta tabla no
-        tiene moneda_id ni cuenta_id (ver schema).
+        tiene moneda_codigo ni cuenta_id (ver schema).
         """
         return (
             QueryBuilder("gastos_compartidos gc", include_deleted=True)

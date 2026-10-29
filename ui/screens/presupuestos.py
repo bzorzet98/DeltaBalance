@@ -413,7 +413,7 @@ def build(
 
     def _firma(p: dict) -> tuple:
         return (
-            p["nombre"], p["categoria_id"], p["concepto"], p["monto_estimado_minor"], p["real_minor"], p["moneda_id"],
+            p["nombre"], p["categoria_id"], p["concepto"], p["monto_estimado_minor"], p["real_minor"], p["moneda_codigo"],
             p["currency_code"], p["currency_symbol"], p["decimales"], p["es_recurrente"],
         )
 
@@ -671,7 +671,7 @@ def build(
             resultado = presupuestos_service.create_fijo(
                 concepto=concepto,
                 monto_estimado_minor=round(estimado * escala),
-                moneda_id=moneda["id"],
+                moneda_codigo=moneda["codigo"],
                 mes=ui["mes"],
                 anio=ui["anio"],
                 es_recurrente=bool(refs["recurrente"].value),
@@ -704,7 +704,7 @@ def build(
             resultado = presupuestos_service.create_variable(
                 categoria_id=categoria_id,
                 monto_estimado_minor=round(estimado * 10 ** moneda["decimales"]),
-                moneda_id=moneda["id"],
+                moneda_codigo=moneda["codigo"],
                 mes=ui["mes"],
                 anio=ui["anio"],
                 es_recurrente=bool(refs["recurrente"].value),
@@ -743,7 +743,7 @@ def build(
         def _cambiar(codigo: str) -> None:
             moneda = monedas_por_codigo[codigo]
             cambios = {
-                "moneda_id": moneda["id"],
+                "moneda_codigo": moneda["codigo"],
                 "monto_estimado_minor": _reescalar(p["monto_estimado_minor"], p["decimales"], moneda["decimales"]),
             }
             if seccion == "fijo":  # el real de un variable no se guarda: se calcula

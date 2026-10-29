@@ -287,7 +287,7 @@ def build(
 
         def _firma(d: dict) -> tuple:
             return (
-                d["entidad_persona"], d["concepto"], d["tag"], d["notas"], d["monto_minor"], d["moneda_id"],
+                d["entidad_persona"], d["concepto"], d["tag"], d["notas"], d["monto_minor"], d["moneda_codigo"],
                 d["currency_code"], d["currency_symbol"], d["decimales"], d["fecha"],
             )
 
@@ -503,7 +503,7 @@ def build(
                     tag=alta_refs["tag"].value,  # el service lo recorta; vacío = None
                     tab=tab,  # el del switch activo
                     monto_minor=round(valor * 10 ** moneda["decimales"]),
-                    moneda_id=moneda["id"],
+                    moneda_codigo=moneda["codigo"],
                     fecha=fecha_str,
                     origen_tipo="manual",
                 )
@@ -539,7 +539,7 @@ def build(
                 # Mismo importe mostrado en la moneda nueva: con otros decimales se reescala.
                 diferencia = moneda["decimales"] - d["decimales"]
                 monto = d["monto_minor"] * 10 ** diferencia if diferencia >= 0 else round(d["monto_minor"] / 10 ** -diferencia)
-                return _guardar(moneda_id=moneda["id"], monto_minor=monto)
+                return _guardar(moneda_codigo=moneda["codigo"], monto_minor=monto)
 
             def _guardar_fecha(nuevo: str) -> str:
                 try:

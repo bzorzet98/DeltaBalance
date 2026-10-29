@@ -46,16 +46,16 @@ def main() -> None:
     prestamos_repo = PrestamosRepository(manager)
     repo = CuotasPrestamoRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
 
     prestamo_1 = prestamos_repo.crear(
         entidad="Test Bank", tipo="personal", capital_original_minor=400000,
-        tasa_anual_bp=5000, sistema_amortizacion="frances", moneda_id=moneda_ars,
+        tasa_anual_bp=5000, sistema_amortizacion="frances", moneda_codigo=moneda_ars,
         fecha_inicio="2026-01-01", plazo_meses=4,
     )
     prestamo_2 = prestamos_repo.crear(
         entidad="Test Bank 2", tipo="prendario", capital_original_minor=300000,
-        tasa_anual_bp=4200, sistema_amortizacion="aleman", moneda_id=moneda_ars,
+        tasa_anual_bp=4200, sistema_amortizacion="aleman", moneda_codigo=moneda_ars,
         fecha_inicio="2026-01-01", plazo_meses=3,
     )
 

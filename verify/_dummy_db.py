@@ -48,12 +48,35 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = BASE_DIR / "db" / "schema.sql"
 SEED_PATH = BASE_DIR / "db" / "seed.sql"
+# El schema y el seed anteriores al versionado (congelados): para armar una
+# base VIEJA, en user_version = 0, y probar las migraciones sobre ella.
+SCHEMA_V0_PATH = BASE_DIR / "db" / "schema_v0.sql"
+SEED_V0_PATH = BASE_DIR / "db" / "seed_v0.sql"
+
+
+def _crear(path: Path | None, schema: Path, seed: Path, prefijo: str) -> Path:
+    if path is None:
+        fd, tmp_name = tempfile.mkstemp(prefix=prefijo, suffix=".db")
+        os.close(fd)
+        path = Path(tmp_name)
+
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.executescript(schema.read_text(encoding="utf-8"))
+        conn.executescript(seed.read_text(encoding="utf-8"))
+        conn.commit()
+    finally:
+        conn.close()
+
+    return path
 
 
 def crear_dummy_db(path: Path | None = None) -> Path:
     """
     Crea (o reutiliza) un archivo SQLite temporal con schema.sql y seed.sql
-    aplicados, y devuelve su Path.
+    aplicados, y devuelve su Path. Queda en la versión actual del schema
+    (schema.sql marca su PRAGMA user_version): DatabaseManager.inicializar()
+    no le corre ninguna migración.
 
     Args:
         path: ruta explícita donde crear la DB. Si es None (caso normal), se
@@ -62,17 +85,17 @@ def crear_dummy_db(path: Path | None = None) -> Path:
     Returns:
         Path al archivo SQLite listo para usar.
     """
-    if path is None:
-        fd, tmp_name = tempfile.mkstemp(prefix="deltabalance_dummy_", suffix=".db")
-        os.close(fd)
-        path = Path(tmp_name)
+    return _crear(path, SCHEMA_PATH, SEED_PATH, "deltabalance_dummy_")
 
-    conn = sqlite3.connect(str(path))
-    try:
-        conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-        conn.executescript(SEED_PATH.read_text(encoding="utf-8"))
-        conn.commit()
-    finally:
-        conn.close()
 
-    return path
+def crear_dummy_db_v0(path: Path | None = None) -> Path:
+    """
+    Igual que crear_dummy_db(), pero con db/schema_v0.sql + db/seed_v0.sql:
+    una base VIEJA (user_version = 0, moneda_id entero, presupuestos e
+    ingresos_proyectados con su estructura anterior…), para armar a mano un
+    estado anterior con sqlite3 crudo y después llamar a
+    DatabaseManager.inicializar(), que le corre TODAS las migraciones
+    (db/schema_migrations.py run_migrations()). Los repositorios y services
+    no funcionan sobre ella hasta inicializar().
+    """
+    return _crear(path, SCHEMA_V0_PATH, SEED_V0_PATH, "deltabalance_dummy_v0_")

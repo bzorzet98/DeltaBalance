@@ -72,7 +72,7 @@ def main() -> None:
     manager.inicializar()
     svc = LoansService(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     cuenta_1 = manager.fetchone("SELECT id FROM cuentas LIMIT 1;")["id"]
 
     # ============================================================
@@ -81,7 +81,7 @@ def main() -> None:
     print("--- create_loan() — sistema francés ---")
     resultado_frances = svc.create_loan(
         entidad="Banco Galicia", tipo="hipotecario", capital_original_minor=1200000,
-        tasa_anual_bp=1200, sistema_amortizacion="frances", moneda_id=moneda_ars,
+        tasa_anual_bp=1200, sistema_amortizacion="frances", moneda_codigo=moneda_ars,
         fecha_inicio="2026-01-01", plazo_meses=12,
     )
     caso("create_loan() francés: success=True", True, resultado_frances.success)
@@ -134,7 +134,7 @@ def main() -> None:
     print("\n--- create_loan() — sistema alemán ---")
     resultado_aleman = svc.create_loan(
         entidad="Banco Nación", tipo="prendario", capital_original_minor=1200000,
-        tasa_anual_bp=1200, sistema_amortizacion="aleman", moneda_id=moneda_ars,
+        tasa_anual_bp=1200, sistema_amortizacion="aleman", moneda_codigo=moneda_ars,
         fecha_inicio="2026-01-01", plazo_meses=12,
     )
     prestamo_aleman = resultado_aleman.entity_id
@@ -168,7 +168,7 @@ def main() -> None:
     print("\n--- create_loan() — caso borde tasa_anual_bp=0 (francés) ---")
     resultado_tasa_cero = svc.create_loan(
         entidad="Banco Sin Interés", tipo="personal", capital_original_minor=1200000,
-        tasa_anual_bp=0, sistema_amortizacion="frances", moneda_id=moneda_ars,
+        tasa_anual_bp=0, sistema_amortizacion="frances", moneda_codigo=moneda_ars,
         fecha_inicio="2026-01-01", plazo_meses=12,
     )
     schedule_tasa_cero = svc.get_schedule(resultado_tasa_cero.entity_id)
@@ -185,11 +185,11 @@ def main() -> None:
     # ============================================================
     print("\n--- create_loan() — validaciones ---")
     caso_excepcion(
-        "create_loan() con moneda_id inexistente lanza LoansError",
+        "create_loan() con moneda_codigo inexistente lanza LoansError",
         LoansError,
         lambda: svc.create_loan(
             entidad="X", tipo="personal", capital_original_minor=1000, tasa_anual_bp=1000,
-            sistema_amortizacion="frances", moneda_id=999999, fecha_inicio="2026-01-01", plazo_meses=6,
+            sistema_amortizacion="frances", moneda_codigo="XXX", fecha_inicio="2026-01-01", plazo_meses=6,
         ),
     )
     caso_excepcion(
@@ -197,7 +197,7 @@ def main() -> None:
         ValueError,
         lambda: svc.create_loan(
             entidad="X", tipo="personal", capital_original_minor=0, tasa_anual_bp=1000,
-            sistema_amortizacion="frances", moneda_id=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=6,
+            sistema_amortizacion="frances", moneda_codigo=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=6,
         ),
     )
     caso_excepcion(
@@ -205,7 +205,7 @@ def main() -> None:
         ValueError,
         lambda: svc.create_loan(
             entidad="X", tipo="personal", capital_original_minor=1000, tasa_anual_bp=1000,
-            sistema_amortizacion="frances", moneda_id=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=0,
+            sistema_amortizacion="frances", moneda_codigo=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=0,
         ),
     )
     caso_excepcion(
@@ -213,7 +213,7 @@ def main() -> None:
         ValueError,
         lambda: svc.create_loan(
             entidad="X", tipo="personal", capital_original_minor=1000, tasa_anual_bp=-100,
-            sistema_amortizacion="frances", moneda_id=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=6,
+            sistema_amortizacion="frances", moneda_codigo=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=6,
         ),
     )
     caso_excepcion(
@@ -221,7 +221,7 @@ def main() -> None:
         LoansError,
         lambda: svc.create_loan(
             entidad="X", tipo="personal", capital_original_minor=1000, tasa_anual_bp=1000,
-            sistema_amortizacion="frances", moneda_id=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=6,
+            sistema_amortizacion="frances", moneda_codigo=moneda_ars, fecha_inicio="2026-01-01", plazo_meses=6,
             cuenta_debito_id=999999,
         ),
     )
@@ -232,7 +232,7 @@ def main() -> None:
     print("\n--- create_loan() — rollover de año ---")
     resultado_rollover = svc.create_loan(
         entidad="Rollover Bank", tipo="personal", capital_original_minor=300000,
-        tasa_anual_bp=1200, sistema_amortizacion="frances", moneda_id=moneda_ars,
+        tasa_anual_bp=1200, sistema_amortizacion="frances", moneda_codigo=moneda_ars,
         fecha_inicio="2026-11-01", plazo_meses=3,
     )
     schedule_rollover = svc.get_schedule(resultado_rollover.entity_id)

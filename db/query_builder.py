@@ -130,7 +130,7 @@ class QueryBuilder:
             self — para encadenamiento fluido.
 
         Ejemplo:
-            .join("monedas m", "m.id = t.moneda_id", "LEFT")
+            .join("monedas m", "m.codigo = t.moneda_codigo", "LEFT")
         """
         tipo = tipo.upper()
 
@@ -285,8 +285,8 @@ class QueryBuilder:
             self — para encadenamiento fluido.
 
         Ejemplo:
-            .select("moneda_id", "SUM(monto_minor) AS total")
-            .group_by("moneda_id")
+            .select("moneda_codigo", "SUM(monto_minor) AS total")
+            .group_by("moneda_codigo")
         """
         self._group_by.extend(columnas)
         return self

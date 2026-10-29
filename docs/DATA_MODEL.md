@@ -25,14 +25,19 @@ de ese archivo.
 `DatabaseManager.inicializar()` (`db/database.py`) lee `PRAGMA user_version`:
 
 - **Base nueva** (sin tablas): `schema.sql` → `sembrar_brokers()` →
-  `preparar_sync()` → `seed.sql` (solo si el archivo no existía) → `user_version = 2`.
-- **`user_version` menor que 2**: backup del archivo y las migraciones que falten, en
+  `preparar_sync()` → `seed.sql` (solo si el archivo no existía) → `user_version = 4`
+  (`schema.sql` ya la marca él mismo).
+- **`user_version` menor que 4**: backup del archivo y las migraciones que falten, en
   orden, marcando la versión al terminar cada una:
   - **v0 → v1 (baseline)**: la cadena de abajo, una sola vez (§37 de
     `DATA_MODEL_DECISIONS.md`);
   - **v1 → v2**: borra `tipos_cambio`, `indices_inflacion`, `resumen_cargos_extra` y
     `activo_objetivos` (§38).
-- **`user_version = 2`**: ninguna migración.
+  - **v2 → v3**: `monedas` con `codigo` de PK; todo `moneda_id INTEGER` pasa a
+    `moneda_codigo TEXT → monedas(codigo)` (§39).
+  - **v3 → v4**: borra `autotransferencias`; las dos patas de una transferencia
+    quedan como transacciones independientes (§40).
+- **`user_version = 4`**: ninguna migración.
 - **Siempre**, al final: `preparar_sync()`.
 
 La baseline (`_migrar_a_v1()` en `db/schema_migrations.py`) corre, en este orden:
@@ -65,10 +70,10 @@ La baseline (`_migrar_a_v1()` en `db/schema_migrations.py`) corre, en este orden
 El `seed.sql` (monedas, categorías y la cuenta "Caja Efectivo") ya no forma parte de
 esta cadena: solo corre al crear una base nueva.
 
-**Inventario (v2):** 33 tablas, todas en `schema.sql`. Además hay 3 vistas, 25 índices
+**Inventario (v4):** 32 tablas, todas en `schema.sql`. Además hay 3 vistas, 23 índices
 explícitos, 7 triggers `updated_en` y 63 triggers de sync (3 por cada una de las 21
-tablas sincronizadas; estos últimos, solo de `preparar_sync()`). En v1 eran 37 tablas,
-28 índices y 66 triggers de sync. En `schema_v0.sql` había 30 tablas; las otras 7 las
+tablas sincronizadas; estos últimos, solo de `preparar_sync()`). En v2/v3 eran 33
+tablas y 25 índices; en v1, 37 tablas, 28 índices y 66 triggers de sync. En `schema_v0.sql` había 30 tablas; las otras 7 las
 crea la baseline.
 
 ---
@@ -95,6 +100,11 @@ las columnas agregadas por `ALTER TABLE` pueden estar en otro orden físico.
 ### 3.1 Núcleo
 
 #### `monedas`
+
+> **Desde v3** (`DATA_MODEL_DECISIONS.md` §39): la PK es `codigo` (ya no hay `id`), y en
+> todo este documento cada `moneda_id` INTEGER → `monedas` debe leerse como
+> `moneda_codigo` TEXT → `monedas(codigo)`, en la misma posición. Las tablas de abajo
+> todavía muestran la forma de v2.
 
 Catálogo de monedas. `decimales` define la escala de todos los montos `*_minor`
 (ARS 2, BTC 8, CLP 0).
@@ -182,7 +192,11 @@ los saldos.
 
 #### `autotransferencias`
 
-Vincula las dos patas de una transferencia entre cuentas propias: el egreso en la
+> **Eliminada en v4** (`DATA_MODEL_DECISIONS.md` §40): las dos patas son transacciones
+> independientes con `tag = 'autotransferencia'`. Queda documentada porque una base en
+> v3 o anterior, o un backup, todavía la tiene.
+
+Vinculaba las dos patas de una transferencia entre cuentas propias: el egreso en la
 cuenta de origen y el ingreso en la de destino.
 
 | Columna | Tipo | Constraints | Notas |

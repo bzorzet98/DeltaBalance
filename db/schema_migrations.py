@@ -1237,7 +1237,9 @@ def aplicar_migraciones_columna(conn: sqlite3.Connection, exigir_uuid: bool = Tr
 #    las escrituras de la app en otra conexión nunca la ven.
 #
 # La clave de una fila es su clave primaria como texto: el id (un UUID), o
-# las columnas de CLAVES_SYNC unidas con '|' ('<uuid de la cuenta>|1' en cuentas_saldos).
+# las columnas de CLAVES_SYNC unidas con '|' ('<uuid de la cuenta>|ARS' en
+# cuentas_saldos desde v3; en Supabase, '<uuid de la cuenta>|1' — ver
+# IDS_MONEDA_REMOTOS).
 
 TABLAS_SINCRONIZADAS: list[str] = [
     # En orden de dependencias (padres primero): así se aplican las filas
@@ -1272,9 +1274,12 @@ TABLAS_SINCRONIZADAS: list[str] = [
     "gasto_compartido_pagos",
 ]
 
-# Tablas cuya clave primaria no es `id`.
+# Tablas cuya clave primaria no es `id` (la de la versión actual del schema:
+# cuentas_saldos tiene moneda_codigo desde v3 — hasta v2, moneda_id). En
+# Supabase la clave de cuentas_saldos sigue siendo '<cuenta>|<moneda_id>':
+# sync/sync_engine.py la traduce (IDS_MONEDA_REMOTOS).
 CLAVES_SYNC: dict[str, tuple[str, ...]] = {
-    "cuentas_saldos": ("cuenta_id", "moneda_id"),
+    "cuentas_saldos": ("cuenta_id", "moneda_codigo"),
     "hogar_miembros": ("hogar_id", "usuario_local"),
 }
 SEPARADOR_CLAVE = "|"
@@ -1308,13 +1313,25 @@ def claves_primarias(tabla: str) -> tuple[str, ...]:
     return CLAVES_SYNC.get(tabla, ("id",))
 
 
-def _expresion_clave(tabla: str, fila: str) -> str:
+def _claves_reales(conn: sqlite3.Connection, tabla: str) -> tuple[str, ...]:
+    """
+    La clave primaria que la tabla tiene HOY en esta base (PRAGMA
+    table_info, en orden). Para los triggers de sync: preparar_sync() corre
+    también dentro de la baseline, sobre una base vieja cuya cuentas_saldos
+    todavía tiene moneda_id — con CLAVES_SYNC (la del schema actual) el
+    trigger apuntaría a una columna que no existe.
+    """
+    columnas = [fila for fila in conn.execute(f"PRAGMA table_info({tabla});") if fila[5]]
+    return tuple(fila[1] for fila in sorted(columnas, key=lambda fila: fila[5]))
+
+
+def _expresion_clave(columnas: tuple[str, ...], fila: str) -> str:
     """SQL que arma la clave de texto de NEW/OLD en un trigger: CAST(NEW.id AS TEXT) o 'a' || '|' || 'b'."""
-    return f" || '{SEPARADOR_CLAVE}' || ".join(f"CAST({fila}.{columna} AS TEXT)" for columna in claves_primarias(tabla))
+    return f" || '{SEPARADOR_CLAVE}' || ".join(f"CAST({fila}.{columna} AS TEXT)" for columna in columnas)
 
 
-def _ddl_triggers_sync(tabla: str) -> list[tuple[str, str]]:
-    """(nombre, CREATE TRIGGER) de los 3 triggers de sync de la tabla (ver el bloque de arriba)."""
+def _ddl_triggers_sync(tabla: str, columnas: tuple[str, ...]) -> list[tuple[str, str]]:
+    """(nombre, CREATE TRIGGER) de los 3 triggers de sync de la tabla, con clave `columnas` (ver el bloque de arriba)."""
     cuando = f"WHEN NOT EXISTS (SELECT 1 FROM sync_estado WHERE clave = '{MARCA_ESCRITURA_SYNC}')"
     marca_tiempo = "strftime('%Y-%m-%d %H:%M:%f', 'now')"
 
@@ -1328,7 +1345,7 @@ def _ddl_triggers_sync(tabla: str) -> list[tuple[str, str]]:
         # constraint failed: sync_cambios.tabla, sync_cambios.clave" al
         # guardar dos veces los días de una tarjeta) o se ignoraba. Así no
         # depende de quién lo dispara.
-        clave = _expresion_clave(tabla, fila)
+        clave = _expresion_clave(columnas, fila)
         return (
             f"DELETE FROM sync_cambios WHERE tabla = '{tabla}' AND clave = {clave}; "
             "INSERT INTO sync_cambios (tabla, clave, operacion, modificado_en) "
@@ -1371,7 +1388,7 @@ def preparar_sync(conn: sqlite3.Connection) -> None:
     conn.execute("BEGIN;")
     try:
         for tabla in TABLAS_SINCRONIZADAS:
-            for nombre, ddl in _ddl_triggers_sync(tabla):
+            for nombre, ddl in _ddl_triggers_sync(tabla, _claves_reales(conn, tabla)):
                 conn.execute(f"DROP TRIGGER IF EXISTS {nombre};")
                 conn.execute(ddl)
         conn.commit()
@@ -1401,8 +1418,9 @@ def preparar_sync(conn: sqlite3.Connection) -> None:
 # (no hace falta introspección) y run_migrations() marca la versión recién
 # cuando terminó bien.
 
-# Versión que deja db/schema.sql en una base nueva.
-VERSION_SCHEMA = 2
+# Versión que deja db/schema.sql en una base nueva (el archivo también la
+# marca con su propio PRAGMA user_version: subir los dos juntos).
+VERSION_SCHEMA = 4
 
 # db/schema.sql tal como estaba antes del versionado (congelado). Solo lo usa
 # la baseline.
@@ -1495,10 +1513,247 @@ def _migrar_a_v2(conn: sqlite3.Connection) -> None:
         raise
 
 
+# =============================================================
+# v3: MONEDAS CON CLAVE NATURAL (docs/DATA_MODEL_DECISIONS.md sección 39)
+# =============================================================
+# monedas pasa a tener `codigo` como PRIMARY KEY (sin el id entero) y cada
+# moneda_id INTEGER → monedas(id) pasa a moneda_codigo TEXT →
+# monedas(codigo), en la misma posición de la tabla.
+#
+# El moneda_id entero de cada moneda hasta v2. Lo fijaba el seed (AUTOINCREMENT
+# en el orden de db/seed.sql, nada más inserta monedas): era el mismo en
+# toda base. Supabase sigue guardando las filas con él — sync/sync_engine.py
+# traduce codigo ↔ id al subir y al bajar, así lo ya subido y una
+# instalación en v2 siguen siendo compatibles. _migrar_a_v3() frena si una
+# base tiene otro id para alguna moneda (la traducción daría otra moneda).
+IDS_MONEDA_REMOTOS: dict[str, int] = {"ARS": 1, "USD": 2, "USDT": 3, "USDC": 4, "BTC": 5, "CLP": 6, "BRL": 7}
+
+# Las que tienen moneda_id en v2 (en el orden en que se reconstruyen).
+TABLAS_CON_MONEDA_V3 = (
+    "cuentas_saldos", "empleos", "transacciones", "compras_cuotas", "deudas", "presupuestos",
+    "ingresos_proyectados", "activos_financieros", "movimientos_activo", "prestamos",
+    "saldos_mensuales", "deudas_mensuales", "compartidos_mensuales",
+)
+
+DDL_MONEDAS_V3 = """
+CREATE TABLE monedas_v3 (
+    codigo          TEXT PRIMARY KEY NOT NULL,
+    simbolo         TEXT,
+    decimales       INTEGER NOT NULL DEFAULT 2
+);
+"""
+
+# La única vista que usa moneda_id (con el join a monedas por código).
+# Idéntica a la de db/schema.sql v3. Las demás se recrean tal cual.
+DDL_VW_BALANCE_CUENTAS_V3 = """
+CREATE VIEW vw_balance_cuentas AS
+SELECT
+    c.id AS cuenta_id,
+    c.nombre,
+    m.codigo AS moneda,
+
+    (
+        COALESCE(cs.saldo_inicial_minor, 0)
+        +
+        COALESCE(SUM(
+            CASE
+                WHEN t.tipo_movimiento = 'ingreso'
+                    THEN t.monto_minor
+
+                WHEN t.tipo_movimiento = 'egreso'
+                    THEN -t.monto_minor
+
+                ELSE t.monto_minor
+            END
+        ), 0)
+    ) AS saldo_minor
+
+FROM cuentas c
+
+JOIN cuentas_saldos cs
+    ON cs.cuenta_id = c.id
+
+JOIN monedas m
+    ON m.codigo = cs.moneda_codigo
+
+LEFT JOIN transacciones t
+    ON t.cuenta_id = c.id
+    AND t.moneda_codigo = m.codigo
+    AND t.deleted_at IS NULL
+
+GROUP BY c.id, m.codigo;
+"""
+
+# Claves de cuentas_saldos en sync_cambios: '<cuenta>|<moneda_id>' →
+# '<cuenta>|<codigo>' (la clave local nueva; con la monedas vieja todavía).
+SQL_CLAVES_CUENTAS_SALDOS_V3 = f"""
+UPDATE sync_cambios
+SET clave = substr(clave, 1, instr(clave, '{SEPARADOR_CLAVE}'))
+            || (SELECT m.codigo FROM monedas m WHERE CAST(m.id AS TEXT) = substr(clave, instr(clave, '{SEPARADOR_CLAVE}') + 1))
+WHERE tabla = 'cuentas_saldos'
+  AND EXISTS (SELECT 1 FROM monedas m WHERE CAST(m.id AS TEXT) = substr(clave, instr(clave, '{SEPARADOR_CLAVE}') + 1));
+"""
+
+_PATRON_CREATE_TABLE = re.compile(r'^CREATE TABLE\s+("?)(\w+)\1\s*\(', re.IGNORECASE)
+
+
+def _sql_con_moneda_codigo(sql: str) -> str:
+    """El CREATE TABLE / INDEX / TRIGGER de sqlite_master con moneda_id INTEGER → monedas(id) pasado a moneda_codigo TEXT → monedas(codigo)."""
+    sql = re.sub(r"\bmoneda_id(\s+)INTEGER\b", r"moneda_codigo\1TEXT", sql)
+    sql = re.sub(r"\bmoneda_id\b", "moneda_codigo", sql)
+    return re.sub(r"\bmonedas\s*\(\s*id\s*\)", "monedas(codigo)", sql)
+
+
+def _rehacer_con_moneda_codigo(conn: sqlite3.Connection, tabla: str) -> None:
+    """
+    Reconstruye `tabla` con moneda_codigo (procedimiento de 12 pasos de
+    SQLite: nueva al lado, copia, borrado, rename): su propio CREATE TABLE
+    de sqlite_master transformado — así conserva el resto de sus columnas,
+    su orden y sus restricciones tal como están en ESTA base —, la copia con
+    el código de cada moneda (de la monedas vieja, todavía con id) y sus
+    índices y triggers rehechos. Dentro de la transacción de _migrar_a_v3().
+    """
+    anexos = [
+        fila[0] for fila in conn.execute(
+            "SELECT sql FROM sqlite_master WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL;",
+            (tabla,),
+        )
+    ]
+    nueva = f"{tabla}_v3"
+    conn.execute(f"DROP TABLE IF EXISTS {nueva};")  # un resto de un intento anterior, si lo hubiera
+    conn.execute(_PATRON_CREATE_TABLE.sub(f"CREATE TABLE {nueva} (", _sql_con_moneda_codigo(_sql_tabla(conn, tabla)), count=1))
+    viejas = _columnas_en_orden(conn, tabla)
+    destino = ", ".join("moneda_codigo" if c == "moneda_id" else c for c in viejas)
+    origen = ", ".join(
+        "(SELECT m.codigo FROM monedas m WHERE m.id = t.moneda_id)" if c == "moneda_id" else f"t.{c}" for c in viejas
+    )
+    conn.execute(f"INSERT INTO {nueva} ({destino}) SELECT {origen} FROM {tabla} t;")
+    conn.execute(f"DROP TABLE {tabla};")
+    conn.execute(f"ALTER TABLE {nueva} RENAME TO {tabla};")
+    for ddl in anexos:
+        conn.execute(_sql_con_moneda_codigo(ddl))
+
+
+def _migrar_a_v3(conn: sqlite3.Connection) -> None:
+    """
+    v2 → v3: monedas con clave natural (ver el bloque de arriba). Antes de
+    tocar nada, frena si:
+      - una moneda tiene otro id que el de IDS_MONEDA_REMOTOS (la sync
+        traduciría mal), o
+      - alguna fila apunta a un moneda_id que no existe (se perdería: no hay
+        código que ponerle).
+    Después, en UNA transacción con PRAGMA foreign_keys = OFF (procedimiento
+    de SQLite para cambiar el tipo de una columna; se vuelve a prender pase lo
+    que pase): las claves de cuentas_saldos en sync_cambios, monedas_v3,
+    cada tabla de TABLAS_CON_MONEDA_V3, y monedas_v3 → monedas. Las vistas
+    quedan afuera mientras dura y se recrean al final: cada ALTER TABLE …
+    RENAME revalida todas, y entre el DROP de una tabla y el RENAME de su
+    reemplazo una vista que la usa (vw_cuotas_pendientes → compras_cuotas)
+    apunta a una tabla que no existe; vw_balance_cuentas se recrea con su
+    definición v3 (DDL_VW_BALANCE_CUENTAS_V3), las demás tal cual. PRAGMA
+    foreign_key_check antes del COMMIT: si queda una fila huérfana, rollback
+    y RuntimeError.
+
+    Los datos no cambian (sincronizado_en incluido): en Supabase las filas
+    siguen con moneda_id, así que no hay nada nuevo que subir.
+    """
+    conn.commit()
+    for moneda_id, codigo in conn.execute("SELECT id, codigo FROM monedas ORDER BY id;").fetchall():
+        if IDS_MONEDA_REMOTOS.get(codigo) != moneda_id:
+            raise RuntimeError(
+                f"Migración v3: la moneda {codigo} tiene id {moneda_id} y la sincronización espera "
+                f"{IDS_MONEDA_REMOTOS.get(codigo)}. No se migró nada; revisá la tabla monedas."
+            )
+    for tabla in TABLAS_CON_MONEDA_V3:
+        if not _existe_tabla(conn, tabla):
+            continue
+        sueltas = conn.execute(
+            f"SELECT COUNT(*) FROM {tabla} WHERE moneda_id IS NOT NULL AND moneda_id NOT IN (SELECT id FROM monedas);"
+        ).fetchone()[0]
+        if sueltas:
+            raise RuntimeError(
+                f"Migración v3: {sueltas} fila(s) de {tabla} apuntan a una moneda que no existe. No se migró nada."
+            )
+
+    conn.execute("PRAGMA foreign_keys = OFF;")
+    try:
+        conn.execute("BEGIN;")
+        try:
+            if _existe_tabla(conn, "sync_cambios"):
+                conn.execute(SQL_CLAVES_CUENTAS_SALDOS_V3)
+            vistas = [
+                (fila[0], fila[1])
+                for fila in conn.execute("SELECT name, sql FROM sqlite_master WHERE type = 'view' AND sql IS NOT NULL;")
+            ]
+            for nombre, _ in vistas:
+                conn.execute(f"DROP VIEW {nombre};")
+            conn.execute("DROP TABLE IF EXISTS monedas_v3;")  # un resto de un intento anterior, si lo hubiera
+            conn.execute(DDL_MONEDAS_V3)
+            conn.execute("INSERT INTO monedas_v3 (codigo, simbolo, decimales) SELECT codigo, simbolo, decimales FROM monedas;")
+            for tabla in TABLAS_CON_MONEDA_V3:
+                if _existe_tabla(conn, tabla):
+                    _rehacer_con_moneda_codigo(conn, tabla)
+            conn.execute("DROP TABLE monedas;")
+            conn.execute("ALTER TABLE monedas_v3 RENAME TO monedas;")
+            for nombre, sql in vistas:
+                conn.execute(DDL_VW_BALANCE_CUENTAS_V3 if nombre == "vw_balance_cuentas" else sql)
+            huerfana = conn.execute("PRAGMA foreign_key_check;").fetchone()
+            if huerfana is not None:
+                raise RuntimeError(
+                    f"Migración v3: fila huérfana en {huerfana[0]} (rowid {huerfana[1]}) hacia {huerfana[2]}. "
+                    "No se aplicó nada."
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+    finally:
+        conn.execute("PRAGMA foreign_keys = ON;")
+
+
+# =============================================================
+# v4: SIN autotransferencias (docs/DATA_MODEL_DECISIONS.md sección 40)
+# =============================================================
+
+def _migrar_a_v4(conn: sqlite3.Connection) -> None:
+    """
+    v3 → v4: elimina la tabla autotransferencias (con sus índices). Las dos
+    patas de una transferencia ya son filas de `transacciones` con todos
+    sus datos; lo único que se pierde es el vínculo entre ellas (queda en
+    el backup previo a la migración — se avisa por el log cuántos había).
+    Desde v4 TransactionService.create_transfer() las crea independientes,
+    y get_delete_warnings() reconoce una pata por su tag. También borra lo
+    que hubiera de la tabla en sync_cambios (no estaba en
+    TABLAS_SINCRONIZADAS, así que no debería haber nada). Todo en UNA
+    transacción. Ninguna tabla tiene una FK hacia autotransferencias, y
+    ninguna vista ni trigger la usa.
+    """
+    conn.commit()
+    if _existe_tabla(conn, "autotransferencias"):
+        vinculos = conn.execute("SELECT COUNT(*) FROM autotransferencias;").fetchone()[0]
+        if vinculos:
+            logger.warning(
+                "Migración v4: se elimina autotransferencias con %d vínculo(s); las transacciones quedan "
+                "(el vínculo, en el backup previo).",
+                vinculos,
+            )
+    conn.execute("BEGIN;")
+    try:
+        conn.execute("DROP TABLE IF EXISTS autotransferencias;")
+        if _existe_tabla(conn, "sync_cambios"):
+            conn.execute("DELETE FROM sync_cambios WHERE tabla = 'autotransferencias';")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+
+
 # versión destino → función que lleva la base desde la versión anterior.
 MIGRACIONES_VERSIONADAS: dict[int, Callable[[sqlite3.Connection], None]] = {
     1: _migrar_a_v1,
     2: _migrar_a_v2,
+    3: _migrar_a_v3,
+    4: _migrar_a_v4,
 }
 
 

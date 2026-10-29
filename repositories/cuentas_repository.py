@@ -81,10 +81,10 @@ class CuentasRepository:
             raise ValueError(f"Moneda desconocida: {moneda_codigo}")
 
         sql_saldo = """
-            INSERT OR IGNORE INTO cuentas_saldos (cuenta_id, moneda_id, saldo_inicial_minor)
+            INSERT OR IGNORE INTO cuentas_saldos (cuenta_id, moneda_codigo, saldo_inicial_minor)
             VALUES (?, ?, ?);
         """
-        params_saldo = (cuenta_id, moneda["id"], to_minor(saldo_inicial, moneda["decimales"]))
+        params_saldo = (cuenta_id, moneda["codigo"], to_minor(saldo_inicial, moneda["decimales"]))
         if conn is not None:
             conn.execute(sql_saldo, params_saldo)
         else:
@@ -95,7 +95,7 @@ class CuentasRepository:
     def crear_saldo_inicial(
         self,
         cuenta_id: str,
-        moneda_id: int,
+        moneda_codigo: str,
         monto_minor: int = 0,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
@@ -103,7 +103,7 @@ class CuentasRepository:
         Agrega una fila de saldo inicial para una moneda adicional de una
         cuenta ya existente — una cuenta puede operar en más de una moneda
         (ver docs/DATA_MODEL_DECISIONS.md sección 14). INSERT OR IGNORE: si
-        la combinación (cuenta_id, moneda_id) ya existe, no hace nada; el
+        la combinación (cuenta_id, moneda_codigo) ya existe, no hace nada; el
         caller valida antes si necesita distinguir "ya existía" de "se
         agregó" (ver AccountsService.add_currency_to_account()).
 
@@ -111,10 +111,10 @@ class CuentasRepository:
         motivo que en crear().
         """
         sql = """
-            INSERT OR IGNORE INTO cuentas_saldos (cuenta_id, moneda_id, saldo_inicial_minor)
+            INSERT OR IGNORE INTO cuentas_saldos (cuenta_id, moneda_codigo, saldo_inicial_minor)
             VALUES (?, ?, ?);
         """
-        params = (cuenta_id, moneda_id, monto_minor)
+        params = (cuenta_id, moneda_codigo, monto_minor)
         if conn is not None:
             conn.execute(sql, params)
         else:
@@ -123,12 +123,12 @@ class CuentasRepository:
     def get_or_create_saldo_inicial(
         self,
         cuenta_id: str,
-        moneda_id: int,
+        moneda_codigo: str,
         conn: Optional[sqlite3.Connection] = None,
     ) -> None:
         """
         Resolución perezosa de moneda (Tarea 6f, docs/PROXIMOS_PASOS.md):
-        si la combinación (cuenta_id, moneda_id) ya tiene fila en
+        si la combinación (cuenta_id, moneda_codigo) ya tiene fila en
         cuentas_saldos no hace nada; si no, la crea con saldo_inicial_minor
         = 0. Es el punto que llama TransaccionesRepository.crear() antes de
         insertar una transacción real, para que una cuenta creada sin
@@ -143,7 +143,7 @@ class CuentasRepository:
         Si se pasa `conn`, participa de una transacción externa — mismo
         motivo que en crear()/crear_saldo_inicial().
         """
-        self.crear_saldo_inicial(cuenta_id, moneda_id, monto_minor=0, conn=conn)
+        self.crear_saldo_inicial(cuenta_id, moneda_codigo, monto_minor=0, conn=conn)
 
     def obtener_por_id(self, cuenta_id: str) -> Optional[sqlite3.Row]:
         return self._db.fetchone("SELECT * FROM cuentas WHERE id = ?;", (cuenta_id,))
@@ -162,10 +162,10 @@ class CuentasRepository:
         """
         return self._db.fetchall(
             """
-            SELECT cs.cuenta_id, cs.moneda_id, cs.saldo_inicial_minor, cs.visible,
+            SELECT cs.cuenta_id, cs.moneda_codigo, cs.saldo_inicial_minor, cs.visible,
                    m.codigo, m.simbolo, m.decimales
             FROM cuentas_saldos cs
-            JOIN monedas m ON m.id = cs.moneda_id
+            JOIN monedas m ON m.codigo = cs.moneda_codigo
             WHERE cs.cuenta_id = ?
             ORDER BY m.codigo;
             """,

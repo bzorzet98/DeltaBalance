@@ -114,11 +114,11 @@ def main() -> None:
     repo_saldos = SaldosMensualesRepository(manager)
 
     ars = next(m for m in cuentas.list_currencies() if m["codigo"] == "ARS")
-    ars_id = ars["id"]
+    ars_id = ars["codigo"]
     cuenta_id = cuentas.create_account(nombre="Banco Snapshot", tipo="debito", monedas=[ars_id]).account_id
     # AccountsService siempre crea el saldo inicial en 0: se fija a mano para el escenario.
     manager.execute(
-        "UPDATE cuentas_saldos SET saldo_inicial_minor = ? WHERE cuenta_id = ? AND moneda_id = ?;",
+        "UPDATE cuentas_saldos SET saldo_inicial_minor = ? WHERE cuenta_id = ? AND moneda_codigo = ?;",
         (10000, cuenta_id, ars_id),
     )
     cat_egreso = manager.fetchone("SELECT id FROM categorias WHERE tipo = 'egreso' ORDER BY id LIMIT 1;")["id"]
@@ -162,7 +162,7 @@ def main() -> None:
     caso("mes actual → cierre del mes anterior", 75000, snapshots.get_saldo_anterior_cuenta(cuenta_id, ars_id, m0[1], m0[0]))
     caso("hace 1 mes → cierre de hace 2", 85000, snapshots.get_saldo_anterior_cuenta(cuenta_id, ars_id, m1[1], m1[0]))
     caso("primer mes con datos → saldo_inicial_minor", 10000, snapshots.get_saldo_anterior_cuenta(cuenta_id, ars_id, m3[1], m3[0]))
-    saldo_app = next(s for s in cuentas.get_account(cuenta_id)["saldos"] if s["moneda_id"] == ars_id)["saldo_minor"]
+    saldo_app = next(s for s in cuentas.get_account(cuenta_id)["saldos"] if s["moneda_codigo"] == ars_id)["saldo_minor"]
     caso("snapshot del mes anterior + movimientos del mes actual (+50.00) = saldo de la app", saldo_app, 75000 + 5000)
 
     # ============================================================
@@ -184,7 +184,7 @@ def main() -> None:
     caso("se borraron los snapshots", None, _snapshot(m1))
     caso("get_saldo_anterior_cuenta() en vivo da lo mismo", 70000, snapshots.get_saldo_anterior_cuenta(cuenta_id, ars_id, m0[1], m0[0]))
     en_lote = {
-        (e["cuenta_id"], e["moneda_id"]): e["saldo_minor"]
+        (e["cuenta_id"], e["moneda_codigo"]): e["saldo_minor"]
         for e in snapshots.get_saldos_anteriores_cuentas(m0[1], m0[0])
     }
     caso("get_saldos_anteriores_cuentas() en vivo da lo mismo", 70000, en_lote.get((cuenta_id, ars_id)))

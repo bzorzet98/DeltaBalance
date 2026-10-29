@@ -247,7 +247,7 @@ def main() -> None:
 
     compra_sin_cuotas = compras_repo.crear(
         fecha_compra="2026-04-01", concepto="Sin cuotas", cuenta_id=cuenta_credito, categoria_id=cat_egreso,
-        moneda_id=manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"],
+        moneda_codigo="ARS",
         monto_total_minor=100000, total_cuotas=0, monto_por_cuota_minor=0,
     )
     caso_excepcion(

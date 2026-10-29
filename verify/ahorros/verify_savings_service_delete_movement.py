@@ -61,7 +61,7 @@ def main() -> None:
     svc = SavingsService(manager)
     cuentas_repo = CuentasRepository(manager)
 
-    moneda_ars = manager.fetchone("SELECT id FROM monedas WHERE codigo = 'ARS';")["id"]
+    moneda_ars = "ARS"
     categoria_inversiones = manager.fetchone(
         "SELECT id FROM categorias WHERE categoria_principal = 'MOVIMIENTO CAPITAL' "
         "AND subcategoria = 'INVERSIONES';"
@@ -69,7 +69,7 @@ def main() -> None:
     cuenta_mp = cuentas_repo.crear(
         nombre="Mercado Pago (verify delete_movement)", tipo="debito", moneda_codigo="ARS", saldo_inicial=1000.0,
     )
-    activo = svc.create_activo(nombre="FCI delete_movement", tipo="fci", moneda_id=moneda_ars).entity_id
+    activo = svc.create_activo(nombre="FCI delete_movement", tipo="fci", moneda_codigo=moneda_ars).entity_id
     objetivo = svc.create_objetivo(nombre="Objetivo delete_movement").entity_id
 
     print("--- delete_movement() sobre un movimiento SIN transaccion_id vinculado ---")
